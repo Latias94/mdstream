@@ -28,105 +28,14 @@ impl Default for TerminatorOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FenceChar {
-    Backtick,
-    Tilde,
-}
-
-#[derive(Debug, Clone)]
-struct FenceSpan {
-    start: usize,
-    end: usize,
-}
-
-impl FenceSpan {
-    fn contains(&self, pos: usize) -> bool {
-        pos >= self.start && pos < self.end
-    }
-}
-
-#[derive(Debug, Clone)]
-struct FenceSpans {
-    spans: Vec<FenceSpan>,
-    unclosed_from: Option<usize>,
-}
-
 fn is_space_or_tab(b: u8) -> bool {
     b == b' ' || b == b'\t'
 }
 
-fn line_start_indices(text: &str) -> impl Iterator<Item = usize> + '_ {
-    std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1))
-}
-
-fn parse_fence_line(line: &str) -> Option<(FenceChar, usize)> {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    let mut spaces = 0;
-    while i < bytes.len() && spaces < 3 && bytes[i] == b' ' {
-        i += 1;
-        spaces += 1;
-    }
-    if i >= bytes.len() {
-        return None;
-    }
-    let ch = bytes[i];
-    let fence_char = match ch {
-        b'`' => FenceChar::Backtick,
-        b'~' => FenceChar::Tilde,
-        _ => return None,
-    };
-    let mut count = 0;
-    while i < bytes.len() && bytes[i] == ch {
-        count += 1;
-        i += 1;
-    }
-    if count < 3 {
-        return None;
-    }
-    Some((fence_char, count))
-}
-
-fn find_fence_spans(text: &str) -> FenceSpans {
-    let mut spans = Vec::new();
-    let mut in_fence: Option<(FenceChar, usize, usize)> = None; // (char, len, start_offset)
-
-    for start in line_start_indices(text) {
-        let end = text[start..]
-            .find('\n')
-            .map(|rel| start + rel)
-            .unwrap_or(text.len());
-        let line = &text[start..end];
-
-        if let Some((ch, len)) = parse_fence_line(line) {
-            match in_fence {
-                None => {
-                    in_fence = Some((ch, len, start));
-                }
-                Some((open_ch, open_len, open_start)) => {
-                    if open_ch == ch && len >= open_len {
-                        // Close fence at end of this line (including newline if present).
-                        let close_end = if end < text.len() { end + 1 } else { end };
-                        spans.push(FenceSpan {
-                            start: open_start,
-                            end: close_end,
-                        });
-                        in_fence = None;
-                    }
-                }
-            }
-        }
-    }
-
-    FenceSpans {
-        spans,
-        unclosed_from: in_fence.map(|(_, _, start)| start),
-    }
-}
-
-fn is_within_fence(spans: &FenceSpans, pos: usize) -> bool {
-    spans.spans.iter().any(|s| s.contains(pos)) || spans.unclosed_from.is_some_and(|s| pos >= s)
+fn is_inside_incomplete_multiline_code_block(text: &str) -> bool {
+    // Streamdown/remend behavior: treat odd occurrences of "```" as an incomplete multiline code block,
+    // but only in the multiline context (must contain a newline).
+    text.contains('\n') && text.match_indices("```").count() % 2 == 1
 }
 
 fn is_word_char(c: char) -> bool {
@@ -136,6 +45,41 @@ fn is_word_char(c: char) -> bool {
 fn whitespace_or_markers_only(s: &str) -> bool {
     s.chars()
         .all(|c| c.is_whitespace() || matches!(c, '_' | '~' | '*' | '`'))
+}
+
+fn is_part_of_triple_backtick(text: &str, i: usize) -> bool {
+    let bytes = text.as_bytes();
+    if i + 2 < bytes.len() && &bytes[i..i + 3] == b"```" {
+        return true;
+    }
+    if i >= 1 && i + 1 < bytes.len() && &bytes[i - 1..i + 2] == b"```" {
+        return true;
+    }
+    if i >= 2 && &bytes[i - 2..i + 1] == b"```" {
+        return true;
+    }
+    false
+}
+
+fn is_inside_code_block(text: &str, position: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut in_inline = false;
+    let mut in_multiline = false;
+
+    let mut i = 0usize;
+    while i < position && i < bytes.len() {
+        if i + 2 < bytes.len() && &bytes[i..i + 3] == b"```" {
+            in_multiline = !in_multiline;
+            i += 3;
+            continue;
+        }
+        if !in_multiline && bytes[i] == b'`' {
+            in_inline = !in_inline;
+        }
+        i += 1;
+    }
+
+    in_inline || in_multiline
 }
 
 fn tail_window(text: &str, window_bytes: usize) -> (&str, usize) {
@@ -295,14 +239,14 @@ fn find_matching_close_bracket(text: &str, open_index: usize) -> Option<usize> {
     None
 }
 
-fn complete_incomplete_link_or_image(text: &str, spans: &FenceSpans, incomplete_url: &str) -> Option<String> {
+fn complete_incomplete_link_or_image(text: &str, incomplete_url: &str) -> Option<String> {
     // 1) incomplete URL: find last occurrence of "](" with no ")" after it
     if let Some(idx) = text.rfind("](") {
-        if !is_within_fence(spans, idx) {
+        if !is_inside_code_block(text, idx) {
             let after = &text[idx + 2..];
             if !after.contains(')') {
                 if let Some(open_bracket) = find_matching_open_bracket(text, idx) {
-                    if is_within_fence(spans, open_bracket) {
+                    if is_inside_code_block(text, open_bracket) {
                         return None;
                     }
                     let is_image = open_bracket > 0 && text.as_bytes()[open_bracket - 1] == b'!';
@@ -323,7 +267,7 @@ fn complete_incomplete_link_or_image(text: &str, spans: &FenceSpans, incomplete_
     let mut i = bytes.len();
     while i > 0 {
         i -= 1;
-        if bytes[i] == b'[' && !is_within_fence(spans, i) {
+        if bytes[i] == b'[' && !is_inside_code_block(text, i) {
             let is_image = i > 0 && bytes[i - 1] == b'!';
             let open_index = if is_image { i - 1 } else { i };
 
@@ -435,6 +379,10 @@ fn should_skip_asterisk(text: &str, index: usize) -> bool {
         return true;
     }
 
+    if is_inside_code_block(text, index) {
+        return true;
+    }
+
     if text.contains('$') && is_within_math_block(text, index) {
         return true;
     }
@@ -471,14 +419,11 @@ fn should_skip_asterisk(text: &str, index: usize) -> bool {
     false
 }
 
-fn count_single_asterisks(text: &str, spans: &FenceSpans) -> usize {
+fn count_single_asterisks(text: &str) -> usize {
     let bytes = text.as_bytes();
     let mut count = 0usize;
     for i in 0..bytes.len() {
         if bytes[i] != b'*' {
-            continue;
-        }
-        if is_within_fence(spans, i) {
             continue;
         }
         if !should_skip_asterisk(text, i) {
@@ -494,6 +439,9 @@ fn should_skip_underscore(text: &str, index: usize) -> bool {
     let next = if index + 1 < bytes.len() { bytes[index + 1] } else { 0 };
 
     if prev == b'\\' {
+        return true;
+    }
+    if is_inside_code_block(text, index) {
         return true;
     }
     if text.contains('$') && is_within_math_block(text, index) {
@@ -513,14 +461,11 @@ fn should_skip_underscore(text: &str, index: usize) -> bool {
     false
 }
 
-fn count_single_underscores(text: &str, spans: &FenceSpans) -> usize {
+fn count_single_underscores(text: &str) -> usize {
     let bytes = text.as_bytes();
     let mut count = 0usize;
     for i in 0..bytes.len() {
         if bytes[i] != b'_' {
-            continue;
-        }
-        if is_within_fence(spans, i) {
             continue;
         }
         if !should_skip_underscore(text, i) {
@@ -530,7 +475,7 @@ fn count_single_underscores(text: &str, spans: &FenceSpans) -> usize {
     count
 }
 
-fn handle_incomplete_bold(text: &str, spans: &FenceSpans) -> String {
+fn handle_incomplete_bold(text: &str) -> String {
     // boldPattern: /(\*\*)([^*]*?)$/
     let Some(marker_idx) = text.rfind("**") else {
         return text.to_string();
@@ -538,7 +483,7 @@ fn handle_incomplete_bold(text: &str, spans: &FenceSpans) -> String {
     if text[marker_idx + 2..].contains('*') {
         return text.to_string();
     }
-    if is_within_fence(spans, marker_idx) {
+    if is_inside_code_block(text, marker_idx) {
         return text.to_string();
     }
     let content_after = &text[marker_idx + 2..];
@@ -559,7 +504,7 @@ fn handle_incomplete_bold(text: &str, spans: &FenceSpans) -> String {
     text.to_string()
 }
 
-fn handle_incomplete_double_underscore_italic(text: &str, spans: &FenceSpans) -> String {
+fn handle_incomplete_double_underscore_italic(text: &str) -> String {
     // italicPattern: /(__)([^_]*?)$/
     let Some(marker_idx) = text.rfind("__") else {
         return text.to_string();
@@ -567,7 +512,7 @@ fn handle_incomplete_double_underscore_italic(text: &str, spans: &FenceSpans) ->
     if text[marker_idx + 2..].contains('_') {
         return text.to_string();
     }
-    if is_within_fence(spans, marker_idx) {
+    if is_inside_code_block(text, marker_idx) {
         return text.to_string();
     }
     let content_after = &text[marker_idx + 2..];
@@ -588,7 +533,7 @@ fn handle_incomplete_double_underscore_italic(text: &str, spans: &FenceSpans) ->
     text.to_string()
 }
 
-fn handle_incomplete_single_asterisk_italic(text: &str, spans: &FenceSpans) -> String {
+fn handle_incomplete_single_asterisk_italic(text: &str) -> String {
     // Find first single asterisk (not part of **), not escaped, not within math, not word-internal.
     let bytes = text.as_bytes();
     let mut first = None;
@@ -596,7 +541,7 @@ fn handle_incomplete_single_asterisk_italic(text: &str, spans: &FenceSpans) -> S
         if bytes[i] != b'*' {
             continue;
         }
-        if is_within_fence(spans, i) {
+        if is_inside_code_block(text, i) {
             continue;
         }
         let prev = if i > 0 { bytes[i - 1] } else { 0 };
@@ -619,14 +564,14 @@ fn handle_incomplete_single_asterisk_italic(text: &str, spans: &FenceSpans) -> S
     let Some(first_idx) = first else {
         return text.to_string();
     };
-    if is_within_fence(spans, first_idx) {
+    if is_inside_code_block(text, first_idx) {
         return text.to_string();
     }
     let content_after = &text[first_idx + 1..];
     if content_after.is_empty() || whitespace_or_markers_only(content_after) {
         return text.to_string();
     }
-    let single = count_single_asterisks(text, spans);
+    let single = count_single_asterisks(text);
     if single % 2 == 1 {
         let mut out = String::with_capacity(text.len() + 1);
         out.push_str(text);
@@ -656,13 +601,13 @@ fn insert_closing_underscore(text: &str) -> String {
     }
 }
 
-fn find_first_single_underscore_index(text: &str, spans: &FenceSpans) -> Option<usize> {
+fn find_first_single_underscore_index(text: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     for i in 0..bytes.len() {
         if bytes[i] != b'_' {
             continue;
         }
-        if is_within_fence(spans, i) {
+        if is_inside_code_block(text, i) {
             continue;
         }
         let prev = if i > 0 { bytes[i - 1] } else { 0 };
@@ -694,23 +639,22 @@ fn handle_trailing_asterisks_for_underscore(text: &str) -> Option<String> {
         return None;
     }
     let first_double = without.find("**")?;
-    let spans = find_fence_spans(without);
-    let underscore_idx = find_first_single_underscore_index(without, &spans)?;
+    let underscore_idx = find_first_single_underscore_index(without)?;
     if first_double < underscore_idx {
         return Some(format!("{without}_**"));
     }
     None
 }
 
-fn handle_incomplete_single_underscore_italic(text: &str, spans: &FenceSpans) -> String {
-    let Some(first_idx) = find_first_single_underscore_index(text, spans) else {
+fn handle_incomplete_single_underscore_italic(text: &str) -> String {
+    let Some(first_idx) = find_first_single_underscore_index(text) else {
         return text.to_string();
     };
     let content_after = &text[first_idx + 1..];
     if content_after.is_empty() || whitespace_or_markers_only(content_after) {
         return text.to_string();
     }
-    let single = count_single_underscores(text, spans);
+    let single = count_single_underscores(text);
     if single % 2 == 1 {
         if let Some(nested) = handle_trailing_asterisks_for_underscore(text) {
             return nested;
@@ -720,13 +664,13 @@ fn handle_incomplete_single_underscore_italic(text: &str, spans: &FenceSpans) ->
     text.to_string()
 }
 
-fn bold_italic_markers_balanced(text: &str, spans: &FenceSpans) -> bool {
+fn bold_italic_markers_balanced(text: &str) -> bool {
     let pairs = text.match_indices("**").count();
-    let single = count_single_asterisks(text, spans);
+    let single = count_single_asterisks(text);
     pairs % 2 == 0 && single % 2 == 0
 }
 
-fn handle_incomplete_bold_italic(text: &str, spans: &FenceSpans) -> String {
+fn handle_incomplete_bold_italic(text: &str) -> String {
     // Don't process if text is only asterisks and has 4+.
     let t = text.trim();
     if !t.is_empty() && t.chars().all(|c| c == '*') && t.len() >= 4 {
@@ -743,7 +687,7 @@ fn handle_incomplete_bold_italic(text: &str, spans: &FenceSpans) -> String {
     if content_after.is_empty() || whitespace_or_markers_only(content_after) {
         return text.to_string();
     }
-    if is_within_fence(spans, marker_idx) {
+    if is_inside_code_block(text, marker_idx) {
         return text.to_string();
     }
     if is_horizontal_rule_line(text, marker_idx, b'*') {
@@ -752,7 +696,7 @@ fn handle_incomplete_bold_italic(text: &str, spans: &FenceSpans) -> String {
 
     let triple = count_triple_asterisks(text);
     if triple % 2 == 1 {
-        if bold_italic_markers_balanced(text, spans) {
+        if bold_italic_markers_balanced(text) {
             return text.to_string();
         }
         let mut out = String::with_capacity(text.len() + 3);
@@ -763,13 +707,66 @@ fn handle_incomplete_bold_italic(text: &str, spans: &FenceSpans) -> String {
     text.to_string()
 }
 
-fn balance_inline_code(text: &str, spans: &FenceSpans) -> String {
-    let mut count = 0usize;
-    for (i, c) in text.char_indices() {
-        if is_within_fence(spans, i) {
-            continue;
+fn balance_inline_code(text: &str) -> String {
+
+    // Inline triple backticks (no newlines): ```code``` or ```code``
+    if !text.contains('\n') && text.starts_with("```") {
+        let bytes = text.as_bytes();
+        let mut run = 0usize;
+        for &b in bytes.iter().rev() {
+            if b == b'`' {
+                run += 1;
+            } else {
+                break;
+            }
         }
-        if c == '`' && (i == 0 || text.as_bytes()[i - 1] != b'\\') {
+        if run == 2 || run == 3 {
+            let body_end = text.len().saturating_sub(run);
+            if body_end >= 3 && !text[3..body_end].contains('`') {
+                if run == 2 {
+                    let mut out = String::with_capacity(text.len() + 1);
+                    out.push_str(text);
+                    out.push('`');
+                    return out;
+                }
+                return text.to_string();
+            }
+        }
+    }
+
+    // Inside an incomplete multiline code block? (odd number of ``` substrings)
+    let triple_count = text.match_indices("```").count();
+    if triple_count % 2 == 1 {
+        return text.to_string();
+    }
+
+    // Match /(`)([^`]*?)$/ for non-triple backticks
+    let bytes = text.as_bytes();
+    let mut marker_idx = None;
+    for i in (0..bytes.len()).rev() {
+        if bytes[i] == b'`' && !is_part_of_triple_backtick(text, i) {
+            marker_idx = Some(i);
+            break;
+        }
+    }
+    let Some(marker_idx) = marker_idx else {
+        return text.to_string();
+    };
+    if is_inside_code_block(text, marker_idx) {
+        return text.to_string();
+    }
+    if text[marker_idx + 1..].contains('`') {
+        return text.to_string();
+    }
+    let content_after = &text[marker_idx + 1..];
+    if content_after.is_empty() || whitespace_or_markers_only(content_after) {
+        return text.to_string();
+    }
+
+    // Count single backticks (excluding triple backticks)
+    let mut count = 0usize;
+    for i in 0..bytes.len() {
+        if bytes[i] == b'`' && !is_part_of_triple_backtick(text, i) {
             count += 1;
         }
     }
@@ -777,59 +774,72 @@ fn balance_inline_code(text: &str, spans: &FenceSpans) -> String {
         let mut out = String::with_capacity(text.len() + 1);
         out.push_str(text);
         out.push('`');
-        out
-    } else {
-        text.to_string()
+        return out;
     }
+
+    text.to_string()
 }
 
-fn balance_strikethrough(text: &str, spans: &FenceSpans) -> String {
-    let bytes = text.as_bytes();
-    let mut count = 0usize;
-    let mut i = 0usize;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'~' && bytes[i + 1] == b'~' && !is_within_fence(spans, i) {
-            count += 1;
-            i += 2;
-            continue;
-        }
-        i += 1;
+fn balance_strikethrough(text: &str) -> String {
+    // /(~~)([^~]*?)$/
+    let Some(marker_idx) = text.rfind("~~") else {
+        return text.to_string();
+    };
+    if text[marker_idx + 2..].contains('~') {
+        return text.to_string();
     }
-    if count % 2 == 1 {
+    let content_after = &text[marker_idx + 2..];
+    if content_after.is_empty() || whitespace_or_markers_only(content_after) {
+        return text.to_string();
+    }
+    let pairs = text.match_indices("~~").count();
+    if pairs % 2 == 1 {
         let mut out = String::with_capacity(text.len() + 2);
         out.push_str(text);
         out.push_str("~~");
-        out
-    } else {
-        text.to_string()
+        return out;
     }
+    text.to_string()
 }
 
-fn balance_katex_block(text: &str, spans: &FenceSpans) -> String {
+fn balance_katex_block(text: &str) -> String {
+    // Streamdown counts $$ pairs outside inline code (`...`), ignoring triple backticks.
     let bytes = text.as_bytes();
-    let mut count = 0usize;
+    let mut dollar_pairs = 0usize;
+    let mut in_inline_code = false;
     let mut i = 0usize;
     while i + 1 < bytes.len() {
-        if bytes[i] == b'$' && bytes[i + 1] == b'$' && !is_within_fence(spans, i) {
-            // Skip escaped.
-            if i > 0 && bytes[i - 1] == b'\\' {
-                i += 2;
-                continue;
-            }
-            count += 1;
+        if bytes[i] == b'`' && !is_part_of_triple_backtick(text, i) {
+            in_inline_code = !in_inline_code;
+            i += 1;
+            continue;
+        }
+        if !in_inline_code && bytes[i] == b'$' && bytes[i + 1] == b'$' {
+            dollar_pairs += 1;
             i += 2;
             continue;
         }
         i += 1;
     }
-    if count % 2 == 1 {
-        let mut out = String::with_capacity(text.len() + 2);
-        out.push_str(text);
-        out.push_str("$$");
-        out
-    } else {
-        text.to_string()
+
+    if dollar_pairs % 2 == 0 {
+        return text.to_string();
     }
+
+    let first = text.find("$$");
+    let has_newline_after_start = first.is_some_and(|idx| text[idx..].contains('\n'));
+    if has_newline_after_start && !text.ends_with('\n') {
+        let mut out = String::with_capacity(text.len() + 3);
+        out.push_str(text);
+        out.push('\n');
+        out.push_str("$$");
+        return out;
+    }
+
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push_str(text);
+    out.push_str("$$");
+    out
 }
 
 /// Terminate a streaming Markdown tail to avoid partial rendering artifacts.
@@ -851,8 +861,7 @@ pub fn terminate_markdown(text: &str, opts: &TerminatorOptions) -> String {
         tail = apply_setext_heading_protection(&tail);
     }
 
-    let spans = find_fence_spans(&tail);
-    if spans.unclosed_from.is_some() {
+    if is_inside_incomplete_multiline_code_block(&tail) {
         // If the tail is currently inside an unclosed fenced code block, avoid other termination.
         let mut out = String::with_capacity(prefix.len() + tail.len());
         out.push_str(prefix);
@@ -861,7 +870,7 @@ pub fn terminate_markdown(text: &str, opts: &TerminatorOptions) -> String {
     }
 
     if opts.links || opts.images {
-        if let Some(processed) = complete_incomplete_link_or_image(&tail, &spans, &opts.incomplete_link_url) {
+        if let Some(processed) = complete_incomplete_link_or_image(&tail, &opts.incomplete_link_url) {
             if processed.ends_with(&format!("]({})", opts.incomplete_link_url)) {
                 let mut out = String::with_capacity(prefix.len() + processed.len());
                 out.push_str(prefix);
@@ -872,23 +881,21 @@ pub fn terminate_markdown(text: &str, opts: &TerminatorOptions) -> String {
         }
     }
 
-    let spans = find_fence_spans(&tail);
-
     if opts.emphasis {
-        tail = handle_incomplete_bold_italic(&tail, &spans);
-        tail = handle_incomplete_bold(&tail, &spans);
-        tail = handle_incomplete_double_underscore_italic(&tail, &spans);
-        tail = handle_incomplete_single_asterisk_italic(&tail, &spans);
-        tail = handle_incomplete_single_underscore_italic(&tail, &spans);
+        tail = handle_incomplete_bold_italic(&tail);
+        tail = handle_incomplete_bold(&tail);
+        tail = handle_incomplete_double_underscore_italic(&tail);
+        tail = handle_incomplete_single_asterisk_italic(&tail);
+        tail = handle_incomplete_single_underscore_italic(&tail);
     }
     if opts.inline_code {
-        tail = balance_inline_code(&tail, &spans);
+        tail = balance_inline_code(&tail);
     }
     if opts.strikethrough {
-        tail = balance_strikethrough(&tail, &spans);
+        tail = balance_strikethrough(&tail);
     }
     if opts.katex_block {
-        tail = balance_katex_block(&tail, &spans);
+        tail = balance_katex_block(&tail);
     }
 
     let mut out = String::with_capacity(prefix.len() + tail.len());

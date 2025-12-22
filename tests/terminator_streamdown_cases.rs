@@ -63,3 +63,60 @@ fn streaming_nested_formatting_examples() {
         "To use this function, call `getData(`"
     );
 }
+
+#[test]
+fn inline_code_and_triple_backticks() {
+    let opts = TerminatorOptions::default();
+    assert_eq!(
+        terminate_markdown("Text with `code", &opts),
+        "Text with `code`"
+    );
+    assert_eq!(
+        terminate_markdown("```python print(\"Hello!\")``", &opts),
+        "```python print(\"Hello!\")```"
+    );
+    // Incomplete multiline code block should not be modified.
+    assert_eq!(
+        terminate_markdown("```javascript\nconst x = `template", &opts),
+        "```javascript\nconst x = `template"
+    );
+}
+
+#[test]
+fn strikethrough_and_katex() {
+    let opts = TerminatorOptions::default();
+    assert_eq!(
+        terminate_markdown("Text with ~~strike", &opts),
+        "Text with ~~strike~~"
+    );
+    assert_eq!(
+        terminate_markdown("Text with $$formula", &opts),
+        "Text with $$formula$$"
+    );
+    assert_eq!(
+        terminate_markdown("$$\nx = 1\ny = 2", &opts),
+        "$$\nx = 1\ny = 2\n$$"
+    );
+}
+
+#[test]
+fn mixed_formatting_order_matches_streamdown() {
+    let opts = TerminatorOptions::default();
+    // Bold closed first, then code.
+    assert_eq!(
+        terminate_markdown("**bold with `code", &opts),
+        "**bold with `code**`"
+    );
+    // Italic closed after bold if italic opened before bold.
+    assert_eq!(
+        terminate_markdown("*italic with **bold", &opts),
+        "*italic with **bold***"
+    );
+    // $$ outside inline code is completed; $$ inside inline code is ignored.
+    assert_eq!(
+        terminate_markdown("Math: $$x+y and code: `$$`", &opts),
+        "Math: $$x+y and code: `$$`$$"
+    );
+    // Underscore inside $$ should not be treated as italic.
+    assert_eq!(terminate_markdown("$$formula_", &opts), "$$formula_$$");
+}
