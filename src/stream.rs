@@ -203,6 +203,7 @@ pub struct MdStream {
 
     pending_display_cache: Option<String>,
     footnotes_detected: bool,
+    footnote_scan_tail: String,
 }
 
 impl MdStream {
@@ -226,6 +227,7 @@ impl MdStream {
             current_mode: BlockMode::Unknown,
             pending_display_cache: None,
             footnotes_detected: false,
+            footnote_scan_tail: String::new(),
         }
     }
 
@@ -463,6 +465,34 @@ impl MdStream {
 
         // Update per-block mode state transitions.
         self.update_mode_with_line(line_index, update);
+    }
+
+    fn process_incomplete_tail_boundary(&mut self, update: &mut Update) {
+        if self.lines.len() < 2 {
+            return;
+        }
+        let last = self.lines.len() - 1;
+        if self.lines[last].has_newline {
+            return;
+        }
+        if !self.lines[last - 1].has_newline {
+            return;
+        }
+
+        if self.opts.footnotes == FootnotesMode::SingleBlock && self.footnotes_detected {
+            return;
+        }
+
+        let boundary = {
+            let prev = self.line_str(last - 1);
+            let curr = self.line_str(last);
+            self.is_new_block_boundary(prev, curr, last)
+        };
+
+        if boundary {
+            self.commit_block(last - 1, update);
+            self.current_mode = Self::start_mode_for_line(self.line_str(last));
+        }
     }
 
     fn is_new_block_boundary(&self, prev: &str, curr: &str, curr_line_index: usize) -> bool {
@@ -732,12 +762,31 @@ impl MdStream {
         }
 
         let chunk = Self::normalize_newlines(chunk);
+
+        if !self.footnotes_detected {
+            let mut combined = String::with_capacity(self.footnote_scan_tail.len() + chunk.len());
+            combined.push_str(&self.footnote_scan_tail);
+            combined.push_str(&chunk);
+            if detect_footnotes(&combined) {
+                self.footnotes_detected = true;
+            } else {
+                // Keep a small tail window to detect patterns across chunk boundaries.
+                const MAX_TAIL: usize = 256;
+                if combined.len() <= MAX_TAIL {
+                    self.footnote_scan_tail = combined;
+                } else {
+                    let start = combined.len() - MAX_TAIL;
+                    let mut s = start;
+                    while !combined.is_char_boundary(s) {
+                        s += 1;
+                    }
+                    self.footnote_scan_tail = combined[s..].to_string();
+                }
+            }
+        }
+
         self.append_to_lines(&chunk);
         self.pending_display_cache = None;
-
-        if !self.footnotes_detected && detect_footnotes(&self.buffer) {
-            self.footnotes_detected = true;
-        }
 
         // Process newly completed lines.
         while self.processed_line < self.lines.len() {
@@ -747,6 +796,10 @@ impl MdStream {
             self.process_line(self.processed_line, &mut update);
             self.processed_line += 1;
         }
+
+        // Even if the current last line has no newline yet, we may have enough information to
+        // commit the previous block (eg after a blank line).
+        self.process_incomplete_tail_boundary(&mut update);
 
         update.pending = self.current_pending_block();
         update
@@ -811,5 +864,6 @@ impl MdStream {
         self.current_mode = BlockMode::Unknown;
         self.pending_display_cache = None;
         self.footnotes_detected = false;
+        self.footnote_scan_tail.clear();
     }
 }
