@@ -1,0 +1,76 @@
+# MVP
+
+This document defines the MVP scope and acceptance criteria for `mdstream`.
+
+## MVP Goals
+
+1. Provide a stable block stream for streaming Markdown.
+2. Ensure per-chunk processing is bounded and avoids O(n²).
+3. Match practical streaming behavior of Streamdown + Incremark in edge cases.
+
+## MVP Feature Set
+
+### Block boundary detection (MUST)
+
+- Headings (`#` ATX)
+- Paragraph boundaries via blank lines
+- Thematic breaks (`---`, `***`, `___`)
+- Fenced code blocks (``` / ~~~)
+- Blockquotes (`>`)
+- Lists (ordered/unordered) with conservative nesting behavior
+- Tables (GFM-style delimiter row)
+- HTML blocks (conservative merge for multi-line blocks)
+- `$$ ... $$` math blocks (treat unmatched `$$` as pending)
+- Footnote definitions (`[^id]:`) with continuation indentation
+
+### Pending transformation (MUST)
+
+Remend-like termination for incomplete syntax near the tail (pending only):
+
+- emphasis markers (`*`, `**`, `***`, `_`, `__`)
+- inline code backticks
+- strikethrough (`~~`)
+- links/images:
+  - incomplete link URL becomes `](streamdown:incomplete-link)` (configurable)
+  - incomplete images are removed (configurable)
+- setext heading protection (avoid misclassifying partial list markers as heading underlines)
+- `$$` balancing for pending math blocks
+
+### Optional (SHOULD)
+
+- Fenced JSON repair inside ```json / ```jsonc / ```json5 (opt-in, using `jsonrepair`)
+
+## Behavioral Contracts (Acceptance)
+
+### Incrementality
+
+- When appending `k` chunks with total length `n`, total processing time should scale ~O(n), not O(n²).
+- `append(chunk)` must not rescan or split the entire buffer when chunk does not contain newlines.
+
+### Stability
+
+- Once a block is emitted in `committed`, its `raw` text never changes.
+- Only the `pending` block may change between ticks.
+
+### Edge-case tests to include (MVP test list)
+
+The following scenarios must be covered by unit tests (ported conceptually from Streamdown/Incremark):
+
+- Incomplete emphasis at chunk boundary: `**bold` then ` text**`
+- Incomplete inline code: `` `code`` then `` ` ``
+- Incomplete link: `[text](` then `url)`; and partial `[text` then `](`
+- Nested brackets in links: `[a [b] c](` split across chunks
+- Images: `![alt](` split across chunks should not produce partial artifacts
+- Fenced code blocks spanning multiple chunks; ensure no early commit inside fence
+- `$$` math blocks across chunks; ensure pending until balanced
+- Footnote definition continuation:
+  - `[^1]: line1\n    line2\n` split across chunks
+- HTML block spanning tokens: `<div>\n...` split; keep as one block until closed when possible
+- List + emphasis interaction edge cases (avoid mis-termination)
+
+## Out of Scope for MVP
+
+- Full CommonMark conformance test suite
+- Arbitrary plugin ecosystems beyond the initial extension points (see `docs/EXTENSIONS.md`)
+- Automatic re-parse/invalidations for cross-block semantics (optional post-MVP)
+
