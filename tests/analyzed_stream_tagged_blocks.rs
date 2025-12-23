@@ -4,7 +4,7 @@ use mdstream::{AnalyzedStream, Options, TaggedBlockAnalyzer};
 #[test]
 fn tagged_block_analyzer_extracts_tag_and_content() {
     let mut a = TaggedBlockAnalyzer::default();
-    a.allowed_tags = Some(vec!["thinking".to_string(), "tool_call".to_string()]);
+    a.allowed_tags = Some(vec!["thinking".to_string(), "custom_block".to_string()]);
 
     let mut s = AnalyzedStream::new(Options::default(), a);
 
@@ -50,28 +50,28 @@ fn tagged_block_analyzer_ignores_non_standalone_closing_tag() {
 #[test]
 fn tagged_block_analyzer_handles_tool_call_tag_with_boundary_plugin() {
     let mut a = TaggedBlockAnalyzer::default();
-    a.allowed_tags = Some(vec!["tool_call".to_string()]);
+    a.allowed_tags = Some(vec!["custom_block".to_string()]);
     let mut s = AnalyzedStream::new(Options::default(), a);
     s.inner_mut()
-        .push_boundary_plugin(TagBoundaryPlugin::new("tool_call"));
+        .push_boundary_plugin(TagBoundaryPlugin::new("custom_block"));
 
-    let u1 = s.append("<tool_call>\n{\"name\":\"x\"");
+    let u1 = s.append("<custom_block>\n{\"name\":\"x\"");
     let m1 = u1.pending_meta.expect("pending meta").meta;
-    assert_eq!(m1.tag, "tool_call");
+    assert_eq!(m1.tag, "custom_block");
     assert!(!m1.closed);
 
-    let u2 = s.append("\n}\n</tool_call>\n");
+    let u2 = s.append("\n}\n</custom_block>\n");
     assert!(
         u2.update
             .committed
             .iter()
-            .any(|b| b.raw.contains("<tool_call>"))
+            .any(|b| b.raw.contains("<custom_block>"))
     );
     let m2 = u2
         .committed_meta
         .iter()
-        .find(|m| m.meta.tag == "tool_call")
-        .expect("committed tool_call meta");
+        .find(|m| m.meta.tag == "custom_block")
+        .expect("committed custom_block meta");
     assert!(m2.meta.closed);
     assert!(m2.meta.content.contains("{\"name\""));
 }

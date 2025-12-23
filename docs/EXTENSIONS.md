@@ -122,8 +122,7 @@ Status: implemented (MVP-level).
 - `CodeFenceAnalyzer` built-in analyzer that classifies code fences (e.g. `mermaid`, `json`)
 - `MathAnalyzer` built-in analyzer that reports whether a `$$` math block is balanced
 - `BlockHintAnalyzer` built-in analyzer that provides a small `likely_incomplete` hint for pending blocks
-- `TaggedBlockAnalyzer` built-in analyzer for `<thinking>...</thinking>` / `<tool_call>...</tool_call>` style blocks
-- `ToolCallJsonAnalyzer` built-in analyzer to extract (and optionally repair) JSON from `<tool_call>...</tool_call>`
+- `TaggedBlockAnalyzer` built-in analyzer for custom tag blocks (e.g. `<thinking>...</thinking>`)
 
 Minimal example:
 
