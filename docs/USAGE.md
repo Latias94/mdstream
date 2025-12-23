@@ -35,6 +35,24 @@ if let Some(p) = u.pending {
 }
 ```
 
+## `DocumentState` (UI State Helper)
+
+If you keep UI state as `(Vec<Block>, Option<Block>)`, you can use `Update::apply_to`. If you want a
+dedicated container, use `DocumentState`:
+
+```rust
+use mdstream::{DocumentState, MdStream, Options};
+
+let mut s = MdStream::new(Options::default());
+let mut state = DocumentState::new();
+
+let u = s.append("Hello **wor");
+let applied = state.apply(u);
+if applied.reset {
+    // Drop any external caches derived from old blocks.
+}
+```
+
 If your UI keeps state as `(Vec<Block>, Option<Block>)`, you can use `Update::apply_to` to avoid
 getting `reset` handling wrong:
 

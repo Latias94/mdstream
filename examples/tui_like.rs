@@ -1,6 +1,7 @@
 use mdstream::{
     AnalyzedStream, BlockHintAnalyzer, BlockHintMeta, BlockKind, CodeFenceAnalyzer, CodeFenceClass,
-    FootnotesMode, IncompleteImageDropTransformer, IncompleteLinkPlaceholderTransformer, Options,
+    DocumentState, FootnotesMode, IncompleteImageDropTransformer, IncompleteLinkPlaceholderTransformer,
+    Options,
 };
 
 fn print_block(prefix: &str, id: u64, kind: BlockKind, text: &str) {
@@ -24,6 +25,7 @@ fn main() {
     // Chain analyzers: (code fence meta, pending hint meta)
     let analyzer = (CodeFenceAnalyzer::default(), BlockHintAnalyzer::default());
     let mut s = AnalyzedStream::new(opts, analyzer);
+    let mut state = DocumentState::new();
     s.inner_mut()
         .push_pending_transformer(IncompleteLinkPlaceholderTransformer::default());
     s.inner_mut()
@@ -47,6 +49,10 @@ fn main() {
     for (i, chunk) in chunks.iter().enumerate() {
         println!("\n== append step {i} ==");
         let u = s.append(chunk);
+        let applied = state.apply(u.update.clone());
+        if applied.reset {
+            println!("reset: true (drop cached UI state and rebuild)");
+        }
 
         for (block, meta) in u
             .update
@@ -94,6 +100,13 @@ fn main() {
         } else {
             println!("pending: <none>");
         }
+
+        // State view (what a UI would keep).
+        println!(
+            "state: committed={} pending={}",
+            state.committed().len(),
+            state.pending().is_some()
+        );
     }
 
     println!("\n== finalize ==");
