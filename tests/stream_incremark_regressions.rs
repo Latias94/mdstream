@@ -1,46 +1,6 @@
+mod support;
+
 use mdstream::{MdStream, Options};
-
-fn collect_final_blocks(chunks: impl IntoIterator<Item = String>, opts: Options) -> Vec<String> {
-    let mut s = MdStream::new(opts);
-    let mut out = Vec::new();
-
-    for chunk in chunks {
-        let u = s.append(&chunk);
-        out.extend(u.committed.into_iter().map(|b| b.raw));
-    }
-    let u = s.finalize();
-    out.extend(u.committed.into_iter().map(|b| b.raw));
-    out
-}
-
-fn chunk_whole(text: &str) -> Vec<String> {
-    vec![text.to_string()]
-}
-
-fn chunk_lines(text: &str) -> Vec<String> {
-    text.split_inclusive('\n').map(|s| s.to_string()).collect()
-}
-
-fn chunk_chars(text: &str) -> Vec<String> {
-    text.chars().map(|c| c.to_string()).collect()
-}
-
-fn chunk_pseudo_random(text: &str, mut seed: u32) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    while start < text.len() {
-        // LCG
-        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-        let want = (seed % 40 + 1) as usize; // 1..=40 bytes
-        let mut end = (start + want).min(text.len());
-        while end < text.len() && !text.is_char_boundary(end) {
-            end += 1;
-        }
-        out.push(text[start..end].to_string());
-        start = end;
-    }
-    out
-}
 
 #[test]
 fn newline_normalization_crlf_across_chunk_boundary() {
@@ -95,13 +55,16 @@ $$
 HTML block
 </div>
 
-Final paragraph."#;
+    Final paragraph."#;
 
     let opts = Options::default();
-    let blocks_whole = collect_final_blocks(chunk_whole(markdown), opts.clone());
-    let blocks_lines = collect_final_blocks(chunk_lines(markdown), opts.clone());
-    let blocks_chars = collect_final_blocks(chunk_chars(markdown), opts.clone());
-    let blocks_rand = collect_final_blocks(chunk_pseudo_random(markdown, 1), opts.clone());
+    let blocks_whole = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());
+    let blocks_lines = support::collect_final_blocks(support::chunk_lines(markdown), opts.clone());
+    let blocks_chars = support::collect_final_blocks(support::chunk_chars(markdown), opts.clone());
+    let blocks_rand = support::collect_final_blocks(
+        support::chunk_pseudo_random(markdown, "chunking_invariance_for_block_splitting", 0, 40),
+        opts.clone(),
+    );
 
     assert_eq!(blocks_lines, blocks_whole);
     assert_eq!(blocks_chars, blocks_whole);
