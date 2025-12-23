@@ -29,6 +29,14 @@ Status: implemented (MVP-level).
 - `TagBoundaryPlugin` as another built-in example (e.g. `<thinking> ... </thinking>`)
 - `ContainerBoundaryPlugin` for Incremark-compatible `::: name attr` containers (with nesting)
 
+Notes on `:::` containers:
+
+- If you want **Incremark parity** (`::: name attr` with nesting depth), use `ContainerBoundaryPlugin`.
+  - It requires **whitespace after the marker** (so `:::warning` does not match).
+  - It supports longer markers (e.g. `:::::`) and nested containers (each end closes one level).
+- If you want a **fence-like block** that also matches `:::warning` (no whitespace), use
+  `FenceBoundaryPlugin` instead.
+
 Minimal example:
 
 ```rust
