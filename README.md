@@ -87,6 +87,15 @@ if let Some(p) = state.pending() {
 If you prefer to manage your own `(Vec<Block>, Option<Block>)`, you can apply updates with
 `Update::apply_to`.
 
+## Examples
+
+```sh
+cargo run --example minimal
+cargo run --example footnotes_reset
+cargo run --example tui_like
+cargo run --features pulldown --example pulldown_incremental
+```
+
 ## Optional: Reference Definitions Invalidation (Best-effort)
 
 Markdown reference-style links/images can be defined *after* they are used:
@@ -163,17 +172,10 @@ adapter.apply_update(&u2);
 // `u2.invalidated` tells you which committed blocks should be re-rendered.
 ```
 
-## Development docs (may be pruned for releases)
+## Release notes
 
-- Architecture: `docs/ARCHITECTURE.md`
-- MVP definition & acceptance tests: `docs/MVP.md`
-- Roadmap: `docs/ROADMAP.md`
-- Usage (integration patterns): `docs/USAGE.md`
-- Compatibility & edge cases: `docs/COMPATIBILITY.md`
-- Adapters (pulldown-cmark, etc.): `docs/ADAPTERS.md`
-- Extension points: `docs/EXTENSIONS.md`
-  - Note: End-user integration guidance is kept in this README; the `docs/` folder is primarily for
-    development notes and may be pruned for releases.
+- Release checklist: `RELEASE_CHECKLIST.md`
+- Note: This project may prune `docs/` during releases; user-facing guidance lives in this README.
 
 ## Status
 
