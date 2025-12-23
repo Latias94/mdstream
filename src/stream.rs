@@ -637,6 +637,27 @@ impl MdStream {
         }
     }
 
+    /// Construct a stream with Streamdown-compatible defaults for incomplete links/images.
+    ///
+    /// This keeps the built-in terminator for emphasis/inline code/etc, but delegates incomplete
+    /// link/image handling to the built-in pending transformers.
+    pub fn streamdown_defaults() -> Self {
+        let mut opts = Options::default();
+        // Use the transformers for link/image behavior so consumers can swap them out.
+        opts.terminator.links = false;
+        opts.terminator.images = false;
+
+        let mut s = MdStream::new(opts.clone());
+        s.push_pending_transformer(crate::transform::IncompleteLinkPlaceholderTransformer {
+            incomplete_link_url: opts.terminator.incomplete_link_url,
+            window_bytes: opts.terminator_window_bytes,
+        });
+        s.push_pending_transformer(crate::transform::IncompleteImageDropTransformer {
+            window_bytes: opts.terminator_window_bytes,
+        });
+        s
+    }
+
     pub fn push_pending_transformer<T>(&mut self, transformer: T)
     where
         T: PendingTransformer + 'static,
