@@ -14,7 +14,7 @@ env:
 
 jobs:
   validate:
-    name: Validate tag/version
+    name: Validate tag/version/changelog
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -38,6 +38,24 @@ jobs:
               )
 
           print(f"OK: v{version} matches Cargo.toml")
+          PY
+
+      - name: Ensure CHANGELOG.md contains version section
+        run: |
+          python3 - <<'PY'
+          import os, re
+
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+              text = f.read()
+
+          patterns = [
+              rf"^##\s+{re.escape(version)}\s*$",
+              rf"^##\s+\[{re.escape(version)}\]\s*$",
+          ]
+          if not any(re.search(p, text, flags=re.MULTILINE) for p in patterns):
+              raise SystemExit(f"CHANGELOG.md is missing a '## {version}' section")
+          print(f"OK: CHANGELOG.md contains section for {version}")
           PY
 
   test:
@@ -101,9 +119,16 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract release notes
+        id: notes
+        uses: ffurrer2/extract-release-notes@v2
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body: ${{ steps.notes.outputs.release_notes }}
