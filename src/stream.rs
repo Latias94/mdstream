@@ -220,6 +220,41 @@ fn is_list_continuation(line: &str) -> bool {
     false
 }
 
+fn is_list_item_start_prefix(line: &str) -> bool {
+    // Streaming-only heuristic: treat certain "prefix" lines as potential list item starters.
+    // This prevents premature block commits when the marker is split across chunks (e.g. "-" then " item").
+    let s = line.trim_start();
+    if s.is_empty() {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    match bytes[0] {
+        b'-' | b'+' | b'*' => s.len() == 1,
+        b'0'..=b'9' => {
+            let mut i = 0usize;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i == 0 {
+                return false;
+            }
+            if i == bytes.len() {
+                // Digits only: could become "1." / "1)" with more input.
+                return true;
+            }
+            if bytes[i] != b'.' && bytes[i] != b')' {
+                return false;
+            }
+            if i + 1 == bytes.len() {
+                // "1." or "1)" without the required whitespace yet.
+                return true;
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
 fn is_footnote_definition_start(line: &str) -> bool {
     let s = line.trim_start();
     s.starts_with("[^") && s.contains("]:")
@@ -1078,12 +1113,18 @@ impl MdStream {
 
         // A new block can start after an empty line.
         if is_empty_line(prev) && !is_empty_line(curr) {
+            // Be robust against mode drift in streaming scenarios: the current block's "start line"
+            // is the source of truth for whether we're inside a list/quote container.
+            let block_start_mode = self.start_mode_for_line(self.line_str(self.current_block_start_line));
+            let in_list = matches!(self.current_mode, BlockMode::List) || matches!(block_start_mode, BlockMode::List);
+            let in_blockquote = matches!(self.current_mode, BlockMode::BlockQuote)
+                || matches!(block_start_mode, BlockMode::BlockQuote);
             // Lists can legally contain blank lines between items and within an item's continuation.
-            if matches!(self.current_mode, BlockMode::List) && is_list_continuation(curr) {
+            if in_list && (is_list_continuation(curr) || is_list_item_start_prefix(curr)) {
                 return false;
             }
             // Blockquotes can continue after blank lines only if the marker is present.
-            if matches!(self.current_mode, BlockMode::BlockQuote) && is_blockquote_start(curr) {
+            if in_blockquote && is_blockquote_start(curr) {
                 return false;
             }
             return true;
