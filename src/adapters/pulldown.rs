@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::reference;
 use crate::types::{Block, BlockId, Update};
@@ -26,7 +27,9 @@ pub struct PulldownAdapter {
     opts: PulldownAdapterOptions,
     committed_raw: HashMap<BlockId, String>,
     committed_cache: HashMap<BlockId, Vec<Event<'static>>>,
-    reference_definitions: String,
+    reference_definitions: BTreeMap<String, String>,
+    reference_definitions_text: String,
+    reference_definitions_dirty: bool,
 }
 
 impl PulldownAdapter {
@@ -35,7 +38,9 @@ impl PulldownAdapter {
             opts,
             committed_raw: HashMap::new(),
             committed_cache: HashMap::new(),
-            reference_definitions: String::new(),
+            reference_definitions: BTreeMap::new(),
+            reference_definitions_text: String::new(),
+            reference_definitions_dirty: false,
         }
     }
 
@@ -43,6 +48,8 @@ impl PulldownAdapter {
         self.committed_raw.clear();
         self.committed_cache.clear();
         self.reference_definitions.clear();
+        self.reference_definitions_text.clear();
+        self.reference_definitions_dirty = false;
     }
 
     pub fn apply_update(&mut self, update: &Update) {
@@ -52,7 +59,8 @@ impl PulldownAdapter {
         for block in &update.committed {
             self.committed_raw.insert(block.id, block.raw.clone());
             self.collect_reference_definitions(&block.raw);
-            let events = self.parse_committed_with_definitions(&block.raw);
+            self.refresh_reference_definitions_text();
+            let events = self.parse_with_definitions(&block.raw);
             self.committed_cache.insert(block.id, events);
         }
 
@@ -61,7 +69,7 @@ impl PulldownAdapter {
             let Some(raw) = self.committed_raw.get(id) else {
                 continue;
             };
-            let events = self.parse_committed_with_definitions(raw);
+            let events = self.parse_with_definitions(raw);
             self.committed_cache.insert(*id, events);
         }
     }
@@ -80,16 +88,13 @@ impl PulldownAdapter {
         self.parse_with_definitions(input)
     }
 
-    fn parse_committed_with_definitions(&self, raw: &str) -> Vec<Event<'static>> {
-        self.parse_with_definitions(raw)
-    }
-
     fn parse_with_definitions(&self, raw: &str) -> Vec<Event<'static>> {
-        if self.reference_definitions.is_empty() {
+        if self.reference_definitions_text.is_empty() {
             return parse_events_static(raw, self.opts.pulldown);
         }
-        let mut input = String::with_capacity(self.reference_definitions.len() + 2 + raw.len());
-        input.push_str(&self.reference_definitions);
+        let mut input =
+            String::with_capacity(self.reference_definitions_text.len() + 2 + raw.len());
+        input.push_str(&self.reference_definitions_text);
         input.push_str("\n\n");
         input.push_str(raw);
         parse_events_static(&input, self.opts.pulldown)
@@ -99,28 +104,33 @@ impl PulldownAdapter {
         // Best-effort: extract single-line reference definitions and keep the latest per label.
         for line in raw.split('\n') {
             if let Some((label, def_line)) = reference::extract_reference_definition_line(line) {
-                self.upsert_reference_definition(&label, &def_line);
+                match self.reference_definitions.entry(label) {
+                    Entry::Vacant(v) => {
+                        v.insert(def_line);
+                        self.reference_definitions_dirty = true;
+                    }
+                    Entry::Occupied(mut o) => {
+                        if o.get() != &def_line {
+                            o.insert(def_line);
+                            self.reference_definitions_dirty = true;
+                        }
+                    }
+                }
             }
         }
     }
 
-    fn upsert_reference_definition(&mut self, label: &str, def_line: &str) {
-        // Keep a simple stable format: one definition per line.
-        // Rebuild on update to avoid complicated string patching.
-        let mut map: HashMap<String, String> = HashMap::new();
-        for line in self.reference_definitions.split('\n') {
-            if let Some((k, v)) = reference::extract_reference_definition_line(line) {
-                map.insert(k, v);
-            }
+    fn refresh_reference_definitions_text(&mut self) {
+        if !self.reference_definitions_dirty {
+            return;
         }
-        map.insert(label.to_string(), def_line.to_string());
-        let mut defs: Vec<_> = map.into_iter().collect();
-        defs.sort_by(|a, b| a.0.cmp(&b.0));
-        self.reference_definitions = defs
-            .into_iter()
-            .map(|(_, v)| v)
+        self.reference_definitions_text = self
+            .reference_definitions
+            .values()
+            .cloned()
             .collect::<Vec<_>>()
             .join("\n");
+        self.reference_definitions_dirty = false;
     }
 }
 
