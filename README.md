@@ -182,6 +182,7 @@ adapter.apply_update(&u2);
 
 ## Release notes
 
+- Changelog: `CHANGELOG.md`
 - Release checklist: `RELEASE_CHECKLIST.md`
 - Note: This project may prune `docs/` during releases; user-facing guidance lives in this README.
 

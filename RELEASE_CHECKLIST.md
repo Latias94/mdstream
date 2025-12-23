@@ -5,6 +5,7 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
 ## Before tagging
 
 - [ ] Update `Cargo.toml` `package.version`
+- [ ] Update `CHANGELOG.md` for the release version
 - [ ] Ensure `README.md` contains all user-facing guidance (installation, quick start, examples)
 - [ ] Run formatting and lint:
   - [ ] `cargo fmt --all`
@@ -30,4 +31,3 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
 - [ ] Push tag
 - [ ] Publish: `cargo publish`
 - [ ] Create a GitHub release for the tag (attach notes / changelog)
-
