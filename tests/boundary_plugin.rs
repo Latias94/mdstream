@@ -13,7 +13,7 @@ fn triple_colon_container_is_single_block() {
     let blocks: Vec<String> = u1
         .committed
         .into_iter()
-        .chain(u2.committed.into_iter())
+        .chain(u2.committed)
         .map(|b| b.raw)
         .collect();
 

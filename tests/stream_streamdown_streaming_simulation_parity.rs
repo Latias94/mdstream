@@ -69,4 +69,3 @@ fn streamdown_benchmark_streaming_code_steps_match_full_parse_per_step() {
         prev = step;
     }
 }
-

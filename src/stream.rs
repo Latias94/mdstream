@@ -59,8 +59,7 @@ fn is_empty_line(line: &str) -> bool {
 
 fn is_heading(line: &str) -> bool {
     let trimmed = line.trim_start();
-    trimmed.starts_with('#')
-        && trimmed[1..].starts_with(|c: char| c == ' ' || c == '\t' || c == '#')
+    trimmed.starts_with('#') && trimmed[1..].starts_with([' ', '\t', '#'])
 }
 
 fn thematic_break_char(line: &str) -> Option<char> {
@@ -75,7 +74,7 @@ fn thematic_break_char(line: &str) -> Option<char> {
         s = &s[1..];
         spaces += 1;
     }
-    let s = s.trim_end_matches(|c| c == ' ' || c == '\t');
+    let s = s.trim_end_matches([' ', '\t']);
     let mut it = s.chars();
     let first = it.next()?;
     if first != '-' && first != '*' && first != '_' {
@@ -111,7 +110,7 @@ fn setext_underline_char(line: &str) -> Option<char> {
         s = &s[1..];
         spaces += 1;
     }
-    let s = s.trim_end_matches(|c| c == ' ' || c == '\t');
+    let s = s.trim_end_matches([' ', '\t']);
     let mut it = s.chars();
     let first = it.next()?;
     if first != '=' && first != '-' {
@@ -347,9 +346,7 @@ fn parse_tag_at(s: &str, lt_index: usize) -> Option<(HtmlTag, &str)> {
         return None;
     }
     // Find end of tag '>' on this line segment.
-    let Some(close_rel) = s[i..].find('>') else {
-        return None;
-    };
+    let close_rel = s[i..].find('>')?;
     let close = i + close_rel;
 
     if is_closing {
@@ -704,10 +701,15 @@ impl MdStream {
     /// This keeps the built-in terminator for emphasis/inline code/etc, but delegates incomplete
     /// link/image handling to the built-in pending transformers.
     pub fn streamdown_defaults() -> Self {
-        let mut opts = Options::default();
         // Use the transformers for link/image behavior so consumers can swap them out.
-        opts.terminator.links = false;
-        opts.terminator.images = false;
+        let opts = Options {
+            terminator: crate::pending::TerminatorOptions {
+                links: false,
+                images: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         let mut s = MdStream::new(opts.clone());
         s.push_pending_transformer(crate::transform::IncompleteLinkPlaceholderTransformer {
@@ -1115,8 +1117,10 @@ impl MdStream {
         if is_empty_line(prev) && !is_empty_line(curr) {
             // Be robust against mode drift in streaming scenarios: the current block's "start line"
             // is the source of truth for whether we're inside a list/quote container.
-            let block_start_mode = self.start_mode_for_line(self.line_str(self.current_block_start_line));
-            let in_list = matches!(self.current_mode, BlockMode::List) || matches!(block_start_mode, BlockMode::List);
+            let block_start_mode =
+                self.start_mode_for_line(self.line_str(self.current_block_start_line));
+            let in_list = matches!(self.current_mode, BlockMode::List)
+                || matches!(block_start_mode, BlockMode::List);
             let in_blockquote = matches!(self.current_mode, BlockMode::BlockQuote)
                 || matches!(block_start_mode, BlockMode::BlockQuote);
             // Lists can legally contain blank lines between items and within an item's continuation.
@@ -1131,13 +1135,12 @@ impl MdStream {
         }
 
         // Setext heading underline is part of the current paragraph block, not a new block boundary.
-        if matches!(self.current_mode, BlockMode::Paragraph | BlockMode::Unknown) {
-            if setext_underline_char(curr).is_some()
-                && !is_empty_line(prev)
-                && self.current_block_start_line + 1 == curr_line_index
-            {
-                return false;
-            }
+        if matches!(self.current_mode, BlockMode::Paragraph | BlockMode::Unknown)
+            && setext_underline_char(curr).is_some()
+            && !is_empty_line(prev)
+            && self.current_block_start_line + 1 == curr_line_index
+        {
+            return false;
         }
 
         // Certain block starters can interrupt paragraphs/lists/quotes.
@@ -1168,13 +1171,14 @@ impl MdStream {
 
         // Table detection: if current line is a delimiter and previous line contains pipes,
         // consider starting a table block at the previous line.
-        if matches!(self.current_mode, BlockMode::Paragraph | BlockMode::Unknown) {
-            if self.is_table_delimiter(curr) && prev.contains('|') {
-                // table starts at prev line, so boundary at prev-1 if block started earlier.
-                if curr_line_index >= 1 && self.current_block_start_line < curr_line_index - 1 {
-                    return true;
-                }
-            }
+        if matches!(self.current_mode, BlockMode::Paragraph | BlockMode::Unknown)
+            && self.is_table_delimiter(curr)
+            && prev.contains('|')
+            // table starts at prev line, so boundary at prev-1 if block started earlier.
+            && curr_line_index >= 1
+            && self.current_block_start_line < curr_line_index - 1
+        {
+            return true;
         }
 
         false

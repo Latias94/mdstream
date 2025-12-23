@@ -51,4 +51,3 @@ impl DocumentState {
         self.committed.iter_mut().find(|b| b.id == id)
     }
 }
-

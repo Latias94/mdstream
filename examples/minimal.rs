@@ -44,7 +44,9 @@ fn main() {
 
     println!("\n== finalize ==");
     let applied = state.apply(stream.finalize());
-    println!("final reset={} invalidated={:?}", applied.reset, applied.invalidated);
+    println!(
+        "final reset={} invalidated={:?}",
+        applied.reset, applied.invalidated
+    );
     println!("final committed={}", state.committed().len());
 }
-

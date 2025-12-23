@@ -4,7 +4,7 @@ use mdstream::{
 
 #[test]
 fn analyzed_stream_emits_pending_and_committed_meta_for_code_fences() {
-    let mut s = AnalyzedStream::new(Options::default(), CodeFenceAnalyzer::default());
+    let mut s = AnalyzedStream::new(Options::default(), CodeFenceAnalyzer);
 
     let u1 = s.append("```mermaid\n");
     assert!(u1.update.committed.is_empty());
@@ -52,7 +52,7 @@ fn tuple_analyzer_can_be_chained() {
         }
     }
 
-    let analyzer = (CodeFenceAnalyzer::default(), OnlyParagraph::default());
+    let analyzer = (CodeFenceAnalyzer, OnlyParagraph);
     let mut s = AnalyzedStream::new(Options::default(), analyzer);
 
     let u1 = s.append("hi\n\n```json\n");

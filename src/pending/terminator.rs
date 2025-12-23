@@ -349,10 +349,8 @@ fn is_list_marker_at(text: &str, byte_index: usize) -> bool {
         while k < bytes.len() && bytes[k].is_ascii_digit() {
             k += 1;
         }
-        if k > j && k == byte_index {
-            if matches!(bytes.get(k), Some(b'.' | b')')) {
-                return bytes.get(k + 1).is_some_and(|b| is_space_or_tab(*b));
-            }
+        if k > j && k == byte_index && matches!(bytes.get(k), Some(b'.' | b')')) {
+            return bytes.get(k + 1).is_some_and(|b| is_space_or_tab(*b));
         }
     }
     false
@@ -461,8 +459,8 @@ fn should_skip_asterisk(text: &str, index: usize) -> bool {
 fn count_single_asterisks(text: &str) -> usize {
     let bytes = text.as_bytes();
     let mut count = 0usize;
-    for i in 0..bytes.len() {
-        if bytes[i] != b'*' {
+    for (i, b) in bytes.iter().enumerate() {
+        if *b != b'*' {
             continue;
         }
         if !should_skip_asterisk(text, i) {
@@ -496,10 +494,8 @@ fn should_skip_underscore(text: &str, index: usize) -> bool {
     if prev == b'_' || next == b'_' {
         return true;
     }
-    if prev != 0 && next != 0 {
-        if is_word_char(prev as char) && is_word_char(next as char) {
-            return true;
-        }
+    if prev != 0 && next != 0 && is_word_char(prev as char) && is_word_char(next as char) {
+        return true;
     }
     false
 }
@@ -507,8 +503,8 @@ fn should_skip_underscore(text: &str, index: usize) -> bool {
 fn count_single_underscores(text: &str) -> usize {
     let bytes = text.as_bytes();
     let mut count = 0usize;
-    for i in 0..bytes.len() {
-        if bytes[i] != b'_' {
+    for (i, b) in bytes.iter().enumerate() {
+        if *b != b'_' {
             continue;
         }
         if !should_skip_underscore(text, i) {
@@ -856,8 +852,8 @@ fn balance_inline_code(text: &str) -> String {
 
     // Count single backticks (excluding triple backticks)
     let mut count = 0usize;
-    for i in 0..bytes.len() {
-        if bytes[i] == b'`' && !is_part_of_triple_backtick(text, i) {
+    for (i, b) in bytes.iter().enumerate() {
+        if *b == b'`' && !is_part_of_triple_backtick(text, i) {
             count += 1;
         }
     }

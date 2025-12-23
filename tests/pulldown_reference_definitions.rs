@@ -12,8 +12,10 @@ fn contains_link(events: &[Event<'static>]) -> bool {
 
 #[test]
 fn pulldown_adapter_reparses_invalidated_blocks_with_reference_definitions() {
-    let mut opts = Options::default();
-    opts.reference_definitions = ReferenceDefinitionsMode::Invalidate;
+    let opts = Options {
+        reference_definitions: ReferenceDefinitionsMode::Invalidate,
+        ..Default::default()
+    };
 
     let mut s = MdStream::new(opts);
     let mut a = PulldownAdapter::new(PulldownAdapterOptions::default());

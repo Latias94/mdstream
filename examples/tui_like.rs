@@ -1,7 +1,7 @@
 use mdstream::{
     AnalyzedStream, BlockHintAnalyzer, BlockHintMeta, BlockKind, CodeFenceAnalyzer, CodeFenceClass,
-    DocumentState, FootnotesMode, IncompleteImageDropTransformer, IncompleteLinkPlaceholderTransformer,
-    Options,
+    DocumentState, FootnotesMode, IncompleteImageDropTransformer,
+    IncompleteLinkPlaceholderTransformer, Options,
 };
 
 fn print_block(prefix: &str, id: u64, kind: BlockKind, text: &str) {
@@ -13,17 +13,20 @@ fn print_block(prefix: &str, id: u64, kind: BlockKind, text: &str) {
 }
 
 fn main() {
-    let mut opts = Options {
-        footnotes: FootnotesMode::SingleBlock,
-        ..Options::default()
-    };
     // For demo purposes, disable terminator link/image handling and enable the built-in
     // Streamdown-compatible pending transformers instead.
-    opts.terminator.links = false;
-    opts.terminator.images = false;
+    let opts = Options {
+        footnotes: FootnotesMode::SingleBlock,
+        terminator: mdstream::pending::TerminatorOptions {
+            links: false,
+            images: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
     // Chain analyzers: (code fence meta, pending hint meta)
-    let analyzer = (CodeFenceAnalyzer::default(), BlockHintAnalyzer::default());
+    let analyzer = (CodeFenceAnalyzer, BlockHintAnalyzer);
     let mut s = AnalyzedStream::new(opts, analyzer);
     let mut state = DocumentState::new();
     s.inner_mut()
@@ -117,8 +120,5 @@ fn main() {
         print_block("committed", b.id.0, b.kind, &b.raw);
     }
     state.apply(update);
-    println!(
-        "pending: {:?}",
-        state.pending().map(|b| (b.id.0, b.kind))
-    );
+    println!("pending: {:?}", state.pending().map(|b| (b.id.0, b.kind)));
 }

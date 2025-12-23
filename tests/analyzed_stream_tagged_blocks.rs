@@ -3,8 +3,10 @@ use mdstream::{AnalyzedStream, Options, TaggedBlockAnalyzer};
 
 #[test]
 fn tagged_block_analyzer_extracts_tag_and_content() {
-    let mut a = TaggedBlockAnalyzer::default();
-    a.allowed_tags = Some(vec!["thinking".to_string(), "custom_block".to_string()]);
+    let a = TaggedBlockAnalyzer {
+        allowed_tags: Some(vec!["thinking".to_string(), "custom_block".to_string()]),
+        ..Default::default()
+    };
 
     let mut s = AnalyzedStream::new(Options::default(), a);
 
@@ -49,8 +51,10 @@ fn tagged_block_analyzer_ignores_non_standalone_closing_tag() {
 
 #[test]
 fn tagged_block_analyzer_handles_tool_call_tag_with_boundary_plugin() {
-    let mut a = TaggedBlockAnalyzer::default();
-    a.allowed_tags = Some(vec!["custom_block".to_string()]);
+    let a = TaggedBlockAnalyzer {
+        allowed_tags: Some(vec!["custom_block".to_string()]),
+        ..Default::default()
+    };
     let mut s = AnalyzedStream::new(Options::default(), a);
     s.inner_mut()
         .push_boundary_plugin(TagBoundaryPlugin::new("custom_block"));

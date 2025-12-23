@@ -15,9 +15,11 @@ fn main() {
     use mdstream::{MdStream, Options, ReferenceDefinitionsMode};
     use pulldown_cmark::{Event, Options as PulldownOptions, Tag};
 
-    let mut opts = Options::default();
     // Optional: demonstrate invalidation when reference definitions arrive late.
-    opts.reference_definitions = ReferenceDefinitionsMode::Invalidate;
+    let opts = Options {
+        reference_definitions: ReferenceDefinitionsMode::Invalidate,
+        ..Default::default()
+    };
     let mut s = MdStream::new(opts)
         .with_pending_transformer(mdstream::IncompleteLinkPlaceholderTransformer::default());
     s.push_pending_transformer(mdstream::IncompleteImageDropTransformer::default());

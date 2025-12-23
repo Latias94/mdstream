@@ -263,12 +263,7 @@ impl BlockHintMeta {
 pub struct BlockHintAnalyzer;
 
 fn last_nonempty_line(text: &str) -> Option<&str> {
-    for line in text.split('\n').rev() {
-        if !line.trim().is_empty() {
-            return Some(line);
-        }
-    }
-    None
+    text.split('\n').rev().find(|line| !line.trim().is_empty())
 }
 
 fn code_fence_is_closed(text: &str) -> bool {
@@ -356,9 +351,7 @@ fn parse_custom_opening_tag(
     if !s.starts_with('<') || s.starts_with("</") {
         return None;
     }
-    let Some(gt) = s.find('>') else {
-        return None;
-    };
+    let gt = s.find('>')?;
     let inside = &s[1..gt];
     let bytes = inside.as_bytes();
     if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {

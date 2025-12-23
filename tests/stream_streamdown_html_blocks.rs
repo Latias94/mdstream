@@ -25,7 +25,11 @@ fn streamdown_benchmark_simple_html_block_chunking_invariance() {
 
     assert_eq!(blocks_whole.len(), 1);
     assert_eq!(blocks_whole[0].0, BlockKind::HtmlBlock);
-    assert!(blocks_whole[0].1.contains("<div>\n  <p>HTML content</p>\n</div>\n"));
+    assert!(
+        blocks_whole[0]
+            .1
+            .contains("<div>\n  <p>HTML content</p>\n</div>\n")
+    );
 }
 
 #[test]

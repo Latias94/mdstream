@@ -2,7 +2,7 @@ use mdstream::{AnalyzedStream, MathAnalyzer, MathMeta, Options};
 
 #[test]
 fn math_analyzer_marks_pending_unbalanced_then_committed_balanced() {
-    let mut s = AnalyzedStream::new(Options::default(), MathAnalyzer::default());
+    let mut s = AnalyzedStream::new(Options::default(), MathAnalyzer);
 
     let u1 = s.append("$$\nE = mc^2\n");
     assert!(u1.update.committed.is_empty());

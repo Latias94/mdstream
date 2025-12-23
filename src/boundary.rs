@@ -28,6 +28,11 @@ pub trait BoundaryPlugin: Send {
     fn reset(&mut self) {}
 }
 
+type MatchStartFn = dyn Fn(&str) -> bool + Send + Sync;
+type StartFn = dyn FnMut(&str) + Send;
+type UpdateFn = dyn FnMut(&str) -> BoundaryUpdate + Send;
+type ResetFn = dyn FnMut() + Send;
+
 /// A lightweight adapter to implement `BoundaryPlugin` via closures.
 ///
 /// Notes:
@@ -35,10 +40,10 @@ pub trait BoundaryPlugin: Send {
 /// - `update` is called for every line in the block, including the starting line.
 /// - If you need state, capture it in the `FnMut` closures.
 pub struct FnBoundaryPlugin {
-    matches_start: Box<dyn Fn(&str) -> bool + Send + Sync>,
-    start: Option<Box<dyn FnMut(&str) + Send>>,
-    update: Box<dyn FnMut(&str) -> BoundaryUpdate + Send>,
-    reset: Option<Box<dyn FnMut() + Send>>,
+    matches_start: Box<MatchStartFn>,
+    start: Option<Box<StartFn>>,
+    update: Box<UpdateFn>,
+    reset: Option<Box<ResetFn>>,
 }
 
 impl FnBoundaryPlugin {
@@ -156,7 +161,7 @@ impl FenceBoundaryPlugin {
 
     fn is_end_line(&self, line: &str, opened_len: usize) -> bool {
         let s = strip_up_to_three_leading_spaces(line);
-        let s = s.trim_end_matches(|c| c == ' ' || c == '\t');
+        let s = s.trim_end_matches([' ', '\t']);
         let bytes = s.as_bytes();
         let ch = self.fence_char as u8;
         let mut len = 0usize;
@@ -430,7 +435,7 @@ impl ContainerBoundaryPlugin {
             return None;
         }
         let marker_length = i;
-        let mut rest = s[i..].trim_end_matches(|c| c == ' ' || c == '\t');
+        let mut rest = s[i..].trim_end_matches([' ', '\t']);
         if rest.is_empty() {
             return Some(ContainerMatch {
                 marker_length,
@@ -446,7 +451,7 @@ impl ContainerBoundaryPlugin {
         {
             return None;
         }
-        rest = rest.trim_start_matches(|c| c == ' ' || c == '\t');
+        rest = rest.trim_start_matches([' ', '\t']);
 
         // Parse optional name.
         let rest_bytes = rest.as_bytes();

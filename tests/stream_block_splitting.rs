@@ -120,7 +120,8 @@ fn splits_streamdown_benchmark_simple_table() {
 #[test]
 fn splits_streamdown_benchmark_large_table() {
     let mut s = MdStream::new(Options::default());
-    let table = include_str!("fixtures/streamdown_bench/table_large_100_rows.md").trim_end_matches('\n');
+    let table =
+        include_str!("fixtures/streamdown_bench/table_large_100_rows.md").trim_end_matches('\n');
     let input = format!("{table}\n\nAfter\n");
     let u = s.append(&input);
     assert!(u.committed.iter().any(|b| {

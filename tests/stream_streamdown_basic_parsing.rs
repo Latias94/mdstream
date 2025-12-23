@@ -4,8 +4,8 @@ use mdstream::Options;
 
 #[test]
 fn streamdown_benchmark_single_block() {
-    let markdown = include_str!("fixtures/streamdown_bench/basic_single_block.md")
-        .trim_end_matches('\n');
+    let markdown =
+        include_str!("fixtures/streamdown_bench/basic_single_block.md").trim_end_matches('\n');
 
     let opts = Options::default();
     let blocks_whole = support::collect_final_raw(support::chunk_whole(markdown), opts.clone());

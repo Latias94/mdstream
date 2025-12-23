@@ -51,5 +51,9 @@ fn streamdown_benchmark_large_table_chunking_invariance() {
 
     assert_eq!(blocks_whole.len(), 1);
     assert_eq!(blocks_whole[0].0, BlockKind::Table);
-    assert!(blocks_whole[0].1.contains("| C991 | C992 | C993 | C994 | C995 |"));
+    assert!(
+        blocks_whole[0]
+            .1
+            .contains("| C991 | C992 | C993 | C994 | C995 |")
+    );
 }

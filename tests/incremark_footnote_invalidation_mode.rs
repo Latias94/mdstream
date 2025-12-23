@@ -1,9 +1,10 @@
 use mdstream::{FootnotesMode, MdStream, Options};
 
 fn opts_invalidate() -> Options {
-    let mut opts = Options::default();
-    opts.footnotes = FootnotesMode::Invalidate;
-    opts
+    Options {
+        footnotes: FootnotesMode::Invalidate,
+        ..Default::default()
+    }
 }
 
 #[test]

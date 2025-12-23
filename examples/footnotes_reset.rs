@@ -6,8 +6,10 @@
 use mdstream::{DocumentState, FootnotesMode, MdStream, Options};
 
 fn main() {
-    let mut opts = Options::default();
-    opts.footnotes = FootnotesMode::SingleBlock;
+    let opts = Options {
+        footnotes: FootnotesMode::SingleBlock,
+        ..Default::default()
+    };
 
     let mut stream = MdStream::new(opts);
     let mut state = DocumentState::new();
@@ -24,8 +26,15 @@ fn main() {
     for (i, chunk) in chunks.iter().enumerate() {
         println!("\n== tick {i} ==");
         let applied = state.apply(stream.append(chunk));
-        println!("reset={} invalidated={:?}", applied.reset, applied.invalidated);
-        println!("state: committed={} pending={}", state.committed().len(), state.pending().is_some());
+        println!(
+            "reset={} invalidated={:?}",
+            applied.reset, applied.invalidated
+        );
+        println!(
+            "state: committed={} pending={}",
+            state.committed().len(),
+            state.pending().is_some()
+        );
         if let Some(p) = state.pending() {
             println!("pending kind={:?} bytes={}", p.kind, p.raw.len());
         }
@@ -33,10 +42,12 @@ fn main() {
 
     println!("\n== finalize ==");
     let applied = state.apply(stream.finalize());
-    println!("reset={} invalidated={:?}", applied.reset, applied.invalidated);
+    println!(
+        "reset={} invalidated={:?}",
+        applied.reset, applied.invalidated
+    );
     println!("final committed={}", state.committed().len());
     if let Some(last) = state.committed().last() {
         println!("final block kind={:?} bytes={}", last.kind, last.raw.len());
     }
 }
-

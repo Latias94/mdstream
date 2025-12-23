@@ -1,10 +1,12 @@
+use mdstream::FootnotesMode;
 use mdstream::{MdStream, Options, ReferenceDefinitionsMode};
-use mdstream::{FootnotesMode};
 
 #[test]
 fn emits_invalidated_when_reference_definition_is_committed() {
-    let mut opts = Options::default();
-    opts.reference_definitions = ReferenceDefinitionsMode::Invalidate;
+    let opts = Options {
+        reference_definitions: ReferenceDefinitionsMode::Invalidate,
+        ..Default::default()
+    };
 
     let mut s = MdStream::new(opts);
 
@@ -26,8 +28,10 @@ fn emits_invalidated_when_reference_definition_is_committed() {
 
 #[test]
 fn stability_first_mode_does_not_emit_invalidations() {
-    let mut opts = Options::default();
-    opts.reference_definitions = ReferenceDefinitionsMode::StabilityFirst;
+    let opts = Options {
+        reference_definitions: ReferenceDefinitionsMode::StabilityFirst,
+        ..Default::default()
+    };
 
     let mut s = MdStream::new(opts);
     s.append("See [ref].\n\n");
@@ -40,8 +44,10 @@ fn stability_first_mode_does_not_emit_invalidations() {
 
 #[test]
 fn invalidation_normalizes_reference_labels() {
-    let mut opts = Options::default();
-    opts.reference_definitions = ReferenceDefinitionsMode::Invalidate;
+    let opts = Options {
+        reference_definitions: ReferenceDefinitionsMode::Invalidate,
+        ..Default::default()
+    };
 
     let mut s = MdStream::new(opts);
 
@@ -58,10 +64,12 @@ fn invalidation_normalizes_reference_labels() {
 
 #[test]
 fn footnote_definitions_do_not_trigger_reference_invalidations() {
-    let mut opts = Options::default();
-    opts.reference_definitions = ReferenceDefinitionsMode::Invalidate;
     // Avoid SingleBlock footnote transitions affecting this test.
-    opts.footnotes = FootnotesMode::Invalidate;
+    let opts = Options {
+        footnotes: FootnotesMode::Invalidate,
+        reference_definitions: ReferenceDefinitionsMode::Invalidate,
+        ..Default::default()
+    };
 
     let mut s = MdStream::new(opts);
 
@@ -74,8 +82,10 @@ fn footnote_definitions_do_not_trigger_reference_invalidations() {
 
 #[test]
 fn reference_definitions_inside_code_fences_do_not_trigger_invalidations() {
-    let mut opts = Options::default();
-    opts.reference_definitions = ReferenceDefinitionsMode::Invalidate;
+    let opts = Options {
+        reference_definitions: ReferenceDefinitionsMode::Invalidate,
+        ..Default::default()
+    };
 
     let mut s = MdStream::new(opts);
 

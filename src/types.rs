@@ -99,7 +99,11 @@ impl Update {
         self.committed.iter().chain(self.pending.iter())
     }
 
-    pub fn apply_to(self, committed: &mut Vec<Block>, pending: &mut Option<Block>) -> AppliedUpdate {
+    pub fn apply_to(
+        self,
+        committed: &mut Vec<Block>,
+        pending: &mut Option<Block>,
+    ) -> AppliedUpdate {
         if self.reset {
             committed.clear();
             *pending = None;

@@ -20,10 +20,15 @@ fn pending_transformer_can_override_display() {
 
 #[test]
 fn built_in_incomplete_link_placeholder_transformer_can_be_enabled() {
-    let mut opts = Options::default();
     // Disable built-in terminator handling so this test exercises the transformer.
-    opts.terminator.links = false;
-    opts.terminator.images = false;
+    let opts = Options {
+        terminator: mdstream::pending::TerminatorOptions {
+            links: false,
+            images: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
     let mut s = MdStream::new(opts)
         .with_pending_transformer(mdstream::IncompleteLinkPlaceholderTransformer::default());
@@ -39,9 +44,14 @@ fn built_in_incomplete_link_placeholder_transformer_can_be_enabled() {
 
 #[test]
 fn built_in_incomplete_image_drop_transformer_can_be_enabled() {
-    let mut opts = Options::default();
-    opts.terminator.links = false;
-    opts.terminator.images = false;
+    let opts = Options {
+        terminator: mdstream::pending::TerminatorOptions {
+            links: false,
+            images: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
     let mut s = MdStream::new(opts)
         .with_pending_transformer(mdstream::IncompleteImageDropTransformer::default());
