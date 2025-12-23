@@ -75,6 +75,9 @@ The following scenarios must be covered by unit tests (ported conceptually from 
 - Streamdown benchmark parity for tables:
   - simple table
   - large table (100 rows)
+- Streamdown benchmark parity for footnotes:
+  - document with footnotes
+  - document with many footnotes
 - List + emphasis interaction edge cases (avoid mis-termination)
 - Newline normalization:
   - CRLF split across chunks (`"\r"` then `"\n"`) must become a single `\n`

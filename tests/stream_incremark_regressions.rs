@@ -144,3 +144,12 @@ fn footnote_detection_across_chunk_boundaries_enters_single_block_mode() {
     assert_eq!(u4.committed.len(), 1);
     assert!(u4.pending.is_none());
 }
+
+#[test]
+fn invalid_footnote_syntax_does_not_trigger_single_block_mode() {
+    let mut s = MdStream::new(Options::default());
+
+    let u = s.append("This is not a footnote[^ 1].\n\nAfter\n");
+    assert!(u.committed.iter().any(|b| b.raw == "This is not a footnote[^ 1].\n\n"));
+    assert_eq!(u.pending.as_ref().unwrap().raw, "After\n");
+}

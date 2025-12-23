@@ -34,6 +34,34 @@ fn commits_table_as_single_block() {
 }
 
 #[test]
+fn splits_streamdown_benchmark_document_with_footnotes_as_single_pending_block() {
+    let mut s = MdStream::new(Options::default());
+    let input = "This is text with a footnote[^1].\n\nHere's another footnote[^note].\n\n[^1]: This is the first footnote.\n[^note]: This is a named footnote.\n";
+    let u = s.append(input);
+
+    assert!(u.committed.is_empty());
+    let pending = u.pending.expect("pending");
+    assert_eq!(pending.id.0, 1);
+    assert_eq!(pending.raw, input);
+}
+
+#[test]
+fn splits_streamdown_benchmark_document_with_many_footnotes_as_single_pending_block() {
+    let mut s = MdStream::new(Options::default());
+    let mut input = String::new();
+    input.push_str("Text[^1] with[^2] many[^3] footnotes[^4].\n\n");
+    for i in 0..10 {
+        input.push_str(&format!("[^{}]: Footnote {}\n", i + 1, i + 1));
+    }
+    let u = s.append(&input);
+
+    assert!(u.committed.is_empty());
+    let pending = u.pending.expect("pending");
+    assert_eq!(pending.id.0, 1);
+    assert_eq!(pending.raw, input);
+}
+
+#[test]
 fn table_after_paragraph_is_separate_block() {
     let mut s = MdStream::new(Options::default());
     let u1 = s.append("Intro\n\n| A | B |\n|---|---|\n| 1 | 2 |\n");
