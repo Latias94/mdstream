@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
-use crate::syntax::parse_code_fence_header_from_block;
+use crate::syntax::{is_code_fence_closing_line, parse_code_fence_header_from_block};
 use crate::types::{Block, BlockId, BlockKind, Update};
 use crate::{MdStream, Options};
+use crate::types::BlockStatus;
 
 pub trait BlockAnalyzer {
     type Meta: Clone;
@@ -232,5 +233,81 @@ impl BlockAnalyzer for MathAnalyzer {
         Some(MathMeta {
             balanced: count % 2 == 0,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockHintMeta {
+    pub flags: u32,
+}
+
+impl BlockHintMeta {
+    pub const DISPLAY_TRANSFORMED: u32 = 1 << 0;
+    pub const UNCLOSED_CODE_FENCE: u32 = 1 << 1;
+    pub const UNBALANCED_MATH: u32 = 1 << 2;
+
+    pub fn likely_incomplete(&self) -> bool {
+        self.flags != 0
+    }
+
+    pub fn has(&self, flag: u32) -> bool {
+        (self.flags & flag) != 0
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct BlockHintAnalyzer;
+
+fn last_nonempty_line(text: &str) -> Option<&str> {
+    for line in text.split('\n').rev() {
+        if !line.trim().is_empty() {
+            return Some(line);
+        }
+    }
+    None
+}
+
+fn code_fence_is_closed(text: &str) -> bool {
+    let Some(header) = parse_code_fence_header_from_block(text) else {
+        return false;
+    };
+    let Some(last) = last_nonempty_line(text) else {
+        return false;
+    };
+    is_code_fence_closing_line(last, header.fence_char, header.fence_len)
+}
+
+impl BlockAnalyzer for BlockHintAnalyzer {
+    type Meta = BlockHintMeta;
+
+    fn analyze_block(&mut self, block: &Block) -> Option<Self::Meta> {
+        if block.status != BlockStatus::Pending {
+            return None;
+        }
+
+        let mut flags = 0u32;
+
+        if let Some(display) = &block.display {
+            if display != &block.raw {
+                flags |= BlockHintMeta::DISPLAY_TRANSFORMED;
+            }
+        }
+
+        match block.kind {
+            BlockKind::CodeFence => {
+                if !code_fence_is_closed(&block.raw) {
+                    flags |= BlockHintMeta::UNCLOSED_CODE_FENCE;
+                }
+            }
+            BlockKind::MathBlock => {
+                let count = count_double_dollars_unescaped(&block.raw);
+                if count % 2 == 1 {
+                    flags |= BlockHintMeta::UNBALANCED_MATH;
+                }
+            }
+            _ => {}
+        }
+
+        Some(BlockHintMeta { flags })
     }
 }

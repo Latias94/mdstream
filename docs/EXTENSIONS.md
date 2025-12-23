@@ -51,6 +51,7 @@ Status: implemented (MVP-level).
 - `AnalyzedStream<A>` wrapper to run an analyzer on each `append()`/`finalize()`
 - `CodeFenceAnalyzer` built-in analyzer that classifies code fences (e.g. `mermaid`, `json`)
 - `MathAnalyzer` built-in analyzer that reports whether a `$$` math block is balanced
+- `BlockHintAnalyzer` built-in analyzer that provides a small `likely_incomplete` hint for pending blocks
 
 Minimal example:
 
