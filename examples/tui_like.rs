@@ -49,13 +49,9 @@ fn main() {
     for (i, chunk) in chunks.iter().enumerate() {
         println!("\n== append step {i} ==");
         let u = s.append(chunk);
-        let applied = state.apply(u.update.clone());
-        if applied.reset {
-            println!("reset: true (drop cached UI state and rebuild)");
-        }
+        let update = u.update;
 
-        for (block, meta) in u
-            .update
+        for (block, meta) in update
             .committed
             .iter()
             .zip(u.committed_meta.iter().map(|m| &m.meta))
@@ -71,7 +67,7 @@ fn main() {
             }
         }
 
-        if let Some(p) = &u.update.pending {
+        if let Some(p) = &update.pending {
             print_block("pending  ", p.id.0, p.kind, &p.raw);
 
             if let Some(pm) = &u.pending_meta {
@@ -101,6 +97,11 @@ fn main() {
             println!("pending: <none>");
         }
 
+        let applied = state.apply(update);
+        if applied.reset {
+            println!("reset: true (drop cached UI state and rebuild)");
+        }
+
         // State view (what a UI would keep).
         println!(
             "state: committed={} pending={}",
@@ -111,11 +112,13 @@ fn main() {
 
     println!("\n== finalize ==");
     let u = s.finalize();
-    for b in &u.update.committed {
+    let update = u.update;
+    for b in &update.committed {
         print_block("committed", b.id.0, b.kind, &b.raw);
     }
+    state.apply(update);
     println!(
         "pending: {:?}",
-        u.update.pending.as_ref().map(|b| (b.id.0, b.kind))
+        state.pending().map(|b| (b.id.0, b.kind))
     );
 }

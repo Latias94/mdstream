@@ -34,6 +34,8 @@ fn main() {
         "And some `code`.\n",
     ];
 
+    let mut tracked: Option<mdstream::BlockId> = None;
+
     for (i, chunk) in chunks.iter().enumerate() {
         println!("\n== tick {i} ==");
         let update = s.append(chunk);
@@ -48,6 +50,18 @@ fn main() {
             println!("committed block id={} kind={:?}", b.id.0, b.kind);
             let events = adapter.committed_events(b.id).unwrap_or(&[]);
             println!("  events.len={}", events.len());
+            // Track the first committed block so we can show invalidation effects later.
+            if tracked.is_none() {
+                tracked = Some(b.id);
+            }
+        }
+
+        if let Some(id) = tracked {
+            let events = adapter.committed_events(id).unwrap_or(&[]);
+            let has_link = events
+                .iter()
+                .any(|e| matches!(e, Event::Start(Tag::Link { .. })));
+            println!("tracked committed id={} has_link={}", id.0, has_link);
         }
 
         if let Some(p) = &update.pending {
