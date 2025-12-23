@@ -87,6 +87,10 @@ The following scenarios must be covered by unit tests (ported conceptually from 
   - single block
   - multiple blocks (10)
   - many blocks (100)
+- Streamdown benchmark parity for code blocks:
+  - single code block
+  - multiple code blocks
+  - large code block (1000 lines)
 - List + emphasis interaction edge cases (avoid mis-termination)
 - Newline normalization:
   - CRLF split across chunks (`"\r"` then `"\n"`) must become a single `\n`
