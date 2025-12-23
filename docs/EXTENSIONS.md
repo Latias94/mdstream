@@ -26,14 +26,16 @@ Status: implemented (MVP-level).
 - `BoundaryPlugin` trait
 - `MdStream::push_boundary_plugin(...)` and `MdStream::with_boundary_plugin(...)`
 - `FenceBoundaryPlugin` as a small reference implementation (e.g. `:::warning ... :::`)
+- `TagBoundaryPlugin` as another built-in example (e.g. `<thinking> ... </thinking>`)
 
 Minimal example:
 
 ```rust
-use mdstream::{FenceBoundaryPlugin, MdStream, Options};
+use mdstream::{FenceBoundaryPlugin, MdStream, Options, TagBoundaryPlugin};
 
 let mut s = MdStream::new(Options::default());
 s.push_boundary_plugin(FenceBoundaryPlugin::triple_colon());
+s.push_boundary_plugin(TagBoundaryPlugin::thinking());
 ```
 
 ### 2) PendingTransformer

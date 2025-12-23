@@ -149,3 +149,149 @@ impl BoundaryPlugin for FenceBoundaryPlugin {
         self.just_started = false;
     }
 }
+
+/// A paired-tag container plugin.
+///
+/// Example:
+///
+/// ```text
+/// <thinking>
+/// ...
+/// </thinking>
+/// ```
+///
+/// This plugin is intentionally conservative:
+///
+/// - Start must be at the beginning of a line (after up to 3 spaces).
+/// - The start tag must be complete on the line (must contain `>`).
+/// - End must be a standalone closing tag line (after up to 3 spaces), unless
+///   `require_standalone_end` is set to `false`.
+#[derive(Debug, Clone)]
+pub struct TagBoundaryPlugin {
+    pub tag: String,
+    pub case_insensitive: bool,
+    pub allow_attributes: bool,
+    pub require_standalone_end: bool,
+    active: bool,
+}
+
+impl TagBoundaryPlugin {
+    pub fn new(tag: impl Into<String>) -> Self {
+        Self {
+            tag: tag.into(),
+            case_insensitive: true,
+            allow_attributes: true,
+            require_standalone_end: true,
+            active: false,
+        }
+    }
+
+    pub fn thinking() -> Self {
+        Self::new("thinking")
+    }
+
+    fn is_tag_name_char(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b':'
+    }
+
+    fn norm_tag<'a>(&self, tag: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.case_insensitive {
+            std::borrow::Cow::Owned(tag.to_ascii_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(tag)
+        }
+    }
+
+    fn matches_opening(&self, line: &str) -> bool {
+        let s = strip_up_to_three_leading_spaces(line).trim_end();
+        if !s.starts_with('<') {
+            return false;
+        }
+        // Require the tag to be complete on this line.
+        let Some(gt) = s.find('>') else {
+            return false;
+        };
+        let inside = &s[1..gt];
+        if inside.starts_with('/') || inside.starts_with('!') || inside.starts_with('?') {
+            return false;
+        }
+
+        let bytes = inside.as_bytes();
+        if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
+            return false;
+        }
+        let mut name_end = 1usize;
+        while name_end < bytes.len() && Self::is_tag_name_char(bytes[name_end]) {
+            name_end += 1;
+        }
+        let name = &inside[..name_end];
+        let name = self.norm_tag(name);
+        let want = self.norm_tag(self.tag.as_str());
+        if name != want {
+            return false;
+        }
+
+        let rest = inside[name_end..].trim();
+        if rest.is_empty() {
+            return true;
+        }
+        if !self.allow_attributes {
+            return false;
+        }
+        true
+    }
+
+    fn matches_closing(&self, line: &str) -> bool {
+        let s = strip_up_to_three_leading_spaces(line).trim_end();
+        if !s.starts_with("</") {
+            return false;
+        }
+        let want = self.norm_tag(self.tag.as_str());
+
+        let after = &s[2..];
+        let bytes = after.as_bytes();
+        if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
+            return false;
+        }
+        let mut name_end = 1usize;
+        while name_end < bytes.len() && Self::is_tag_name_char(bytes[name_end]) {
+            name_end += 1;
+        }
+        let name = self.norm_tag(&after[..name_end]);
+        if name != want {
+            return false;
+        }
+
+        let rest = after[name_end..].trim();
+        if self.require_standalone_end {
+            rest == ">"
+        } else {
+            rest.contains('>')
+        }
+    }
+}
+
+impl BoundaryPlugin for TagBoundaryPlugin {
+    fn matches_start(&self, line: &str) -> bool {
+        self.matches_opening(line)
+    }
+
+    fn start(&mut self, _line: &str) {
+        self.active = true;
+    }
+
+    fn update(&mut self, line: &str) -> BoundaryUpdate {
+        if !self.active {
+            return BoundaryUpdate::Continue;
+        }
+        if self.matches_closing(line) {
+            self.active = false;
+            return BoundaryUpdate::Close;
+        }
+        BoundaryUpdate::Continue
+    }
+
+    fn reset(&mut self) {
+        self.active = false;
+    }
+}
