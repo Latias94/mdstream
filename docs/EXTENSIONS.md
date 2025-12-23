@@ -43,6 +43,24 @@ Examples:
 - code fence info string extraction (`mermaid`, `json`, `python`, etc.)
 - heuristics for “this block is likely incomplete”
 
+Status: implemented (MVP-level).
+
+`mdstream` provides:
+
+- `BlockAnalyzer` trait
+- `AnalyzedStream<A>` wrapper to run an analyzer on each `append()`/`finalize()`
+- `CodeFenceAnalyzer` built-in analyzer that classifies code fences (e.g. `mermaid`, `json`)
+
+Minimal example:
+
+```rust
+use mdstream::{AnalyzedStream, CodeFenceAnalyzer, Options};
+
+let mut s = AnalyzedStream::new(Options::default(), CodeFenceAnalyzer::default());
+let u = s.append("```mermaid\ngraph TD;\nA-->B;\n");
+assert!(u.pending_meta.is_some());
+```
+
 ## Mermaid and Code Blocks
 
 `mdstream` does not render Mermaid, but it should support it by:
