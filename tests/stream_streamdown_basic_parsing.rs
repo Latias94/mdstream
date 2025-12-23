@@ -4,7 +4,8 @@ use mdstream::Options;
 
 #[test]
 fn streamdown_benchmark_single_block() {
-    let markdown = "# Heading\n\nThis is a paragraph.";
+    let markdown = include_str!("fixtures/streamdown_bench/basic_single_block.md")
+        .trim_end_matches('\n');
 
     let opts = Options::default();
     let blocks_whole = support::collect_final_raw(support::chunk_whole(markdown), opts.clone());
@@ -29,20 +30,7 @@ fn streamdown_benchmark_single_block() {
 #[test]
 fn streamdown_benchmark_multiple_blocks_10() {
     // From Streamdown's parse-blocks benchmark ("multiple blocks (10)").
-    let markdown = r#"
-# Heading 1
-
-This is paragraph 1.
-
-## Heading 2
-
-This is paragraph 2.
-
-- List item 1
-- List item 2
-
-> Blockquote text
-"#;
+    let markdown = include_str!("fixtures/streamdown_bench/basic_multiple_blocks_10.md");
 
     let opts = Options::default();
     let blocks_whole = support::collect_final_raw(support::chunk_whole(markdown), opts.clone());
@@ -70,17 +58,13 @@ This is paragraph 2.
 #[test]
 fn streamdown_benchmark_many_blocks_100() {
     // From Streamdown's parse-blocks benchmark ("many blocks (100)").
-    let mut parts = Vec::new();
-    for i in 0..100 {
-        parts.push(format!("## Section {i}\n\nParagraph {i}"));
-    }
-    let markdown = parts.join("\n\n");
+    let markdown = include_str!("fixtures/streamdown_bench/basic_many_blocks_100.md");
 
     let opts = Options::default();
-    let blocks_whole = support::collect_final_raw(support::chunk_whole(&markdown), opts.clone());
-    let blocks_lines = support::collect_final_raw(support::chunk_lines(&markdown), opts.clone());
+    let blocks_whole = support::collect_final_raw(support::chunk_whole(markdown), opts.clone());
+    let blocks_lines = support::collect_final_raw(support::chunk_lines(markdown), opts.clone());
     let blocks_rand = support::collect_final_raw(
-        support::chunk_pseudo_random(&markdown, "streamdown_benchmark_many_blocks_100", 0, 40),
+        support::chunk_pseudo_random(markdown, "streamdown_benchmark_many_blocks_100", 0, 40),
         opts.clone(),
     );
 

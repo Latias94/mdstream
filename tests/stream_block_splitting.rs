@@ -64,7 +64,7 @@ fn commits_table_as_single_block() {
 #[test]
 fn splits_streamdown_benchmark_document_with_footnotes_as_single_pending_block() {
     let mut s = MdStream::new(Options::default());
-    let input = "This is text with a footnote[^1].\n\nHere's another footnote[^note].\n\n[^1]: This is the first footnote.\n[^note]: This is a named footnote.\n";
+    let input = include_str!("fixtures/streamdown_bench/footnotes_with_footnotes.md");
     let u = s.append(input);
 
     assert!(u.committed.is_empty());
@@ -76,12 +76,8 @@ fn splits_streamdown_benchmark_document_with_footnotes_as_single_pending_block()
 #[test]
 fn splits_streamdown_benchmark_document_with_many_footnotes_as_single_pending_block() {
     let mut s = MdStream::new(Options::default());
-    let mut input = String::new();
-    input.push_str("Text[^1] with[^2] many[^3] footnotes[^4].\n\n");
-    for i in 0..10 {
-        input.push_str(&format!("[^{}]: Footnote {}\n", i + 1, i + 1));
-    }
-    let u = s.append(&input);
+    let input = include_str!("fixtures/streamdown_bench/footnotes_many_footnotes.md");
+    let u = s.append(input);
 
     assert!(u.committed.is_empty());
     let pending = u.pending.expect("pending");
@@ -109,8 +105,9 @@ fn table_after_paragraph_is_separate_block() {
 #[test]
 fn splits_streamdown_benchmark_simple_table() {
     let mut s = MdStream::new(Options::default());
-    let input = "| Header 1 | Header 2 |\n|----------|----------|\n| Cell 1   | Cell 2   |\n| Cell 3   | Cell 4   |\n\nAfter\n";
-    let u = s.append(input);
+    let table = include_str!("fixtures/streamdown_bench/table_simple.md").trim_end_matches('\n');
+    let input = format!("{table}\n\nAfter\n");
+    let u = s.append(&input);
     assert!(u.committed.iter().any(|b| {
         b.kind == mdstream::BlockKind::Table
             && b.raw
@@ -123,14 +120,8 @@ fn splits_streamdown_benchmark_simple_table() {
 #[test]
 fn splits_streamdown_benchmark_large_table() {
     let mut s = MdStream::new(Options::default());
-    let mut input = String::new();
-    input.push_str("| H1 | H2 | H3 | H4 | H5 |\n");
-    input.push_str("|----|----|----|----|-------|\n");
-    for i in 0..100 {
-        input.push_str(&format!("| C{i}1 | C{i}2 | C{i}3 | C{i}4 | C{i}5 |\n"));
-    }
-    input.push_str("\nAfter\n");
-
+    let table = include_str!("fixtures/streamdown_bench/table_large_100_rows.md").trim_end_matches('\n');
+    let input = format!("{table}\n\nAfter\n");
     let u = s.append(&input);
     assert!(u.committed.iter().any(|b| {
         b.kind == mdstream::BlockKind::Table
@@ -217,8 +208,9 @@ fn does_not_treat_autolink_as_html_block() {
 #[test]
 fn splits_streamdown_benchmark_html_blocks() {
     let mut s = MdStream::new(Options::default());
-    let input = "<div>\n  <p>HTML content</p>\n</div>\n\nAfter\n";
-    let u = s.append(input);
+    let html = include_str!("fixtures/streamdown_bench/html_simple.md").trim_end_matches('\n');
+    let input = format!("{html}\n\nAfter\n");
+    let u = s.append(&input);
     assert!(
         u.committed
             .iter()
@@ -230,8 +222,9 @@ fn splits_streamdown_benchmark_html_blocks() {
 #[test]
 fn splits_streamdown_benchmark_nested_html_block() {
     let mut s = MdStream::new(Options::default());
-    let input = "<div>\n  <div>\n    <div>\n      <p>Nested content</p>\n    </div>\n  </div>\n</div>\n\nAfter\n";
-    let u = s.append(input);
+    let html = include_str!("fixtures/streamdown_bench/html_nested.md").trim_end_matches('\n');
+    let input = format!("{html}\n\nAfter\n");
+    let u = s.append(&input);
     assert!(u.committed.iter().any(|b| b.raw.contains(
         "<div>\n  <div>\n    <div>\n      <p>Nested content</p>\n    </div>\n  </div>\n</div>\n"
     )));
@@ -241,7 +234,7 @@ fn splits_streamdown_benchmark_nested_html_block() {
 #[test]
 fn splits_streamdown_benchmark_multiple_html_blocks() {
     let mut s = MdStream::new(Options::default());
-    let input = "<div>First block</div>\n\nSome markdown\n\n<section>\n  <p>Second block</p>\n</section>\n\nMore markdown\n";
+    let input = include_str!("fixtures/streamdown_bench/html_multiple_blocks.md");
     let u = s.append(input);
 
     assert!(
@@ -333,7 +326,7 @@ fn commits_math_block_with_split_delimiters_as_single_block() {
 #[test]
 fn commits_simple_math_block_like_streamdown_bench() {
     let mut s = MdStream::new(Options::default());
-    let input = "Some text\n\n$$\nE = mc^2\n$$\n\nMore text\n";
+    let input = include_str!("fixtures/streamdown_bench/math_simple.md");
     let u = s.append(input);
 
     assert!(u.committed.iter().any(|b| b.raw == "Some text\n\n"));
@@ -348,7 +341,7 @@ fn commits_simple_math_block_like_streamdown_bench() {
 #[test]
 fn commits_complex_math_blocks_like_streamdown_bench() {
     let mut s = MdStream::new(Options::default());
-    let input = "$$\n\\begin{bmatrix}\na & b \\\\\nc & d\n\\end{bmatrix}\n$$\n\nText\n\n$$\n\\int_0^\\infty x^2 dx\n$$\n";
+    let input = include_str!("fixtures/streamdown_bench/math_complex.md");
     let u = s.append(input);
 
     assert!(u.committed.iter().any(|b| {

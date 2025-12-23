@@ -5,7 +5,7 @@ use mdstream::{BlockKind, Options};
 #[test]
 fn streamdown_benchmark_single_code_block() {
     // From Streamdown's parse-blocks benchmark ("single code block").
-    let markdown = "Some text\n\n```javascript\nconst x = 1;\nconst y = 2;\n```\n\nMore text\n";
+    let markdown = include_str!("fixtures/streamdown_bench/code_single_code_block.md");
 
     let opts = Options::default();
     let blocks_whole = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());
@@ -32,8 +32,7 @@ fn streamdown_benchmark_single_code_block() {
 #[test]
 fn streamdown_benchmark_multiple_code_blocks() {
     // From Streamdown's parse-blocks benchmark ("multiple code blocks").
-    let markdown =
-        "```javascript\nconst x = 1;\n```\n\n```python\ny = 2\n```\n\n```rust\nlet z = 3;\n```\n";
+    let markdown = include_str!("fixtures/streamdown_bench/code_multiple_code_blocks.md");
 
     let opts = Options::default();
     let blocks_whole = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());

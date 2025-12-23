@@ -23,73 +23,16 @@ fn assert_invariant(case_name: &str, markdown: &str, opts: Options, trials: u64,
 #[test]
 fn streamdown_benchmark_suite_chunking_invariance() {
     // Inputs sourced from Streamdown's `__benchmarks__/parse-blocks.bench.ts`.
-    let single_block = "# Heading\n\nThis is a paragraph.";
-
-    let multiple_blocks_10 = r#"
-# Heading 1
-
-This is paragraph 1.
-
-## Heading 2
-
-This is paragraph 2.
-
-- List item 1
-- List item 2
-
-> Blockquote text
-"#;
-
-    let single_code_block = r#"
-Some text
-
-```javascript
-const x = 1;
-const y = 2;
-```
-
-More text
-"#;
-
-    let math_with_split_delimiters = r#"
-Some text
-
-$$
-
-x^2 + y^2 = z^2
-
-$$
-
-More text
-"#;
-
-    let multiple_html_blocks = r#"
-<div>First block</div>
-
-Some markdown
-
-<section>
-  <p>Second block</p>
-</section>
-
-More markdown
-"#;
-
-    let with_footnotes = r#"
-This is text with a footnote[^1].
-
-Here's another footnote[^note].
-
-[^1]: This is the first footnote.
-[^note]: This is a named footnote.
-"#;
-
-    let simple_table = r#"
-| Header 1 | Header 2 |
-|----------|----------|
-| Cell 1   | Cell 2   |
-| Cell 3   | Cell 4   |
-"#;
+    let single_block = include_str!("fixtures/streamdown_bench/basic_single_block.md")
+        .trim_end_matches('\n');
+    let multiple_blocks_10 = include_str!("fixtures/streamdown_bench/basic_multiple_blocks_10.md");
+    let single_code_block = include_str!("fixtures/streamdown_bench/code_single_code_block.md");
+    let math_with_split_delimiters =
+        include_str!("fixtures/streamdown_bench/math_with_split_delimiters.md");
+    let multiple_html_blocks =
+        include_str!("fixtures/streamdown_bench/html_multiple_blocks.md");
+    let with_footnotes = include_str!("fixtures/streamdown_bench/footnotes_with_footnotes.md");
+    let simple_table = include_str!("fixtures/streamdown_bench/table_simple.md");
 
     let opts = Options::default();
     assert_invariant("single_block", single_block, opts.clone(), 16, 64);

@@ -5,7 +5,7 @@ use mdstream::{BlockKind, Options};
 #[test]
 fn streamdown_benchmark_simple_html_block_chunking_invariance() {
     // From Streamdown's parse-blocks benchmark ("HTML Blocks").
-    let markdown = "\n<div>\n  <p>HTML content</p>\n</div>\n";
+    let markdown = include_str!("fixtures/streamdown_bench/html_simple.md");
 
     let opts = Options::default();
     let blocks_whole = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());
@@ -31,7 +31,7 @@ fn streamdown_benchmark_simple_html_block_chunking_invariance() {
 #[test]
 fn streamdown_benchmark_nested_html_block_chunking_invariance() {
     // From Streamdown's parse-blocks benchmark ("HTML Blocks").
-    let markdown = "\n<div>\n  <div>\n    <div>\n      <p>Nested content</p>\n    </div>\n  </div>\n</div>\n";
+    let markdown = include_str!("fixtures/streamdown_bench/html_nested.md");
 
     let opts = Options::default();
     let blocks_whole = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());
@@ -58,7 +58,7 @@ fn streamdown_benchmark_nested_html_block_chunking_invariance() {
 #[test]
 fn streamdown_benchmark_multiple_html_blocks_chunking_invariance() {
     // From Streamdown's parse-blocks benchmark ("HTML Blocks").
-    let markdown = "\n<div>First block</div>\n\nSome markdown\n\n<section>\n  <p>Second block</p>\n</section>\n\nMore markdown\n";
+    let markdown = include_str!("fixtures/streamdown_bench/html_multiple_blocks.md");
 
     let opts = Options::default();
     let blocks_whole = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());
@@ -93,4 +93,3 @@ fn streamdown_benchmark_multiple_html_blocks_chunking_invariance() {
     assert!(blocks_whole[2].1.contains("</section>"));
     assert!(blocks_whole[3].1.contains("More markdown"));
 }
-
