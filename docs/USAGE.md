@@ -60,3 +60,12 @@ Run the zero-dependency demo:
 cargo run --example tui_like
 ```
 
+## Streamdown Defaults
+
+If you want Streamdown-compatible behavior for incomplete links/images via pending transformers:
+
+```rust
+use mdstream::MdStream;
+
+let mut s = MdStream::streamdown_defaults();
+```

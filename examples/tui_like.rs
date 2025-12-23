@@ -1,6 +1,6 @@
 use mdstream::{
     AnalyzedStream, BlockHintAnalyzer, BlockHintMeta, BlockKind, CodeFenceAnalyzer, CodeFenceClass,
-    FootnotesMode, Options,
+    FootnotesMode, IncompleteImageDropTransformer, IncompleteLinkPlaceholderTransformer, Options,
 };
 
 fn print_block(prefix: &str, id: u64, kind: BlockKind, text: &str) {
@@ -12,19 +12,30 @@ fn print_block(prefix: &str, id: u64, kind: BlockKind, text: &str) {
 }
 
 fn main() {
-    let opts = Options {
+    let mut opts = Options {
         footnotes: FootnotesMode::SingleBlock,
         ..Options::default()
     };
+    // For demo purposes, disable terminator link/image handling and enable the built-in
+    // Streamdown-compatible pending transformers instead.
+    opts.terminator.links = false;
+    opts.terminator.images = false;
 
     // Chain analyzers: (code fence meta, pending hint meta)
     let analyzer = (CodeFenceAnalyzer::default(), BlockHintAnalyzer::default());
     let mut s = AnalyzedStream::new(opts, analyzer);
+    s.inner_mut()
+        .push_pending_transformer(IncompleteLinkPlaceholderTransformer::default());
+    s.inner_mut()
+        .push_pending_transformer(IncompleteImageDropTransformer::default());
 
     let chunks = [
         "# Streaming demo\n\n",
         "Normal text with **bold",
         " continued**.\n\n",
+        "See [docs](",
+        " and an image ![alt](",
+        "...\n\n",
         "```mermaid\n",
         "graph TD;\nA-->B;\n",
         "```\n\n",
@@ -92,4 +103,3 @@ fn main() {
     }
     println!("pending: {:?}", u.update.pending.as_ref().map(|b| (b.id.0, b.kind)));
 }
-
