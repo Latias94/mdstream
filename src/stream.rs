@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::boundary::{BoundaryPlugin, BoundaryUpdate};
@@ -767,9 +768,9 @@ impl MdStream {
         blocks
     }
 
-    fn normalize_newlines(&mut self, chunk: &str) -> String {
+    fn normalize_newlines_cow<'a>(&mut self, chunk: &'a str) -> Cow<'a, str> {
         if !chunk.contains('\r') && !self.pending_cr {
-            return chunk.to_string();
+            return Cow::Borrowed(chunk);
         }
 
         let mut out = String::with_capacity(chunk.len() + 1);
@@ -802,7 +803,7 @@ impl MdStream {
             out.push('\n');
         }
 
-        out
+        Cow::Owned(out)
     }
 
     fn append_to_lines(&mut self, chunk: &str) {
@@ -1404,26 +1405,26 @@ impl MdStream {
         }
 
         let footnotes_before = self.footnotes_detected;
-        let chunk = self.normalize_newlines(chunk);
+        let chunk = self.normalize_newlines_cow(chunk);
 
         if !self.footnotes_detected {
-            let mut combined = String::with_capacity(self.footnote_scan_tail.len() + chunk.len());
-            combined.push_str(&self.footnote_scan_tail);
-            combined.push_str(&chunk);
-            if detect_footnotes(&combined) {
+            if detect_footnotes(chunk.as_ref()) {
                 self.footnotes_detected = true;
             } else {
                 // Keep a small tail window to detect patterns across chunk boundaries.
                 const MAX_TAIL: usize = 256;
-                if combined.len() <= MAX_TAIL {
-                    self.footnote_scan_tail = combined;
-                } else {
-                    let start = combined.len() - MAX_TAIL;
-                    let mut s = start;
-                    while !combined.is_char_boundary(s) {
-                        s += 1;
+                let chunk_prefix = take_prefix_at_char_boundary(chunk.as_ref(), MAX_TAIL);
+                if !self.footnote_scan_tail.is_empty() && !chunk_prefix.is_empty() {
+                    let mut combined =
+                        String::with_capacity(self.footnote_scan_tail.len() + chunk_prefix.len());
+                    combined.push_str(&self.footnote_scan_tail);
+                    combined.push_str(chunk_prefix);
+                    if detect_footnotes(&combined) {
+                        self.footnotes_detected = true;
                     }
-                    self.footnote_scan_tail = combined[s..].to_string();
+                }
+                if !self.footnotes_detected {
+                    update_tail(&mut self.footnote_scan_tail, chunk.as_ref(), MAX_TAIL);
                 }
             }
         }
@@ -1432,7 +1433,7 @@ impl MdStream {
             && self.footnotes_detected
             && self.opts.footnotes == FootnotesMode::SingleBlock;
 
-        self.append_to_lines(&chunk);
+        self.append_to_lines(chunk.as_ref());
         self.pending_display_cache = None;
 
         if enter_single_block_footnotes {
@@ -1569,6 +1570,46 @@ impl MdStream {
         self.last_finalized_buffer_len = 0;
         self.reference_usage_index.clear();
     }
+}
+
+fn take_prefix_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+fn take_suffix_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut start = s.len() - max_bytes;
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
+
+fn update_tail(tail: &mut String, chunk: &str, max_bytes: usize) {
+    if chunk.is_empty() {
+        return;
+    }
+    if chunk.len() >= max_bytes {
+        *tail = take_suffix_at_char_boundary(chunk, max_bytes).to_string();
+        return;
+    }
+    if tail.len() + chunk.len() <= max_bytes {
+        tail.push_str(chunk);
+        return;
+    }
+    let mut combined = String::with_capacity(max_bytes + 4);
+    combined.push_str(tail);
+    combined.push_str(chunk);
+    *tail = take_suffix_at_char_boundary(&combined, max_bytes).to_string();
 }
 
 impl Default for MdStream {
