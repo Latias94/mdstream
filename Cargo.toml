@@ -1,7 +1,18 @@
 [package]
 name = "mdstream"
 version = "0.1.0"
+description = "Streaming-first Markdown middleware for LLM output (committed + pending blocks, render-agnostic)."
+readme = "README.md"
 edition = "2024"
+rust-version = "1.85"
+authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Latias94/mdstream"
+homepage = "https://github.com/Latias94/mdstream"
+documentation = "https://docs.rs/mdstream"
+keywords = ["markdown", "streaming", "llm", "incremental", "parser"]
+categories = ["text-processing", "parsing"]
+exclude = ["repo-ref/**"]
 
 [dependencies]
 pulldown-cmark = { version = "0.13", optional = true }
@@ -9,3 +20,6 @@ pulldown-cmark = { version = "0.13", optional = true }
 [features]
 default = []
 pulldown = ["dep:pulldown-cmark"]
+
+[package.metadata.docs.rs]
+all-features = true
