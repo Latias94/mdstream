@@ -121,3 +121,35 @@ fn commits_math_block_with_split_delimiters_as_single_block() {
     }));
     assert_eq!(u2.pending.as_ref().unwrap().raw, "More text\n");
 }
+
+#[test]
+fn commits_simple_math_block_like_streamdown_bench() {
+    let mut s = MdStream::new(Options::default());
+    let input = "Some text\n\n$$\nE = mc^2\n$$\n\nMore text\n";
+    let u = s.append(input);
+
+    assert!(u.committed.iter().any(|b| b.raw == "Some text\n\n"));
+    assert!(u
+        .committed
+        .iter()
+        .any(|b| b.raw == "$$\nE = mc^2\n$$\n\n" || b.raw == "$$\nE = mc^2\n$$\n"));
+    assert_eq!(u.pending.as_ref().unwrap().raw, "More text\n");
+}
+
+#[test]
+fn commits_complex_math_blocks_like_streamdown_bench() {
+    let mut s = MdStream::new(Options::default());
+    let input = "$$\n\\begin{bmatrix}\na & b \\\\\nc & d\n\\end{bmatrix}\n$$\n\nText\n\n$$\n\\int_0^\\infty x^2 dx\n$$\n";
+    let u = s.append(input);
+
+    assert!(u.committed.iter().any(|b| {
+        b.raw.contains("$$\n\\begin{bmatrix}\n")
+            && b.raw.contains("\\end{bmatrix}\n$$\n")
+            && b.kind == mdstream::BlockKind::MathBlock
+    }));
+    assert!(u.committed.iter().any(|b| b.raw == "Text\n\n"));
+    assert!(u.committed.iter().any(|b| {
+        b.raw.contains("$$\n\\int_0^\\infty x^2 dx\n$$\n") && b.kind == mdstream::BlockKind::MathBlock
+    }));
+    assert!(u.pending.is_none() || u.pending.as_ref().unwrap().raw.trim().is_empty());
+}
