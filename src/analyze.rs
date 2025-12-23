@@ -465,3 +465,136 @@ impl BlockAnalyzer for TaggedBlockAnalyzer {
         })
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallJsonMeta {
+    pub closed: bool,
+    pub truncated: bool,
+    /// Best-effort extracted JSON-ish payload.
+    pub candidate: Option<String>,
+    /// If `jsonrepair` is enabled and succeeds, this contains the repaired JSON string.
+    pub repaired: Option<String>,
+    #[cfg(feature = "serde-json")]
+    pub value: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCallJsonAnalyzer {
+    pub tag: String,
+    pub case_insensitive: bool,
+    pub max_bytes: usize,
+}
+
+impl Default for ToolCallJsonAnalyzer {
+    fn default() -> Self {
+        Self {
+            tag: "tool_call".to_string(),
+            case_insensitive: true,
+            max_bytes: 64 * 1024,
+        }
+    }
+}
+
+fn extract_fenced_code_body(text: &str) -> Option<&str> {
+    let t = text.trim();
+    if !t.starts_with("```") && !t.starts_with("~~~") {
+        return None;
+    }
+    let Some(first_nl) = t.find('\n') else {
+        return None;
+    };
+    let fence_line = &t[..first_nl];
+    let fence_char = fence_line.chars().nth(0)?;
+    if fence_char != '`' && fence_char != '~' {
+        return None;
+    }
+    let fence_len = fence_line.chars().take_while(|c| *c == fence_char).count();
+    if fence_len < 3 {
+        return None;
+    }
+    let body = &t[first_nl + 1..];
+
+    // Find a closing fence line that is standalone (ignoring trailing whitespace).
+    // This is best-effort and streaming-friendly.
+    let mut end = body.len();
+    for (line_start, _) in body.match_indices('\n') {
+        let i = line_start + 1;
+        let line_end = body[i..].find('\n').map(|r| i + r).unwrap_or(body.len());
+        let line = body[i..line_end].trim_end();
+        if line.chars().all(|c| c == fence_char) && line.chars().count() >= fence_len {
+            end = i.saturating_sub(1); // keep content up to the newline before the closing fence
+            break;
+        }
+    }
+    Some(&body[..end])
+}
+
+fn extract_json_candidate(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if let Some(body) = extract_fenced_code_body(t) {
+        return Some(body.trim().to_string());
+    }
+    // Prefer the first JSON object/array start.
+    if let Some(pos) = t.find(|c| c == '{' || c == '[') {
+        return Some(t[pos..].trim().to_string());
+    }
+    Some(t.to_string())
+}
+
+impl BlockAnalyzer for ToolCallJsonAnalyzer {
+    type Meta = ToolCallJsonMeta;
+
+    fn analyze_block(&mut self, block: &Block) -> Option<Self::Meta> {
+        let first_line = block.raw.split('\n').next().unwrap_or(&block.raw);
+        let (tag, _attrs) = parse_custom_opening_tag(first_line, self.case_insensitive)?;
+        let want = if self.case_insensitive {
+            self.tag.to_ascii_lowercase()
+        } else {
+            self.tag.clone()
+        };
+        if tag != want {
+            return None;
+        }
+
+        let (closed, content) = split_tag_block_content(&block.raw, &tag, self.case_insensitive);
+        let truncated = content.len() > self.max_bytes;
+        let candidate = if truncated {
+            None
+        } else {
+            extract_json_candidate(&content)
+        };
+
+        let repaired = candidate.as_deref().and_then(|c| {
+            #[cfg(feature = "jsonrepair")]
+            {
+                match jsonrepair::repair_json(c, &jsonrepair::Options::default()) {
+                    Ok(s) => Some(s),
+                    Err(_) => None,
+                }
+            }
+            #[cfg(not(feature = "jsonrepair"))]
+            {
+                let _ = c;
+                None
+            }
+        });
+
+        #[cfg(feature = "serde-json")]
+        let value = repaired
+            .as_deref()
+            .or(candidate.as_deref())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+
+        Some(ToolCallJsonMeta {
+            closed,
+            truncated,
+            candidate,
+            repaired,
+            #[cfg(feature = "serde-json")]
+            value,
+        })
+    }
+}

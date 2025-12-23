@@ -123,6 +123,7 @@ Status: implemented (MVP-level).
 - `MathAnalyzer` built-in analyzer that reports whether a `$$` math block is balanced
 - `BlockHintAnalyzer` built-in analyzer that provides a small `likely_incomplete` hint for pending blocks
 - `TaggedBlockAnalyzer` built-in analyzer for `<thinking>...</thinking>` / `<tool_call>...</tool_call>` style blocks
+- `ToolCallJsonAnalyzer` built-in analyzer to extract (and optionally repair) JSON from `<tool_call>...</tool_call>`
 
 Minimal example:
 
