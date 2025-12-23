@@ -6,6 +6,12 @@
 
 This adapter is implemented behind the `pulldown` Cargo feature.
 
+### Demo
+
+```sh
+cargo run --features pulldown --example pulldown_incremental
+```
+
 ### Why adapter instead of core dependency
 
 - `mdstream` aims to support multiple render targets and parsers.

@@ -49,3 +49,7 @@ Initial MVP implementation is in progress:
 Try the demo:
 
 `cargo run --example tui_like`
+
+Try the `pulldown-cmark` incremental demo:
+
+`cargo run --features pulldown --example pulldown_incremental`
