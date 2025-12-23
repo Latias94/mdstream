@@ -150,15 +150,11 @@ fn html_block_start_state(line: &str) -> Option<(Vec<String>, bool)> {
     if !s.starts_with('<') || s.len() < 3 {
         return None;
     }
-    if s.starts_with("<!--") {
-        return Some((Vec::new(), true));
-    }
     // Recognize a tag-like start. This rejects autolinks like "<https://...>" (':' after name).
-    let (tag, rest) = parse_tag_at(s, 0)?;
-    let mut stack = Vec::new();
-    let mut in_comment = false;
-    apply_tag_to_stack(&tag, rest, &mut stack, &mut in_comment);
-    Some((stack, in_comment))
+    let _ = parse_tag_at(s, 0)?;
+    // We intentionally start with an empty stack; the per-line state update will process tags
+    // (including the opening tag on the first line) in a single place.
+    Some((Vec::new(), false))
 }
 
 #[derive(Debug, Clone)]
@@ -665,7 +661,8 @@ impl MdStream {
         }
         let dollars = count_double_dollars(line);
         if dollars % 2 == 1 && line.trim_start().starts_with("$$") {
-            return BlockMode::MathBlock { open_count: dollars };
+            // `open_count` is tracked via `update_mode_with_line`, including the opening line.
+            return BlockMode::MathBlock { open_count: 0 };
         }
         BlockMode::Paragraph
     }
@@ -805,6 +802,8 @@ impl MdStream {
                 self.current_mode = m;
             }
             self.maybe_commit_single_line(line_index, update);
+            // Even on the first line, some modes need to update internal state (e.g. HTML tag stack).
+            self.update_mode_with_line(line_index, update);
             return;
         }
 
@@ -827,6 +826,9 @@ impl MdStream {
                 self.current_mode = m;
             }
             self.maybe_commit_single_line(line_index, update);
+            // If we started a new mode on this line, we must also update its per-line state.
+            // This is required for modes like HTML/math where the opening line affects context.
+            self.update_mode_with_line(line_index, update);
             return;
         }
 
@@ -1253,5 +1255,22 @@ impl MdStream {
         self.footnote_scan_tail.clear();
         self.pending_cr = false;
         self.reference_usage_index.clear();
+    }
+}
+
+#[cfg(test)]
+mod html_state_tests {
+    use super::*;
+
+    #[test]
+    fn html_stack_tracks_section_with_nested_p() {
+        let mut stack = Vec::<String>::new();
+        let mut in_comment = false;
+        update_html_block_state("<section>", &mut stack, &mut in_comment);
+        assert_eq!(stack, vec!["section".to_string()]);
+        update_html_block_state("  <p>Second block</p>", &mut stack, &mut in_comment);
+        assert_eq!(stack, vec!["section".to_string()]);
+        update_html_block_state("</section>", &mut stack, &mut in_comment);
+        assert!(stack.is_empty());
     }
 }
