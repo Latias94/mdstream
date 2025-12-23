@@ -6,7 +6,21 @@ pub fn collect_final_blocks(
     chunks: impl IntoIterator<Item = String>,
     opts: Options,
 ) -> Vec<(BlockKind, String)> {
-    let mut s = MdStream::new(opts);
+    let s = MdStream::new(opts);
+    collect_final_blocks_with_stream(chunks, s)
+}
+
+pub fn collect_final_raw(chunks: impl IntoIterator<Item = String>, opts: Options) -> Vec<String> {
+    collect_final_blocks(chunks, opts)
+        .into_iter()
+        .map(|(_, raw)| raw)
+        .collect()
+}
+
+pub fn collect_final_blocks_with_stream(
+    chunks: impl IntoIterator<Item = String>,
+    mut s: MdStream,
+) -> Vec<(BlockKind, String)> {
     let mut out = Vec::new();
 
     for chunk in chunks {
@@ -22,6 +36,16 @@ pub fn collect_final_blocks(
     }
     out.extend(u.committed.into_iter().map(|b| (b.kind, b.raw)));
     out
+}
+
+pub fn collect_final_raw_with_stream(
+    chunks: impl IntoIterator<Item = String>,
+    s: MdStream,
+) -> Vec<String> {
+    collect_final_blocks_with_stream(chunks, s)
+        .into_iter()
+        .map(|(_, raw)| raw)
+        .collect()
 }
 
 pub fn chunk_whole(text: &str) -> Vec<String> {
