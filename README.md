@@ -1,5 +1,9 @@
 # mdstream
 
+[![crates.io](https://img.shields.io/crates/v/mdstream.svg)](https://crates.io/crates/mdstream)
+[![docs.rs](https://docs.rs/mdstream/badge.svg)](https://docs.rs/mdstream)
+[![CI](https://github.com/Latias94/mdstream/actions/workflows/ci.yml/badge.svg)](https://github.com/Latias94/mdstream/actions/workflows/ci.yml)
+
 `mdstream` is a **streaming-first Markdown middleware** for Rust.
 
 It targets LLM token-by-token / chunk-by-chunk output and helps downstream UIs (egui, gpui/Zed, TUI, etc.) avoid the classic **O(n²)** re-parse + re-render pattern that causes latency and flicker.
@@ -176,6 +180,11 @@ adapter.apply_update(&u2);
 
 - Release checklist: `RELEASE_CHECKLIST.md`
 - Note: This project may prune `docs/` during releases; user-facing guidance lives in this README.
+
+## Credits
+
+- Inspired by Vercel's `streamdown`: https://github.com/vercel/streamdown
+- Also informed by `incremark`: https://github.com/kingshuaishuai/incremark
 
 ## Status
 
