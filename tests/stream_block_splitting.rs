@@ -256,7 +256,8 @@ fn html_block_allows_underscore_tag_names_like_streamdown_regex() {
 #[test]
 fn html_details_multiline_content_stays_single_block_like_streamdown_issue_164() {
     let mut s = MdStream::new(Options::default());
-    let input = "<details>\n<summary>Summary</summary>\n\nParagraph inside details.\n</details>\n\nAfter\n";
+    let input =
+        "<details>\n<summary>Summary</summary>\n\nParagraph inside details.\n</details>\n\nAfter\n";
     let u = s.append(input);
     assert!(u.committed.iter().any(|b| {
         b.kind == mdstream::BlockKind::HtmlBlock
