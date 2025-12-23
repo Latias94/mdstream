@@ -49,6 +49,9 @@ Examples:
 
 - ensuring code fences are never split while unclosed (pending until closed)
 - exposing the fence info string so UIs can dispatch to Mermaid renderers
+- providing lightweight helpers:
+  - `Block::code_fence_header()`
+  - `Block::code_fence_language()`
 
 ## Philosophy
 
@@ -57,4 +60,3 @@ Extensions should not compromise the primary invariants:
 - immutable committed blocks
 - bounded per-chunk cost
 - render-agnostic output
-

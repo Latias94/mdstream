@@ -40,6 +40,19 @@ pub struct Block {
     pub display: Option<String>,
 }
 
+impl Block {
+    pub fn code_fence_header(&self) -> Option<crate::syntax::CodeFenceHeader<'_>> {
+        if self.kind != BlockKind::CodeFence {
+            return None;
+        }
+        crate::syntax::parse_code_fence_header_from_block(&self.raw)
+    }
+
+    pub fn code_fence_language(&self) -> Option<&str> {
+        self.code_fence_header().and_then(|h| h.language)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Update {
     pub committed: Vec<Block>,
@@ -59,4 +72,3 @@ impl Update {
         }
     }
 }
-
