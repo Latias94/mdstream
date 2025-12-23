@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::options::{FootnotesMode, Options, ReferenceDefinitionsMode};
 use crate::pending::terminate_markdown;
+use crate::transform::{PendingTransformInput, PendingTransformer};
 use crate::types::{Block, BlockId, BlockKind, BlockStatus, Update};
 
 #[derive(Debug, Clone)]
@@ -570,7 +571,6 @@ fn detect_footnotes(text: &str) -> bool {
     false
 }
 
-#[derive(Debug)]
 pub struct MdStream {
     opts: Options,
     buffer: String,
@@ -584,11 +584,29 @@ pub struct MdStream {
     current_mode: BlockMode,
 
     pending_display_cache: Option<String>,
+    pending_transformers: Vec<Box<dyn PendingTransformer>>,
     footnotes_detected: bool,
     footnote_scan_tail: String,
     pending_cr: bool,
 
     reference_usage_index: HashMap<String, HashSet<BlockId>>,
+}
+
+impl std::fmt::Debug for MdStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MdStream")
+            .field("buffer_len", &self.buffer.len())
+            .field("lines_len", &self.lines.len())
+            .field("committed_len", &self.committed.len())
+            .field("processed_line", &self.processed_line)
+            .field("current_block_start_line", &self.current_block_start_line)
+            .field("current_block_id", &self.current_block_id)
+            .field("next_block_id", &self.next_block_id)
+            .field("pending_display_cache", &self.pending_display_cache.is_some())
+            .field("pending_transformers_len", &self.pending_transformers.len())
+            .field("footnotes_detected", &self.footnotes_detected)
+            .finish()
+    }
 }
 
 impl MdStream {
@@ -611,11 +629,28 @@ impl MdStream {
             next_block_id: 2,
             current_mode: BlockMode::Unknown,
             pending_display_cache: None,
+            pending_transformers: Vec::new(),
             footnotes_detected: false,
             footnote_scan_tail: String::new(),
             pending_cr: false,
             reference_usage_index: HashMap::new(),
         }
+    }
+
+    pub fn push_pending_transformer<T>(&mut self, transformer: T)
+    where
+        T: PendingTransformer + 'static,
+    {
+        self.pending_transformers.push(Box::new(transformer));
+        self.pending_display_cache = None;
+    }
+
+    pub fn with_pending_transformer<T>(mut self, transformer: T) -> Self
+    where
+        T: PendingTransformer + 'static,
+    {
+        self.push_pending_transformer(transformer);
+        self
     }
 
     pub fn buffer(&self) -> &str {
@@ -1118,11 +1153,12 @@ impl MdStream {
             if raw.is_empty() {
                 return None;
             }
-            let display = terminate_markdown(&raw, &self.opts.terminator);
+            let kind = BlockKind::Unknown;
+            let display = self.transform_pending_display(kind, &raw, terminate_markdown(&raw, &self.opts.terminator));
             return Some(Block {
                 id: BlockId(1),
                 status: BlockStatus::Pending,
-                kind: BlockKind::Unknown,
+                kind,
                 raw,
                 display: Some(display),
             });
@@ -1139,12 +1175,14 @@ impl MdStream {
         if raw.is_empty() {
             return None;
         }
+        let kind = Self::kind_for_mode(&self.current_mode);
         let mut display = terminate_markdown(&raw, &self.opts.terminator);
         display = self.maybe_repair_fenced_json_display(&raw, display, &self.current_mode);
+        display = self.transform_pending_display(kind, &raw, display);
         Some(Block {
             id: self.current_block_id,
             status: BlockStatus::Pending,
-            kind: Self::kind_for_mode(&self.current_mode),
+            kind,
             raw,
             display: Some(display),
         })
@@ -1245,6 +1283,22 @@ impl MdStream {
             let _ = raw;
             display
         }
+    }
+
+    fn transform_pending_display(&self, kind: BlockKind, raw: &str, mut display: String) -> String {
+        if self.pending_transformers.is_empty() {
+            return display;
+        }
+        for t in &self.pending_transformers {
+            if let Some(next) = t.transform(PendingTransformInput {
+                kind,
+                raw,
+                display: &display,
+            }) {
+                display = next;
+            }
+        }
+        display
     }
 
     pub fn append(&mut self, chunk: &str) -> Update {
@@ -1368,6 +1422,9 @@ impl MdStream {
         self.next_block_id = 2;
         self.current_mode = BlockMode::Unknown;
         self.pending_display_cache = None;
+        for t in &self.pending_transformers {
+            t.reset();
+        }
         self.footnotes_detected = false;
         self.footnote_scan_tail.clear();
         self.pending_cr = false;
