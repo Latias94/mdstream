@@ -7,7 +7,7 @@ pub struct PendingTransformInput<'a> {
     pub display: &'a str,
 }
 
-pub trait PendingTransformer: Send {
+pub trait PendingTransformer: Send + Sync {
     /// Transform the pending display string.
     ///
     /// - `kind` is a best-effort hint (block-level).
@@ -24,7 +24,7 @@ pub struct FnPendingTransformer<F>(pub F);
 
 impl<F> PendingTransformer for FnPendingTransformer<F>
 where
-    for<'a> F: FnMut(PendingTransformInput<'a>) -> Option<String> + Send,
+    for<'a> F: FnMut(PendingTransformInput<'a>) -> Option<String> + Send + Sync,
 {
     fn transform(&mut self, input: PendingTransformInput<'_>) -> Option<String> {
         (self.0)(input)

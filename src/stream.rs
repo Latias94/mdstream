@@ -781,7 +781,10 @@ impl MdStream {
                 fence_char,
                 fence_len,
             } => {
-                if fence_end(line, *fence_char, *fence_len) {
+                // Opening fence matches fence_end() pattern but must not close itself
+                if line_index > self.current_block_start_line
+                    && fence_end(line, *fence_char, *fence_len)
+                {
                     self.commit_block(line_index, update);
                 }
             }

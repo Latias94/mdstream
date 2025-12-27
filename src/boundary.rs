@@ -11,7 +11,7 @@ pub enum BoundaryUpdate {
 ///
 /// This is designed for streaming LLM output where application-specific tags or directives should
 /// not cause flickering re-parses.
-pub trait BoundaryPlugin: Send {
+pub trait BoundaryPlugin: Send + Sync {
     /// Pure predicate: return `true` if `line` can start this custom block.
     ///
     /// This method must not mutate internal state.
@@ -29,9 +29,9 @@ pub trait BoundaryPlugin: Send {
 }
 
 type MatchStartFn = dyn Fn(&str) -> bool + Send + Sync;
-type StartFn = dyn FnMut(&str) + Send;
-type UpdateFn = dyn FnMut(&str) -> BoundaryUpdate + Send;
-type ResetFn = dyn FnMut() + Send;
+type StartFn = dyn FnMut(&str) + Send + Sync;
+type UpdateFn = dyn FnMut(&str) -> BoundaryUpdate + Send + Sync;
+type ResetFn = dyn FnMut() + Send + Sync;
 
 /// A lightweight adapter to implement `BoundaryPlugin` via closures.
 ///
@@ -50,7 +50,7 @@ impl FnBoundaryPlugin {
     pub fn new<M, U>(matches_start: M, update: U) -> Self
     where
         M: Fn(&str) -> bool + Send + Sync + 'static,
-        U: FnMut(&str) -> BoundaryUpdate + Send + 'static,
+        U: FnMut(&str) -> BoundaryUpdate + Send + Sync + 'static,
     {
         Self {
             matches_start: Box::new(matches_start),
@@ -62,7 +62,7 @@ impl FnBoundaryPlugin {
 
     pub fn with_start<S>(mut self, start: S) -> Self
     where
-        S: FnMut(&str) + Send + 'static,
+        S: FnMut(&str) + Send + Sync + 'static,
     {
         self.start = Some(Box::new(start));
         self
@@ -70,7 +70,7 @@ impl FnBoundaryPlugin {
 
     pub fn with_reset<R>(mut self, reset: R) -> Self
     where
-        R: FnMut() + Send + 'static,
+        R: FnMut() + Send + Sync + 'static,
     {
         self.reset = Some(Box::new(reset));
         self

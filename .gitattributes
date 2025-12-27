@@ -1,0 +1,12 @@
+# Force LF line endings for all text files to ensure consistent behavior
+# across Windows, macOS, and Linux.
+* text=auto eol=lf
+
+# Explicitly set common file types
+*.rs text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.txt text eol=lf

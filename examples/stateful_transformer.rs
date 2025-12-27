@@ -1,18 +1,26 @@
 //! Demonstrate a stateful pending transformer.
 //!
+//! This example shows how to use `Arc<AtomicUsize>` for thread-safe state
+//! in closures that implement `PendingTransformer`.
+//!
 //! Run:
 //!   cargo run --example stateful_transformer
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use mdstream::{FnPendingTransformer, MdStream, Options};
 
 fn main() {
     let mut s = MdStream::new(Options::default());
 
-    let mut seen = 0usize;
+    // PendingTransformer requires Send + Sync, so mutable state needs Arc<Atomic*>
+    let seen = Arc::new(AtomicUsize::new(0));
+    let seen_clone = Arc::clone(&seen);
     s.push_pending_transformer(FnPendingTransformer(
         move |input: mdstream::PendingTransformInput<'_>| {
-            seen += 1;
-            Some(format!("[seen={seen}] {}", input.display))
+            let count = seen_clone.fetch_add(1, Ordering::Relaxed) + 1;
+            Some(format!("[seen={count}] {}", input.display))
         },
     ));
 
