@@ -7,6 +7,21 @@ pub struct PendingTransformInput<'a> {
     pub display: &'a str,
 }
 
+#[cfg(feature = "sync")]
+pub trait PendingTransformer: Send + Sync {
+    /// Transform the pending display string.
+    ///
+    /// - `kind` is a best-effort hint (block-level).
+    /// - `raw` is the original pending text (never mutated).
+    /// - `display` is the current pending display string (already includes built-in termination/repair).
+    ///
+    /// Return `Some(new_display)` to replace `display`, or `None` to leave it unchanged.
+    fn transform(&mut self, input: PendingTransformInput<'_>) -> Option<String>;
+
+    fn reset(&mut self) {}
+}
+
+#[cfg(not(feature = "sync"))]
 pub trait PendingTransformer: Send {
     /// Transform the pending display string.
     ///
@@ -22,9 +37,20 @@ pub trait PendingTransformer: Send {
 
 pub struct FnPendingTransformer<F>(pub F);
 
+#[cfg(not(feature = "sync"))]
 impl<F> PendingTransformer for FnPendingTransformer<F>
 where
     for<'a> F: FnMut(PendingTransformInput<'a>) -> Option<String> + Send,
+{
+    fn transform(&mut self, input: PendingTransformInput<'_>) -> Option<String> {
+        (self.0)(input)
+    }
+}
+
+#[cfg(feature = "sync")]
+impl<F> PendingTransformer for FnPendingTransformer<F>
+where
+    for<'a> F: FnMut(PendingTransformInput<'a>) -> Option<String> + Send + Sync,
 {
     fn transform(&mut self, input: PendingTransformInput<'_>) -> Option<String> {
         (self.0)(input)

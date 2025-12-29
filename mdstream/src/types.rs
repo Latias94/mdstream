@@ -57,6 +57,29 @@ impl Block {
     }
 }
 
+/// A borrowed view of the current pending block.
+///
+/// This is intended for high-frequency streaming UIs that want to avoid allocating/cloning
+/// the pending tail on every tick.
+///
+/// Lifetime: the returned references are valid until the next mutation of the stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingBlockRef<'a> {
+    pub id: BlockId,
+    pub kind: BlockKind,
+    pub raw: &'a str,
+    /// Optional terminated/transformed display string for pending.
+    ///
+    /// When present, this is usually safer to feed into downstream Markdown parsers/renderers.
+    pub display: Option<&'a str>,
+}
+
+impl<'a> PendingBlockRef<'a> {
+    pub fn display_or_raw(&self) -> &'a str {
+        self.display.unwrap_or(self.raw)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Update {
     pub committed: Vec<Block>,
@@ -76,6 +99,43 @@ pub struct Update {
 pub struct AppliedUpdate {
     pub reset: bool,
     pub invalidated: Vec<BlockId>,
+}
+
+/// A borrowed update view that avoids allocating the pending block.
+///
+/// - `committed` borrows from the internal committed storage of the stream and contains only the
+///   blocks newly committed by the triggering call.
+/// - `pending` borrows from the stream buffer and/or the stream's pending display cache.
+///
+/// This is not suitable for sending across threads/tasks. Use [`UpdateRef::to_owned`] to convert
+/// to an owned [`Update`] if needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateRef<'a> {
+    pub committed: &'a [Block],
+    pub pending: Option<PendingBlockRef<'a>>,
+    pub reset: bool,
+    pub invalidated: Vec<BlockId>,
+}
+
+impl<'a> UpdateRef<'a> {
+    pub fn is_empty(&self) -> bool {
+        self.committed.is_empty() && self.pending.is_none() && !self.reset && self.invalidated.is_empty()
+    }
+
+    pub fn to_owned(&self) -> Update {
+        Update {
+            committed: self.committed.to_vec(),
+            pending: self.pending.as_ref().map(|p| Block {
+                id: p.id,
+                status: BlockStatus::Pending,
+                kind: p.kind,
+                raw: p.raw.to_string(),
+                display: p.display.map(|d| d.to_string()),
+            }),
+            reset: self.reset,
+            invalidated: self.invalidated.clone(),
+        }
+    }
 }
 
 impl Update {

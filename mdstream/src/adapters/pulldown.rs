@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
@@ -6,6 +5,16 @@ use crate::reference;
 use crate::types::{Block, BlockId, Update};
 
 use pulldown_cmark::{Event, Options as PulldownOptions, Parser};
+
+#[cfg(not(feature = "sync"))]
+use std::cell::RefCell;
+#[cfg(feature = "sync")]
+use std::sync::Mutex;
+
+#[cfg(not(feature = "sync"))]
+type ParseScratch = RefCell<String>;
+#[cfg(feature = "sync")]
+type ParseScratch = Mutex<String>;
 
 #[derive(Debug, Clone)]
 pub struct PulldownAdapterOptions {
@@ -31,7 +40,7 @@ pub struct PulldownAdapter {
     reference_definitions: BTreeMap<String, String>,
     reference_definitions_text: String,
     reference_definitions_dirty: bool,
-    parse_scratch: RefCell<String>,
+    parse_scratch: ParseScratch,
 }
 
 impl PulldownAdapter {
@@ -43,7 +52,7 @@ impl PulldownAdapter {
             reference_definitions: BTreeMap::new(),
             reference_definitions_text: String::new(),
             reference_definitions_dirty: false,
-            parse_scratch: RefCell::new(String::new()),
+            parse_scratch: Default::default(),
         }
     }
 
@@ -53,7 +62,16 @@ impl PulldownAdapter {
         self.reference_definitions.clear();
         self.reference_definitions_text.clear();
         self.reference_definitions_dirty = false;
-        self.parse_scratch.borrow_mut().clear();
+        #[cfg(not(feature = "sync"))]
+        {
+            self.parse_scratch.borrow_mut().clear();
+        }
+        #[cfg(feature = "sync")]
+        {
+            if let Ok(mut s) = self.parse_scratch.lock() {
+                s.clear();
+            }
+        }
     }
 
     pub fn apply_update(&mut self, update: &Update) {
@@ -96,13 +114,29 @@ impl PulldownAdapter {
         if self.reference_definitions_text.is_empty() {
             return parse_events_static(raw, self.opts.pulldown);
         }
-        let mut scratch = self.parse_scratch.borrow_mut();
-        scratch.clear();
-        scratch.reserve(self.reference_definitions_text.len() + 2 + raw.len());
-        scratch.push_str(&self.reference_definitions_text);
-        scratch.push_str("\n\n");
-        scratch.push_str(raw);
-        parse_events_static(&scratch, self.opts.pulldown)
+        #[cfg(not(feature = "sync"))]
+        {
+            let mut scratch = self.parse_scratch.borrow_mut();
+            scratch.clear();
+            scratch.reserve(self.reference_definitions_text.len() + 2 + raw.len());
+            scratch.push_str(&self.reference_definitions_text);
+            scratch.push_str("\n\n");
+            scratch.push_str(raw);
+            parse_events_static(&scratch, self.opts.pulldown)
+        }
+        #[cfg(feature = "sync")]
+        {
+            let mut scratch = self
+                .parse_scratch
+                .lock()
+                .expect("mdstream: pulldown parse scratch mutex poisoned");
+            scratch.clear();
+            scratch.reserve(self.reference_definitions_text.len() + 2 + raw.len());
+            scratch.push_str(&self.reference_definitions_text);
+            scratch.push_str("\n\n");
+            scratch.push_str(raw);
+            parse_events_static(&scratch, self.opts.pulldown)
+        }
     }
 
     fn collect_reference_definitions(&mut self, raw: &str) {

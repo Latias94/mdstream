@@ -11,6 +11,25 @@ pub enum BoundaryUpdate {
 ///
 /// This is designed for streaming LLM output where application-specific tags or directives should
 /// not cause flickering re-parses.
+#[cfg(feature = "sync")]
+pub trait BoundaryPlugin: Send + Sync {
+    /// Pure predicate: return `true` if `line` can start this custom block.
+    ///
+    /// This method must not mutate internal state.
+    fn matches_start(&self, line: &str) -> bool;
+
+    /// Called exactly once when the current block is determined to start at `line`.
+    fn start(&mut self, line: &str);
+
+    /// Called for each line in the block (including the starting line) while this plugin is active.
+    ///
+    /// Return `BoundaryUpdate::Close` to close the block at the end of this line.
+    fn update(&mut self, line: &str) -> BoundaryUpdate;
+
+    fn reset(&mut self) {}
+}
+
+#[cfg(not(feature = "sync"))]
 pub trait BoundaryPlugin: Send {
     /// Pure predicate: return `true` if `line` can start this custom block.
     ///
@@ -29,8 +48,20 @@ pub trait BoundaryPlugin: Send {
 }
 
 type MatchStartFn = dyn Fn(&str) -> bool + Send + Sync;
+
+#[cfg(feature = "sync")]
+type StartFn = dyn FnMut(&str) + Send + Sync;
+#[cfg(not(feature = "sync"))]
 type StartFn = dyn FnMut(&str) + Send;
+
+#[cfg(feature = "sync")]
+type UpdateFn = dyn FnMut(&str) -> BoundaryUpdate + Send + Sync;
+#[cfg(not(feature = "sync"))]
 type UpdateFn = dyn FnMut(&str) -> BoundaryUpdate + Send;
+
+#[cfg(feature = "sync")]
+type ResetFn = dyn FnMut() + Send + Sync;
+#[cfg(not(feature = "sync"))]
 type ResetFn = dyn FnMut() + Send;
 
 /// A lightweight adapter to implement `BoundaryPlugin` via closures.
@@ -47,6 +78,7 @@ pub struct FnBoundaryPlugin {
 }
 
 impl FnBoundaryPlugin {
+    #[cfg(not(feature = "sync"))]
     pub fn new<M, U>(matches_start: M, update: U) -> Self
     where
         M: Fn(&str) -> bool + Send + Sync + 'static,
@@ -60,6 +92,21 @@ impl FnBoundaryPlugin {
         }
     }
 
+    #[cfg(feature = "sync")]
+    pub fn new<M, U>(matches_start: M, update: U) -> Self
+    where
+        M: Fn(&str) -> bool + Send + Sync + 'static,
+        U: FnMut(&str) -> BoundaryUpdate + Send + Sync + 'static,
+    {
+        Self {
+            matches_start: Box::new(matches_start),
+            start: None,
+            update: Box::new(update),
+            reset: None,
+        }
+    }
+
+    #[cfg(not(feature = "sync"))]
     pub fn with_start<S>(mut self, start: S) -> Self
     where
         S: FnMut(&str) + Send + 'static,
@@ -68,9 +115,28 @@ impl FnBoundaryPlugin {
         self
     }
 
+    #[cfg(feature = "sync")]
+    pub fn with_start<S>(mut self, start: S) -> Self
+    where
+        S: FnMut(&str) + Send + Sync + 'static,
+    {
+        self.start = Some(Box::new(start));
+        self
+    }
+
+    #[cfg(not(feature = "sync"))]
     pub fn with_reset<R>(mut self, reset: R) -> Self
     where
         R: FnMut() + Send + 'static,
+    {
+        self.reset = Some(Box::new(reset));
+        self
+    }
+
+    #[cfg(feature = "sync")]
+    pub fn with_reset<R>(mut self, reset: R) -> Self
+    where
+        R: FnMut() + Send + Sync + 'static,
     {
         self.reset = Some(Box::new(reset));
         self

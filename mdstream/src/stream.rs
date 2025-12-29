@@ -16,7 +16,7 @@ use crate::options::{FootnotesMode, Options, ReferenceDefinitionsMode};
 use crate::pending::terminate_markdown;
 use crate::reference::extract_reference_definition_label;
 use crate::transform::{PendingTransformInput, PendingTransformer};
-use crate::types::{Block, BlockId, BlockKind, BlockStatus, Update};
+use crate::types::{Block, BlockId, BlockKind, BlockStatus, PendingBlockRef, Update, UpdateRef};
 
 #[derive(Debug, Clone)]
 enum BlockMode {
@@ -158,6 +158,18 @@ fn fence_end(line: &str, fence_char: char, fence_len: usize) -> bool {
     trimmed.chars().all(|c| c == fence_char) && trimmed.chars().count() >= fence_len
 }
 
+fn code_fence_suffix(raw_ended_with_newline: bool, fence_char: char, fence_len: usize) -> String {
+    let mut out = String::new();
+    if !raw_ended_with_newline {
+        out.push('\n');
+    }
+    for _ in 0..fence_len {
+        out.push(fence_char);
+    }
+    out.push('\n');
+    out
+}
+
 fn is_blockquote_start(line: &str) -> bool {
     let trimmed = line.trim_start();
     trimmed.starts_with('>')
@@ -278,6 +290,7 @@ pub struct MdStream {
     current_mode: BlockMode,
 
     pending_display_cache: Option<String>,
+    pending_display_cache_suffix: Option<String>,
     pending_transformers: Vec<Box<dyn PendingTransformer>>,
     boundary_plugins: Vec<Box<dyn BoundaryPlugin>>,
     active_boundary_plugin: Option<usize>,
@@ -287,6 +300,35 @@ pub struct MdStream {
     last_finalized_buffer_len: usize,
 
     reference_usage_index: HashMap<String, HashSet<BlockId>>,
+}
+
+struct AppendCtx<'a> {
+    committed_out: Option<&'a mut Vec<Block>>,
+    invalidated: Vec<BlockId>,
+    reset: bool,
+}
+
+impl<'a> AppendCtx<'a> {
+    fn new(committed_out: Option<&'a mut Vec<Block>>) -> Self {
+        Self {
+            committed_out,
+            invalidated: Vec::new(),
+            reset: false,
+        }
+    }
+
+    fn push_committed_clone(&mut self, block: &Block) {
+        if let Some(out) = self.committed_out.as_deref_mut() {
+            out.push(block.clone());
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingInfo {
+    id: BlockId,
+    kind: BlockKind,
+    raw_start: usize,
 }
 
 impl std::fmt::Debug for MdStream {
@@ -302,6 +344,10 @@ impl std::fmt::Debug for MdStream {
             .field(
                 "pending_display_cache",
                 &self.pending_display_cache.is_some(),
+            )
+            .field(
+                "pending_display_cache_suffix",
+                &self.pending_display_cache_suffix.is_some(),
             )
             .field("pending_transformers_len", &self.pending_transformers.len())
             .field("boundary_plugins_len", &self.boundary_plugins.len())
@@ -332,6 +378,7 @@ impl MdStream {
             next_block_id: 2,
             current_mode: BlockMode::Unknown,
             pending_display_cache: None,
+            pending_display_cache_suffix: None,
             pending_transformers: Vec::new(),
             boundary_plugins: Vec::new(),
             active_boundary_plugin: None,
@@ -375,6 +422,7 @@ impl MdStream {
     {
         self.pending_transformers.push(Box::new(transformer));
         self.pending_display_cache = None;
+        self.pending_display_cache_suffix = None;
     }
 
     pub fn with_pending_transformer<T>(mut self, transformer: T) -> Self
@@ -391,6 +439,7 @@ impl MdStream {
     {
         self.boundary_plugins.push(Box::new(plugin));
         self.pending_display_cache = None;
+        self.pending_display_cache_suffix = None;
     }
 
     pub fn with_boundary_plugin<T>(mut self, plugin: T) -> Self
@@ -475,7 +524,7 @@ impl MdStream {
         }
     }
 
-    fn commit_block(&mut self, end_line_inclusive: usize, update: &mut Update) {
+    fn commit_block(&mut self, end_line_inclusive: usize, ctx: &mut AppendCtx<'_>) {
         if self.current_block_start_line >= self.lines.len() {
             return;
         }
@@ -497,6 +546,7 @@ impl MdStream {
             self.current_mode = BlockMode::Unknown;
             self.active_boundary_plugin = None;
             self.pending_display_cache = None;
+            self.pending_display_cache_suffix = None;
             return;
         }
         let block = Block {
@@ -506,7 +556,7 @@ impl MdStream {
             raw,
             display: None,
         };
-        self.push_committed_block(block, update);
+        self.push_committed_block(block, ctx);
 
         self.current_block_start_line = end_line_inclusive + 1;
         self.current_block_id = BlockId(self.next_block_id);
@@ -514,9 +564,10 @@ impl MdStream {
         self.current_mode = BlockMode::Unknown;
         self.active_boundary_plugin = None;
         self.pending_display_cache = None;
+        self.pending_display_cache_suffix = None;
     }
 
-    fn push_committed_block(&mut self, block: Block, update: &mut Update) {
+    fn push_committed_block(&mut self, block: Block, ctx: &mut AppendCtx<'_>) {
         // Index usages for invalidation-based adapters.
         if block.kind != BlockKind::CodeFence && block.raw.contains('[') {
             let used = extract_reference_usages(&block.raw);
@@ -551,18 +602,22 @@ impl MdStream {
             if !invalidated.is_empty() {
                 let mut ids: Vec<BlockId> = invalidated.into_iter().collect();
                 ids.sort_by_key(|id| id.0);
-                update.invalidated.extend(ids);
+                ctx.invalidated.extend(ids);
             }
         }
 
-        self.committed.push(block.clone());
-        update.committed.push(block);
+        self.committed.push(block);
+        let block = self
+            .committed
+            .last()
+            .expect("committed block must exist after push");
+        ctx.push_committed_clone(block);
     }
 
-    fn maybe_commit_single_line(&mut self, line_index: usize, update: &mut Update) {
+    fn maybe_commit_single_line(&mut self, line_index: usize, ctx: &mut AppendCtx<'_>) {
         match self.current_mode {
             BlockMode::Heading | BlockMode::ThematicBreak => {
-                self.commit_block(line_index, update);
+                self.commit_block(line_index, ctx);
             }
             _ => {}
         }
@@ -572,7 +627,7 @@ impl MdStream {
         self.lines[line_index].as_str(&self.buffer)
     }
 
-    fn process_line(&mut self, line_index: usize, update: &mut Update) {
+    fn process_line(&mut self, line_index: usize, ctx: &mut AppendCtx<'_>) {
         // Skip if this line does not yet end with newline; we can't do stable boundary checks.
         if !self.lines[line_index].has_newline {
             return;
@@ -587,9 +642,9 @@ impl MdStream {
             // Defensive: the first line of a block is the single source of truth for the block mode.
             // This avoids stale-mode edge cases where `current_mode` is not `Unknown` at a new start.
             self.current_mode = self.start_mode_for_line(self.line_str(line_index));
-            self.maybe_commit_single_line(line_index, update);
+            self.maybe_commit_single_line(line_index, ctx);
             // Even on the first line, some modes need to update internal state (e.g. HTML tag stack).
-            self.update_mode_with_line(line_index, update);
+            self.update_mode_with_line(line_index, ctx);
             return;
         }
 
@@ -607,22 +662,22 @@ impl MdStream {
 
         // Decide if current line starts a new block; if so, commit the previous block at prev line.
         if boundary {
-            self.commit_block(line_index - 1, update);
+            self.commit_block(line_index - 1, ctx);
             if let Some(m) = next_mode {
                 self.current_mode = m;
             }
-            self.maybe_commit_single_line(line_index, update);
+            self.maybe_commit_single_line(line_index, ctx);
             // If we started a new mode on this line, we must also update its per-line state.
             // This is required for modes like HTML/math where the opening line affects context.
-            self.update_mode_with_line(line_index, update);
+            self.update_mode_with_line(line_index, ctx);
             return;
         }
 
         // Update per-block mode state transitions.
-        self.update_mode_with_line(line_index, update);
+        self.update_mode_with_line(line_index, ctx);
     }
 
-    fn process_incomplete_tail_boundary(&mut self, update: &mut Update) {
+    fn process_incomplete_tail_boundary(&mut self, ctx: &mut AppendCtx<'_>) {
         if self.lines.len() < 2 {
             return;
         }
@@ -645,7 +700,7 @@ impl MdStream {
         };
 
         if boundary {
-            self.commit_block(last - 1, update);
+            self.commit_block(last - 1, ctx);
             self.current_mode = self.start_mode_for_line(self.line_str(last));
         }
     }
@@ -766,7 +821,7 @@ impl MdStream {
         has_dash
     }
 
-    fn update_mode_with_line(&mut self, line_index: usize, update: &mut Update) {
+    fn update_mode_with_line(&mut self, line_index: usize, ctx: &mut AppendCtx<'_>) {
         let (start, end) = {
             let l = &self.lines[line_index];
             (l.start, l.end)
@@ -775,14 +830,17 @@ impl MdStream {
         match &mut self.current_mode {
             BlockMode::Unknown => {
                 self.current_mode = self.start_mode_for_line(line);
-                self.maybe_commit_single_line(line_index, update);
+                self.maybe_commit_single_line(line_index, ctx);
             }
             BlockMode::CodeFence {
                 fence_char,
                 fence_len,
             } => {
-                if fence_end(line, *fence_char, *fence_len) {
-                    self.commit_block(line_index, update);
+                // Opening fence matches `fence_end()` pattern but must not close itself.
+                if line_index > self.current_block_start_line
+                    && fence_end(line, *fence_char, *fence_len)
+                {
+                    self.commit_block(line_index, ctx);
                 }
             }
             BlockMode::CustomBoundary {
@@ -800,13 +858,13 @@ impl MdStream {
                 }
                 if self.boundary_plugins[idx].update(line) == BoundaryUpdate::Close {
                     self.active_boundary_plugin = None;
-                    self.commit_block(line_index, update);
+                    self.commit_block(line_index, ctx);
                 }
             }
             BlockMode::MathBlock { open_count } => {
                 *open_count += count_double_dollars(line);
                 if *open_count % 2 == 0 {
-                    self.commit_block(line_index, update);
+                    self.commit_block(line_index, ctx);
                 }
             }
             BlockMode::Paragraph => {
@@ -818,7 +876,7 @@ impl MdStream {
                     let prev = self.lines[line_index - 1].as_str(&self.buffer);
                     if !is_empty_line(prev) {
                         self.current_mode = BlockMode::Heading;
-                        self.commit_block(line_index, update);
+                        self.commit_block(line_index, ctx);
                         return;
                     }
                 }
@@ -837,7 +895,7 @@ impl MdStream {
             BlockMode::HtmlBlock { stack, in_comment } => {
                 update_html_block_state(line, stack, in_comment);
                 if !*in_comment && stack.is_empty() {
-                    self.commit_block(line_index, update);
+                    self.commit_block(line_index, ctx);
                 }
             }
             BlockMode::FootnoteDefinition => {
@@ -848,6 +906,154 @@ impl MdStream {
             }
             BlockMode::Heading | BlockMode::ThematicBreak => {}
         }
+    }
+
+    fn current_pending_info(&self) -> Option<PendingInfo> {
+        if self.opts.footnotes == FootnotesMode::SingleBlock && self.footnotes_detected {
+            if self.buffer.is_empty() {
+                return None;
+            }
+            return Some(PendingInfo {
+                id: BlockId(1),
+                kind: BlockKind::Unknown,
+                raw_start: 0,
+            });
+        }
+
+        if self.current_block_start_line >= self.lines.len() {
+            return None;
+        }
+        let start_off = self.lines[self.current_block_start_line].start;
+        if start_off >= self.buffer.len() {
+            return None;
+        }
+        if self.buffer[start_off..].is_empty() {
+            return None;
+        }
+
+        let kind = if matches!(self.current_mode, BlockMode::Unknown) {
+            let mode = self.start_mode_for_line(self.line_str(self.current_block_start_line));
+            Self::kind_for_mode(&mode)
+        } else {
+            Self::kind_for_mode(&self.current_mode)
+        };
+
+        Some(PendingInfo {
+            id: self.current_block_id,
+            kind,
+            raw_start: start_off,
+        })
+    }
+
+    fn ensure_current_pending_display(&mut self) {
+        let Some(info) = self.current_pending_info() else {
+            self.pending_display_cache = None;
+            self.pending_display_cache_suffix = None;
+            return;
+        };
+        self.ensure_pending_display_for(info.kind, info.raw_start);
+    }
+
+    fn current_pending_ref_readonly(&self) -> Option<PendingBlockRef<'_>> {
+        let info = self.current_pending_info()?;
+        let raw = &self.buffer[info.raw_start..];
+        Some(PendingBlockRef {
+            id: info.id,
+            kind: info.kind,
+            raw,
+            display: self.pending_display_cache.as_deref(),
+        })
+    }
+
+    fn transform_pending_display_at(
+        &mut self,
+        kind: BlockKind,
+        raw_start: usize,
+        mut display: String,
+    ) -> String {
+        if self.pending_transformers.is_empty() {
+            return display;
+        }
+        let raw = &self.buffer[raw_start..];
+        for t in &mut self.pending_transformers {
+            if let Some(next) = t.transform(PendingTransformInput {
+                kind,
+                raw,
+                display: &display,
+            }) {
+                display = next;
+            }
+        }
+        display
+    }
+
+    fn ensure_pending_display_for(&mut self, kind: BlockKind, raw_start: usize) {
+        if matches!(kind, BlockKind::CodeFence) {
+            if let BlockMode::CodeFence {
+                fence_char,
+                fence_len,
+            } = self.current_mode
+            {
+                if self.pending_display_cache.is_some() && self.pending_display_cache_suffix.is_some()
+                {
+                    return;
+                }
+                let raw = &self.buffer[raw_start..];
+                let suffix = code_fence_suffix(raw.ends_with('\n'), fence_char, fence_len);
+                let mut display = String::with_capacity(raw.len() + suffix.len());
+                display.push_str(raw);
+                display.push_str(&suffix);
+                self.pending_display_cache = Some(display);
+                self.pending_display_cache_suffix = Some(suffix);
+                return;
+            }
+        }
+
+        if self.pending_display_cache.is_some() {
+            return;
+        }
+        let display = {
+            let raw = &self.buffer[raw_start..];
+            terminate_markdown(raw, &self.opts.terminator)
+        };
+        let display = self.transform_pending_display_at(kind, raw_start, display);
+        self.pending_display_cache = Some(display);
+        self.pending_display_cache_suffix = None;
+    }
+
+    fn try_incremental_pending_display_append(&mut self, appended: &str) -> bool {
+        let Some(suffix) = self.pending_display_cache_suffix.as_ref() else {
+            return false;
+        };
+        let Some(display) = self.pending_display_cache.as_mut() else {
+            self.pending_display_cache_suffix = None;
+            return false;
+        };
+        let BlockMode::CodeFence {
+            fence_char,
+            fence_len,
+        } = self.current_mode
+        else {
+            self.pending_display_cache_suffix = None;
+            self.pending_display_cache = None;
+            return false;
+        };
+
+        let prev_raw_ended_with_nl = !suffix.starts_with('\n');
+        let new_raw_ended_with_nl = if appended.is_empty() {
+            prev_raw_ended_with_nl
+        } else {
+            appended.ends_with('\n')
+        };
+
+        let base_len = display.len().saturating_sub(suffix.len());
+        display.truncate(base_len);
+        display.push_str(appended);
+
+        let new_suffix = code_fence_suffix(new_raw_ended_with_nl, fence_char, fence_len);
+        display.push_str(&new_suffix);
+        self.pending_display_cache_suffix = Some(new_suffix);
+        true
     }
 
     fn pending_block_snapshot(&mut self) -> Option<Block> {
@@ -940,6 +1146,7 @@ impl MdStream {
         if let Some(p) = &p {
             if let Some(d) = &p.display {
                 self.pending_display_cache = Some(d.clone());
+                self.pending_display_cache_suffix = None;
             }
         }
         p
@@ -968,13 +1175,44 @@ impl MdStream {
 
     pub fn append(&mut self, chunk: &str) -> Update {
         let mut update = Update::empty();
+        let mut ctx = AppendCtx::new(Some(&mut update.committed));
+        self.append_core(chunk, &mut ctx);
+        update.reset = ctx.reset;
+        update.invalidated = ctx.invalidated;
+        update.pending = self.current_pending_block();
+        update
+    }
+
+    pub fn append_ref(&mut self, chunk: &str) -> UpdateRef<'_> {
+        let committed_start = self.committed.len();
+        let mut ctx = AppendCtx::new(None);
+        self.append_core(chunk, &mut ctx);
+        let committed_start = if ctx.reset { 0 } else { committed_start };
+        self.ensure_current_pending_display();
+        let pending = self.current_pending_ref_readonly();
+        let committed = &self.committed[committed_start..];
+        UpdateRef {
+            committed,
+            pending,
+            reset: ctx.reset,
+            invalidated: ctx.invalidated,
+        }
+    }
+
+    fn append_core(&mut self, chunk: &str, ctx: &mut AppendCtx<'_>) {
         if chunk.is_empty() && !self.pending_cr {
-            update.pending = self.current_pending_block();
-            return update;
+            return;
         }
 
         let footnotes_before = self.footnotes_detected;
         let chunk = self.normalize_newlines_cow(chunk);
+
+        // Best-effort incremental update for code-fence pending display.
+        let pending_display_kept = self.try_incremental_pending_display_append(chunk.as_ref());
+        if !pending_display_kept {
+            self.pending_display_cache = None;
+            self.pending_display_cache_suffix = None;
+        }
 
         if !self.footnotes_detected {
             if detect_footnotes(chunk.as_ref()) {
@@ -1003,12 +1241,10 @@ impl MdStream {
             && self.opts.footnotes == FootnotesMode::SingleBlock;
 
         self.append_to_lines(chunk.as_ref());
-        self.pending_display_cache = None;
 
         if enter_single_block_footnotes {
-            self.reset_for_single_block_footnotes(&mut update);
-            update.pending = self.current_pending_block();
-            return update;
+            self.reset_for_single_block_footnotes(ctx);
+            return;
         }
 
         // Process newly completed lines.
@@ -1016,26 +1252,24 @@ impl MdStream {
             if !self.lines[self.processed_line].has_newline {
                 break;
             }
-            self.process_line(self.processed_line, &mut update);
+            self.process_line(self.processed_line, ctx);
             self.processed_line += 1;
         }
 
         // Even if the current last line has no newline yet, we may have enough information to
         // commit the previous block (eg after a blank line).
-        self.process_incomplete_tail_boundary(&mut update);
+        self.process_incomplete_tail_boundary(ctx);
 
         self.maybe_compact_buffer();
-
-        update.pending = self.current_pending_block();
-        update
     }
 
-    fn reset_for_single_block_footnotes(&mut self, update: &mut Update) {
-        update.reset = true;
+    fn reset_for_single_block_footnotes(&mut self, ctx: &mut AppendCtx<'_>) {
+        ctx.reset = true;
 
         self.committed.clear();
         self.reference_usage_index.clear();
         self.pending_display_cache = None;
+        self.pending_display_cache_suffix = None;
         self.active_boundary_plugin = None;
 
         // Re-start IDs so consumers can treat it as a new document.
@@ -1054,6 +1288,7 @@ impl MdStream {
         }
 
         let mut update = Update::empty();
+        let mut ctx = AppendCtx::new(Some(&mut update.committed));
 
         if self.pending_cr {
             // Treat a trailing '\r' at EOF as a newline.
@@ -1074,11 +1309,12 @@ impl MdStream {
                     raw: self.buffer.clone(),
                     display: None,
                 };
-                self.push_committed_block(block, &mut update);
+                self.push_committed_block(block, &mut ctx);
             }
             update.pending = None;
             self.maybe_compact_buffer();
             self.last_finalized_buffer_len = self.buffer.len();
+            update.invalidated = ctx.invalidated;
             return update;
         }
 
@@ -1104,7 +1340,7 @@ impl MdStream {
                     raw,
                     display: None,
                 };
-                self.push_committed_block(block, &mut update);
+                self.push_committed_block(block, &mut ctx);
                 // Reset to empty.
                 self.current_block_start_line = end_line + 1;
             }
@@ -1112,7 +1348,20 @@ impl MdStream {
         update.pending = None;
         self.maybe_compact_buffer();
         self.last_finalized_buffer_len = self.buffer.len();
+        update.invalidated = ctx.invalidated;
         update
+    }
+
+    pub fn finalize_ref(&mut self) -> UpdateRef<'_> {
+        let committed_start = self.committed.len();
+        let update = self.finalize();
+        let committed_start = if update.reset { 0 } else { committed_start };
+        UpdateRef {
+            committed: &self.committed[committed_start..],
+            pending: None,
+            reset: update.reset,
+            invalidated: update.invalidated,
+        }
     }
 
     pub fn reset(&mut self) {
@@ -1130,6 +1379,7 @@ impl MdStream {
         self.next_block_id = 2;
         self.current_mode = BlockMode::Unknown;
         self.pending_display_cache = None;
+        self.pending_display_cache_suffix = None;
         for t in &mut self.pending_transformers {
             t.reset();
         }
