@@ -22,6 +22,10 @@ This roadmap is intentionally practical: it prioritizes streaming stability and 
 - Add `snapshot_blocks()` and `snapshot_text()` convenience APIs
 - Improve HTML block handling and table/list heuristics
 - More remend parity tests (regression suite)
+- Streaming UX helpers (coalescing deltas; newline/time-window flush) (optional feature)
+- Concurrency compatibility:
+  - `sync` feature proposal for `Send + Sync` extension points
+  - optional “actor” wrapper for cross-thread consumers
 
 ## v0.3 (Cross-block semantics)
 

@@ -35,6 +35,34 @@ if let Some(p) = u.pending {
 }
 ```
 
+## Borrowed updates (`append_ref`)
+
+If your UI owns the stream (common for TUIs), `append_ref` avoids cloning the pending tail on every
+tick:
+
+```rust
+use mdstream::{MdStream, Options};
+
+let mut s = MdStream::new(Options::default());
+
+let u = s.append_ref("```rs\nfn main() {\n");
+assert!(u.pending.is_some());
+
+// Render only what changed:
+for b in u.committed {
+    let _ = b.id;
+}
+if let Some(p) = u.pending {
+    let text = p.display_or_raw();
+    let _ = text;
+}
+```
+
+Notes:
+
+- `UpdateRef` borrows from the stream. It is not suitable for sending across threads/tasks.
+- If needed, use `UpdateRef::to_owned()` (allocating) or `append()` (owned update).
+
 ## `DocumentState` (UI State Helper)
 
 If you keep UI state as `(Vec<Block>, Option<Block>)`, you can use `Update::apply_to`. If you want a
@@ -93,7 +121,7 @@ if let Some(pm) = &u.pending_meta {
 Run the zero-dependency demo:
 
 ```sh
-cargo run --example tui_like
+cargo run -p mdstream --example tui_like
 ```
 
 ## Streamdown Defaults

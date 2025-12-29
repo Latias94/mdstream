@@ -21,9 +21,13 @@ You probably **don’t** need `mdstream` if you only parse static Markdown once,
 ## API at a glance
 
 - `MdStream`: streaming block splitter (`append` / `finalize`) that produces `Update`.
+- `MdStream::append_ref` / `finalize_ref`: borrowed update views (`UpdateRef`) for high-frequency UIs
+  that want to avoid cloning the pending tail on every tick.
 - `MdStream::snapshot_blocks(&mut self)`: take a best-effort snapshot (may run stateful transformers).
 - `Update`: `committed + pending` plus signals like `reset` and `invalidated`.
+- `UpdateRef`: `committed + pending` (borrowed) plus `reset` and `invalidated`.
 - `Block`: carries `id`, `kind`, `raw`, and optional `display` (pending-only).
+- `PendingBlockRef`: a borrowed view of the current pending block (`raw` + optional `display`).
 - `DocumentState`: a UI-friendly container to apply `Update` safely (recommended).
 - Optional adapter: `PulldownAdapter` behind the `pulldown` feature.
 
@@ -53,12 +57,82 @@ You probably **don’t** need `mdstream` if you only parse static Markdown once,
     - `PendingTransformer` is stateful: `transform(&mut self, ...)` and `reset(&mut self)`.
     - Consequently, `MdStream::snapshot_blocks` requires `&mut self`.
 
+### Borrowed updates (`append_ref`) and async usage
+
+`append_ref` is intended for the common UI architecture where the **UI thread owns the stream**
+and receives chunks via a channel:
+
+- It avoids cloning large pending buffers (especially large code fences).
+- The returned `UpdateRef` borrows from the stream; it is **not** suitable for sending across
+  threads/tasks.
+- If you must send updates across tasks, use `append()` (owned `Update`) or convert a borrowed view
+  via `UpdateRef::to_owned()` (this may allocate).
+
 ## Installation
 
 ```toml
 [dependencies]
-mdstream = "0.1.0"
+mdstream = "0.2.0"
 ```
+
+Optional Tokio glue (delta coalescing + helpers):
+
+```toml
+[dependencies]
+mdstream-tokio = "0.2.0"
+```
+
+Backpressure policy (producer side):
+
+- `Block`: never drop; safest for real content.
+- `DropNew`: drop when UI is slow; good for best-effort signals.
+- `CoalesceLocal`: buffer locally and flush opportunistically; good for high-frequency token streams.
+
+Practical examples:
+
+1) Agent CLI (chat transcript, LLM token streaming)
+
+- Goal: keep all text, avoid per-token UI updates, avoid unbounded memory.
+- Recommended: bounded channel + `CoalesceLocal` on the producer, and `CoalescingReceiver` on the UI side.
+
+```rust
+use mdstream_tokio::{BackpressurePolicy, CoalescePreset, CoalescingReceiver, DeltaSender};
+use tokio::sync::mpsc;
+
+let (tx, rx) = mpsc::channel::<String>(64);
+let mut sender = DeltaSender::new(tx, BackpressurePolicy::CoalesceLocal);
+let mut rx = CoalescingReceiver::new(rx, CoalescePreset::Balanced.options());
+
+// producer task: sender.send(token_or_chunk).await
+// UI task: if let Some(chunk) = rx.recv().await { stream.append(&chunk); }
+```
+
+2) Agent CLI (progress / typing indicator / spinner)
+
+- Goal: keep UI responsive; old updates are not important.
+- Recommended: `DropNew` (or a separate small channel just for status).
+
+```rust
+let (tx, rx) = mpsc::channel::<String>(1);
+let mut sender = DeltaSender::new(tx, BackpressurePolicy::DropNew);
+// producer: sender.send("thinking...").await;  // may be dropped if UI is busy
+```
+
+3) “Tool output” streaming (logs, ANSI output, file watcher)
+
+- Goal: preserve output; losing lines is bad.
+- Recommended: `Block` with a bounded channel (natural backpressure), optionally with receiver-side coalescing.
+
+```rust
+let (tx, rx) = mpsc::channel::<String>(256);
+let mut sender = DeltaSender::new(tx, BackpressurePolicy::Block);
+// producer: sender.send(line).await; // waits if UI falls behind
+```
+
+Rule of thumb:
+
+- If the message is user-visible content that must not be lost → `Block` or `CoalesceLocal`.
+- If the message is “state” and newer replaces older → `DropNew`.
 
 ## Quick Start (UI Integration)
 
@@ -97,12 +171,35 @@ If you prefer to manage your own `(Vec<Block>, Option<Block>)`, you can apply up
 ## Examples
 
 ```sh
-cargo run --example minimal
-cargo run --example footnotes_reset
-cargo run --example stateful_transformer
-cargo run --example tui_like
-cargo run --features pulldown --example pulldown_incremental
+cargo run -p mdstream --example minimal
+cargo run -p mdstream --example footnotes_reset
+cargo run -p mdstream --example stateful_transformer
+cargo run -p mdstream --example tui_like
+cargo run -p mdstream --features pulldown --example pulldown_incremental
 ```
+
+Tokio + ratatui demo (agent-style streaming):
+
+```sh
+cargo run -p mdstream-tokio --example agent_tui
+```
+
+You can also choose a producer-side backpressure policy:
+
+```sh
+cargo run -p mdstream-tokio --example agent_tui -- --policy coalesce-local
+cargo run -p mdstream-tokio --example agent_tui -- --policy drop-new
+cargo run -p mdstream-tokio --example agent_tui -- --policy block
+```
+
+Keys:
+
+- `q`: quit
+- `j/k` or `↑/↓`: scroll
+- `g/G`: top/bottom
+- `f`: toggle follow-tail
+- `c`: cycle coalescing mode
+- `[` / `]`: adjust pending code tail lines
 
 ## Optional: Reference Definitions Invalidation (Best-effort)
 
@@ -153,7 +250,7 @@ assert!(u2.invalidated.contains(&mdstream::BlockId(1)));
 
 ```toml
 [dependencies]
-mdstream = { version = "0.1.0", features = ["pulldown"] }
+mdstream = { version = "0.2.0", features = ["pulldown"] }
 ```
 
 When `reference_definitions` invalidation is enabled, the adapter can re-parse only the invalidated
@@ -186,6 +283,11 @@ adapter.apply_update(&u2);
 - Release checklist: `RELEASE_CHECKLIST.md`
 - Note: This project may prune `docs/` during releases; user-facing guidance lives in this README.
 
+## Design notes (in-repo)
+
+- `docs/ADR_0001_STREAMING_CONCURRENCY.md`
+- Feature proposal/preview: `sync` (opt-in) for `Send + Sync` extension points.
+
 ## Credits
 
 - Inspired by Vercel's `streamdown`: https://github.com/vercel/streamdown
@@ -203,8 +305,8 @@ Initial MVP implementation is in progress:
 
 Try the demo:
 
-`cargo run --example tui_like`
+`cargo run -p mdstream --example tui_like`
 
 Try the `pulldown-cmark` incremental demo:
 
-`cargo run --features pulldown --example pulldown_incremental`
+`cargo run -p mdstream --features pulldown --example pulldown_incremental`

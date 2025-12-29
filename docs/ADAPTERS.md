@@ -9,7 +9,7 @@ This adapter is implemented behind the `pulldown` Cargo feature.
 ### Demo
 
 ```sh
-cargo run --features pulldown --example pulldown_incremental
+cargo run -p mdstream --features pulldown --example pulldown_incremental
 ```
 
 ### Why adapter instead of core dependency

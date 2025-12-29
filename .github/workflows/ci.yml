@@ -36,14 +36,16 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test (no features)
-        run: cargo test --tests
+        run: cargo test -p mdstream --tests && cargo test -p mdstream-tokio --tests
 
       - name: Test (all features)
-        run: cargo test --all-features --tests
+        run: cargo test --workspace --all-features --tests
 
       - name: Check examples (no features)
-        run: cargo check --examples
+        run: cargo check -p mdstream --examples
 
       - name: Check examples (pulldown)
-        run: cargo check --features pulldown --examples
+        run: cargo check -p mdstream --features pulldown --examples
 
+      - name: Check examples (mdstream-tokio)
+        run: cargo check -p mdstream-tokio --examples
