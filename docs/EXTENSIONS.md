@@ -30,6 +30,14 @@ Status: implemented (MVP-level).
 - `ContainerBoundaryPlugin` for Incremark-compatible `::: name attr` containers (with nesting)
 - `FnBoundaryPlugin` for quick ad-hoc custom boundaries (closure-based)
 
+Lifecycle:
+
+- registration appends the plugin to the internal boundary registry
+- `matches_start` is used as a pure start predicate
+- `start` is called once when the plugin becomes active for a block
+- `update` is called for each line in the active block, including the starting line
+- `reset` is called when `MdStream::reset()` clears stream state
+
 Notes on `:::` containers:
 
 - If you want **Incremark parity** (`::: name attr` with nesting depth), use `ContainerBoundaryPlugin`.
@@ -90,6 +98,14 @@ Status: implemented (MVP-level).
 - Built-in transformers for Streamdown-compatible behavior:
   - `IncompleteLinkPlaceholderTransformer`
   - `IncompleteImageDropTransformer`
+
+Lifecycle:
+
+- registration appends the transformer to the internal pending transformer chain
+- transformers run in registration order after the built-in terminator has produced the current display string
+- returning `Some(String)` replaces the display passed to later transformers
+- returning `None` leaves display unchanged
+- `reset` is called when `MdStream::reset()` clears stream state
 
 Minimal example:
 

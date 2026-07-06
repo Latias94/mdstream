@@ -93,13 +93,18 @@ This reduces flicker and stabilizes scrolling.
 - Add `sync` feature with `Send + Sync` bounds on extension traits.
 - Provide a migration guide for common patterns (interior mutability, shared caches).
 
-### B) Optional async glue (ergonomics)
+### B) Tokio async glue (implemented as a separate crate)
 
-Provide optional helpers behind `tokio` (or `async`) features:
+`mdstream-tokio` provides runtime-specific feeding helpers while keeping `mdstream` itself
+runtime-agnostic:
 
-- `Coalescer` utilities (newline-gated + time-window flush).
-- An **actor** wrapper that owns `MdStream` on a dedicated task/thread and accepts deltas over a
-  channel, emitting owned `Update` for consumers that cannot keep the stream on the UI thread.
+- `DeltaSender` for producer-side backpressure policies.
+- `CoalescingReceiver` for newline-gated, max-delay, and max-byte chunk coalescing.
+- `spawn_mdstream_actor` for consumers that need an async task to own `MdStream` and emit owned
+  `Update`s.
+
+The crate is split into focused `sender`, `receiver`, `actor`, and `options` modules with `lib.rs`
+as the public re-export facade.
 
 ### C) Pending rendering policies
 

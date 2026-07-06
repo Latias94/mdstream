@@ -78,6 +78,18 @@ Internally we maintain:
 - `pending_start`: where the current pending block begins
 - `next_block_id`
 
+### Internal module map
+
+The public entry point is still `MdStream`, but the implementation is split by responsibility:
+
+- `stream/input.rs`: newline normalization, line indexing, and buffer rebuilding.
+- `stream/mode.rs`: block-mode state and `BlockKind` mapping.
+- `stream/machine.rs`: stable boundary detection, block committing, and mode transitions.
+- `pending/pipeline.rs`: pending display cache, code-fence suffix fast path, terminator calls, and pending transformer chain.
+- `semantics/mod.rs`: document-scoped reference invalidation and footnote detection state.
+- `extensions/*`: internal registries for boundary plugins and pending transformers.
+- `mdstream-tokio/src/{sender,receiver,actor,options}.rs`: Tokio feeding strategy around the runtime-agnostic core.
+
 ### Stable boundary detection
 
 The stable boundary detector scans only new lines and advances a “stable boundary” when the previous block can no longer change.
@@ -98,6 +110,7 @@ Default design is inspired by Streamdown `remend` but implemented in Rust:
 
 - only scans a tail window (eg 16KiB) to keep per-tick cost bounded
 - never modifies committed text
+- owns the display cache so `append()` and `append_ref()` share the same pending-display behavior
 
 Note: `mdstream` does not include domain-specific transforms (eg tool-call JSON repair).
 Consumers can implement them via `PendingTransformer` when needed.
@@ -117,6 +130,10 @@ Some Markdown constructs are inherently document-scoped:
 The default can prioritize streaming stability (SingleBlock for footnotes) while still allowing advanced consumers to opt into invalidation.
 
 Today, invalidation is implemented for reference-style link definitions. Footnote invalidation is planned post-MVP.
+
+Internally, document-scoped behavior lives in `DocumentSemantics` rather than the block state
+machine. This keeps block boundaries separate from effects that may invalidate earlier committed
+blocks or require a full reset.
 
 ### Footnote definition boundary rules
 
