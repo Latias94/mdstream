@@ -9,15 +9,20 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
 - [ ] Ensure `README.md` contains all user-facing guidance (installation, quick start, examples)
 - [ ] Run formatting and lint:
   - [ ] `cargo fmt --all`
-  - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
+  - [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - [ ] Run tests:
-  - [ ] `cargo test --tests`
-  - [ ] `cargo test --all-features --tests`
-- [ ] Verify optional feature builds:
-  - [ ] `cargo check --examples`
-  - [ ] `cargo check --features pulldown --examples`
+  - [ ] `cargo nextest run --workspace --all-features`
+  - [ ] `cargo test --workspace --all-features --doc`
+- [ ] Verify MSRV:
+  - [ ] `cargo +1.85.0 test -p mdstream --tests --all-features`
+  - [ ] `cargo +1.88.0 nextest run --workspace --all-features`
+- [ ] Verify examples and benchmarks:
+  - [ ] `cargo check -p mdstream --examples`
+  - [ ] `cargo check -p mdstream --features pulldown --examples`
+  - [ ] `cargo check -p mdstream-tokio --examples`
+  - [ ] `cargo check -p mdstream --benches`
 - [ ] Verify packaging does not include large/internal folders:
-  - [ ] `cargo package` (check the generated `.crate` contents)
+  - [ ] `cargo package -p mdstream` (check the generated `.crate` contents)
 
 ## Prune `docs/` (if desired)
 

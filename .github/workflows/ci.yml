@@ -14,8 +14,55 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test / Lint / Fmt
+  core-msrv:
+    name: Core MSRV / Rust 1.85
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test mdstream all features
+        run: cargo test -p mdstream --tests --all-features
+
+      - name: Check mdstream examples
+        run: cargo check -p mdstream --examples
+
+      - name: Check mdstream pulldown examples
+        run: cargo check -p mdstream --features pulldown --examples
+
+  workspace-msrv:
+    name: Workspace MSRV / Rust 1.88
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test workspace all features
+        run: cargo nextest run --workspace --all-features
+
+      - name: Doc tests
+        run: cargo test --workspace --all-features --doc
+
+      - name: Check Tokio examples
+        run: cargo check -p mdstream-tokio --examples
+
+  quality:
+    name: Stable quality gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -26,26 +73,35 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Clippy (all features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Test (no features)
-        run: cargo test -p mdstream --tests && cargo test -p mdstream-tokio --tests
+      - name: Test workspace all features
+        run: cargo nextest run --workspace --all-features
 
-      - name: Test (all features)
-        run: cargo test --workspace --all-features --tests
+      - name: Doc tests
+        run: cargo test --workspace --all-features --doc
 
-      - name: Check examples (no features)
+      - name: Check mdstream examples
         run: cargo check -p mdstream --examples
 
-      - name: Check examples (pulldown)
+      - name: Check mdstream pulldown examples
         run: cargo check -p mdstream --features pulldown --examples
 
-      - name: Check examples (mdstream-tokio)
+      - name: Check Tokio examples
         run: cargo check -p mdstream-tokio --examples
+
+      - name: Check benchmarks
+        run: cargo check -p mdstream --benches
+
+      - name: Package mdstream
+        run: cargo package -p mdstream

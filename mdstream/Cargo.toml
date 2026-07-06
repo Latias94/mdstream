@@ -18,7 +18,7 @@ exclude = ["repo-ref/**"]
 pulldown-cmark = { version = "0.13.4", optional = true }
 
 [dev-dependencies]
-criterion = "0.8.2"
+criterion = "0.7.0"
 
 [features]
 default = []
