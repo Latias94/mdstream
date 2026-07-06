@@ -8,14 +8,18 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
 - [ ] Update `CHANGELOG.md` for the release version
 - [ ] Ensure `README.md` contains all user-facing guidance (installation, quick start, examples)
 - [ ] Run formatting and lint:
-  - [ ] `cargo fmt --all`
+  - [ ] `cargo fmt --all -- --check`
   - [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - [ ] Run tests:
   - [ ] `cargo nextest run --workspace --all-features`
   - [ ] `cargo test --workspace --all-features --doc`
 - [ ] Verify MSRV:
   - [ ] `cargo +1.85.0 test -p mdstream --tests --all-features`
+  - [ ] `cargo +1.85.0 check -p mdstream --examples`
+  - [ ] `cargo +1.85.0 check -p mdstream --features pulldown --examples`
   - [ ] `cargo +1.88.0 nextest run --workspace --all-features`
+  - [ ] `cargo +1.88.0 test --workspace --all-features --doc`
+  - [ ] `cargo +1.88.0 check -p mdstream-tokio --examples`
 - [ ] Verify examples and benchmarks:
   - [ ] `cargo check -p mdstream --examples`
   - [ ] `cargo check -p mdstream --features pulldown --examples`
@@ -37,5 +41,7 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
 
 - [ ] Create tag `vX.Y.Z`
 - [ ] Push tag
-- [ ] Publish: `cargo publish`
+- [ ] Publish core crate first: `cargo publish -p mdstream`
+- [ ] Wait until `mdstream` `X.Y.Z` is visible on crates.io
+- [ ] Publish Tokio glue crate: `cargo publish -p mdstream-tokio`
 - [ ] Create a GitHub release for the tag (attach notes / changelog)
