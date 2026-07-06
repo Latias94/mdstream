@@ -227,7 +227,7 @@ flowchart TB
 - **Approach:** Update docs to describe the benchmark workflow, fuzz workflow, nextest/release gates, MSRV split, hot-path API recommendations, and when to use owned vs borrowed updates. Keep user-facing docs in English to match the repo, and keep Chinese discussion in chat only.
 - **Execution note:** Prefer documentation edits after implementation so docs describe the actual commands and artifacts that landed.
 - **Patterns to follow:** Existing README API-at-a-glance section, `docs/ADR_0001_STREAMING_CONCURRENCY.md`, `docs/COMPATIBILITY.md`.
-- **Test scenarios:** 
+- **Test scenarios:**
   - Happy path: README install and quick-start guidance still names current crate versions and recommended APIs.
   - Edge case: docs distinguish user-visible content streams from status/progress signals for `mdstream-tokio` backpressure choices.
   - Integration: release checklist and CI workflow describe the same gates.
