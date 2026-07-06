@@ -1,19 +1,15 @@
-use std::collections::HashSet;
-
 use super::footnotes::{is_footnote_continuation, is_footnote_definition_start};
 use super::html::{html_block_start_state, update_html_block_state};
 use super::mode::BlockMode;
-use super::refs::extract_reference_usages;
 use super::{AppendCtx, MdStream};
 use crate::boundary::BoundaryUpdate;
-use crate::options::{FootnotesMode, ReferenceDefinitionsMode};
-use crate::reference::extract_reference_definition_label;
+use crate::options::FootnotesMode;
 use crate::syntax::facts::{
     count_double_dollars, fence_end, fence_start, is_atx_heading_start as is_heading,
     is_blank_line as is_empty_line, is_blockquote_start, is_list_continuation, is_list_item_start,
     is_list_item_start_prefix, is_thematic_break, setext_underline_char,
 };
-use crate::types::{Block, BlockId, BlockKind, BlockStatus};
+use crate::types::{Block, BlockId, BlockStatus};
 
 impl MdStream {
     pub(super) fn start_mode_for_line(&self, line: &str) -> BlockMode {
@@ -101,43 +97,10 @@ impl MdStream {
     }
 
     pub(super) fn push_committed_block(&mut self, block: Block, ctx: &mut AppendCtx<'_>) {
-        // Index usages for invalidation-based adapters.
-        if block.kind != BlockKind::CodeFence && block.raw.contains('[') {
-            let used = extract_reference_usages(&block.raw);
-            if !used.is_empty() {
-                for label in used {
-                    self.reference_usage_index
-                        .entry(label)
-                        .or_default()
-                        .insert(block.id);
-                }
-            }
-        }
-
-        // Emit invalidations when new reference definitions arrive.
-        if self.opts.reference_definitions == ReferenceDefinitionsMode::Invalidate
-            && block.kind != BlockKind::CodeFence
-            && block.raw.contains("]:")
-        {
-            let mut invalidated = HashSet::new();
-            for line in block.raw.split('\n') {
-                let Some(label) = extract_reference_definition_label(line) else {
-                    continue;
-                };
-                if let Some(ids) = self.reference_usage_index.get(&label) {
-                    for id in ids {
-                        if *id != block.id {
-                            invalidated.insert(*id);
-                        }
-                    }
-                }
-            }
-            if !invalidated.is_empty() {
-                let mut ids: Vec<BlockId> = invalidated.into_iter().collect();
-                ids.sort_by_key(|id| id.0);
-                ctx.invalidated.extend(ids);
-            }
-        }
+        let effects = self
+            .semantics
+            .observe_committed_block(&block, self.opts.reference_definitions);
+        ctx.invalidated.extend(effects.invalidated);
 
         self.committed.push(block);
         let block = self
@@ -167,7 +130,8 @@ impl MdStream {
         }
 
         // If we're in SingleBlock footnote mode, we bypass block splitting.
-        if self.opts.footnotes == FootnotesMode::SingleBlock && self.footnotes_detected {
+        if self.opts.footnotes == FootnotesMode::SingleBlock && self.semantics.footnotes_detected()
+        {
             return;
         }
 
@@ -222,7 +186,8 @@ impl MdStream {
             return;
         }
 
-        if self.opts.footnotes == FootnotesMode::SingleBlock && self.footnotes_detected {
+        if self.opts.footnotes == FootnotesMode::SingleBlock && self.semantics.footnotes_detected()
+        {
             return;
         }
 

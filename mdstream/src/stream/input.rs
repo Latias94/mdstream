@@ -23,46 +23,6 @@ impl Line {
     }
 }
 
-pub(super) fn take_prefix_at_char_boundary(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
-fn take_suffix_at_char_boundary(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut start = s.len() - max_bytes;
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
-    }
-    &s[start..]
-}
-
-pub(super) fn update_tail(tail: &mut String, chunk: &str, max_bytes: usize) {
-    if chunk.is_empty() {
-        return;
-    }
-    if chunk.len() >= max_bytes {
-        *tail = take_suffix_at_char_boundary(chunk, max_bytes).to_string();
-        return;
-    }
-    if tail.len() + chunk.len() <= max_bytes {
-        tail.push_str(chunk);
-        return;
-    }
-    let mut combined = String::with_capacity(max_bytes + 4);
-    combined.push_str(tail);
-    combined.push_str(chunk);
-    *tail = take_suffix_at_char_boundary(&combined, max_bytes).to_string();
-}
-
 impl MdStream {
     pub(super) fn normalize_newlines_cow<'a>(&mut self, chunk: &'a str) -> Cow<'a, str> {
         if !chunk.contains('\r') && !self.pending_cr {

@@ -12,7 +12,8 @@ impl MdStream {
 
         // In single-block footnote mode we must keep the entire buffer until finalize, since we
         // intentionally avoid incremental committing.
-        if self.opts.footnotes == FootnotesMode::SingleBlock && self.footnotes_detected {
+        if self.opts.footnotes == FootnotesMode::SingleBlock && self.semantics.footnotes_detected()
+        {
             return;
         }
 

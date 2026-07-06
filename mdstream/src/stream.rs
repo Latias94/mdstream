@@ -1,20 +1,17 @@
-use std::collections::{HashMap, HashSet};
-
 mod compaction;
 mod footnotes;
 mod html;
 mod input;
 mod machine;
 mod mode;
-mod refs;
 
-use self::footnotes::detect_footnotes;
-use self::input::{Line, take_prefix_at_char_boundary, update_tail};
+use self::input::Line;
 use self::mode::BlockMode;
 
 use crate::boundary::BoundaryPlugin;
 use crate::options::{FootnotesMode, Options};
 use crate::pending::{PendingDisplayPipeline, render_pending_display};
+use crate::semantics::DocumentSemantics;
 use crate::transform::PendingTransformer;
 use crate::types::{Block, BlockId, BlockKind, BlockStatus, PendingBlockRef, Update, UpdateRef};
 
@@ -34,12 +31,9 @@ pub struct MdStream {
     pending_transformers: Vec<Box<dyn PendingTransformer>>,
     boundary_plugins: Vec<Box<dyn BoundaryPlugin>>,
     active_boundary_plugin: Option<usize>,
-    footnotes_detected: bool,
-    footnote_scan_tail: String,
+    semantics: DocumentSemantics,
     pending_cr: bool,
     last_finalized_buffer_len: usize,
-
-    reference_usage_index: HashMap<String, HashSet<BlockId>>,
 }
 
 struct AppendCtx<'a> {
@@ -85,7 +79,7 @@ impl std::fmt::Debug for MdStream {
             .field("pending_transformers_len", &self.pending_transformers.len())
             .field("boundary_plugins_len", &self.boundary_plugins.len())
             .field("active_boundary_plugin", &self.active_boundary_plugin)
-            .field("footnotes_detected", &self.footnotes_detected)
+            .field("semantics", &self.semantics)
             .field("last_finalized_buffer_len", &self.last_finalized_buffer_len)
             .finish()
     }
@@ -114,11 +108,9 @@ impl MdStream {
             pending_transformers: Vec::new(),
             boundary_plugins: Vec::new(),
             active_boundary_plugin: None,
-            footnotes_detected: false,
-            footnote_scan_tail: String::new(),
+            semantics: DocumentSemantics::default(),
             pending_cr: false,
             last_finalized_buffer_len: 0,
-            reference_usage_index: HashMap::new(),
         }
     }
 
@@ -195,7 +187,8 @@ impl MdStream {
     }
 
     fn current_pending_info(&self) -> Option<PendingInfo> {
-        if self.opts.footnotes == FootnotesMode::SingleBlock && self.footnotes_detected {
+        if self.opts.footnotes == FootnotesMode::SingleBlock && self.semantics.footnotes_detected()
+        {
             if self.buffer.is_empty() {
                 return None;
             }
@@ -271,7 +264,8 @@ impl MdStream {
     }
 
     fn pending_block_snapshot(&mut self) -> Option<Block> {
-        if self.opts.footnotes == FootnotesMode::SingleBlock && self.footnotes_detected {
+        if self.opts.footnotes == FootnotesMode::SingleBlock && self.semantics.footnotes_detected()
+        {
             let raw = self.buffer.clone();
             if raw.is_empty() {
                 return None;
@@ -381,7 +375,7 @@ impl MdStream {
             return;
         }
 
-        let footnotes_before = self.footnotes_detected;
+        let footnotes_before = self.semantics.footnotes_detected();
         let chunk = self.normalize_newlines_cow(chunk);
 
         // Best-effort incremental update for code-fence pending display.
@@ -393,30 +387,10 @@ impl MdStream {
             self.pending_display.clear();
         }
 
-        if !self.footnotes_detected {
-            if detect_footnotes(chunk.as_ref()) {
-                self.footnotes_detected = true;
-            } else {
-                // Keep a small tail window to detect patterns across chunk boundaries.
-                const MAX_TAIL: usize = 256;
-                let chunk_prefix = take_prefix_at_char_boundary(chunk.as_ref(), MAX_TAIL);
-                if !self.footnote_scan_tail.is_empty() && !chunk_prefix.is_empty() {
-                    let mut combined =
-                        String::with_capacity(self.footnote_scan_tail.len() + chunk_prefix.len());
-                    combined.push_str(&self.footnote_scan_tail);
-                    combined.push_str(chunk_prefix);
-                    if detect_footnotes(&combined) {
-                        self.footnotes_detected = true;
-                    }
-                }
-                if !self.footnotes_detected {
-                    update_tail(&mut self.footnote_scan_tail, chunk.as_ref(), MAX_TAIL);
-                }
-            }
-        }
+        self.semantics.observe_chunk_for_footnotes(chunk.as_ref());
 
         let enter_single_block_footnotes = !footnotes_before
-            && self.footnotes_detected
+            && self.semantics.footnotes_detected()
             && self.opts.footnotes == FootnotesMode::SingleBlock;
 
         self.append_to_lines(chunk.as_ref());
@@ -446,7 +420,7 @@ impl MdStream {
         ctx.reset = true;
 
         self.committed.clear();
-        self.reference_usage_index.clear();
+        self.semantics.clear_references();
         self.pending_display.clear();
         self.active_boundary_plugin = None;
 
@@ -474,7 +448,8 @@ impl MdStream {
             self.pending_cr = false;
         }
 
-        if self.opts.footnotes == FootnotesMode::SingleBlock && self.footnotes_detected {
+        if self.opts.footnotes == FootnotesMode::SingleBlock && self.semantics.footnotes_detected()
+        {
             if !self.buffer.is_empty() {
                 if self.buffer.trim().is_empty() {
                     update.pending = None;
@@ -564,11 +539,9 @@ impl MdStream {
             p.reset();
         }
         self.active_boundary_plugin = None;
-        self.footnotes_detected = false;
-        self.footnote_scan_tail.clear();
+        self.semantics.reset();
         self.pending_cr = false;
         self.last_finalized_buffer_len = 0;
-        self.reference_usage_index.clear();
     }
 }
 

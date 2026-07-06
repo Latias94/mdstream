@@ -3,6 +3,7 @@ pub mod boundary;
 pub mod options;
 pub mod pending;
 mod reference;
+mod semantics;
 pub mod state;
 pub mod stream;
 pub mod syntax;
