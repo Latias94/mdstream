@@ -9,7 +9,7 @@ use crate::syntax::facts::{
     is_blank_line as is_empty_line, is_blockquote_start, is_list_continuation, is_list_item_start,
     is_list_item_start_prefix, is_thematic_break, setext_underline_char,
 };
-use crate::types::{Block, BlockId, BlockStatus};
+use crate::types::{Block, BlockStatus};
 
 impl MdStream {
     pub(super) fn start_mode_for_line(&self, line: &str) -> BlockMode {
@@ -52,13 +52,16 @@ impl MdStream {
     }
 
     pub(super) fn commit_block(&mut self, end_line_inclusive: usize, ctx: &mut AppendCtx<'_>) {
-        if self.current_block_start_line >= self.input.line_count() {
+        if self.block_machine.current_block_start_line >= self.input.line_count() {
             return;
         }
-        if end_line_inclusive < self.current_block_start_line {
+        if end_line_inclusive < self.block_machine.current_block_start_line {
             return;
         }
-        let Some(start_off) = self.input.line_start(self.current_block_start_line) else {
+        let Some(start_off) = self
+            .input
+            .line_start(self.block_machine.current_block_start_line)
+        else {
             return;
         };
         let Some(end_off) = self.input.line_end_with_newline(end_line_inclusive) else {
@@ -71,27 +74,23 @@ impl MdStream {
         let raw = self.input.as_str()[start_off..end_off].to_string();
         if raw.trim().is_empty() {
             // Never emit whitespace-only blocks. Keep stable behavior by advancing the block cursor.
-            self.current_block_start_line = end_line_inclusive + 1;
-            self.current_block_id = BlockId(self.next_block_id);
-            self.next_block_id += 1;
-            self.current_mode = BlockMode::Unknown;
+            self.block_machine
+                .start_next_block_after(end_line_inclusive);
             self.boundaries.clear_active();
             self.pending_display.clear();
             return;
         }
         let block = Block {
-            id: self.current_block_id,
+            id: self.block_machine.current_block_id,
             status: BlockStatus::Committed,
-            kind: self.current_mode.kind(),
+            kind: self.block_machine.current_mode.kind(),
             raw,
             display: None,
         };
         self.push_committed_block(block, ctx);
 
-        self.current_block_start_line = end_line_inclusive + 1;
-        self.current_block_id = BlockId(self.next_block_id);
-        self.next_block_id += 1;
-        self.current_mode = BlockMode::Unknown;
+        self.block_machine
+            .start_next_block_after(end_line_inclusive);
         self.boundaries.clear_active();
         self.pending_display.clear();
     }
@@ -107,7 +106,7 @@ impl MdStream {
     }
 
     fn maybe_commit_single_line(&mut self, line_index: usize, ctx: &mut AppendCtx<'_>) {
-        match self.current_mode {
+        match self.block_machine.current_mode {
             BlockMode::Heading | BlockMode::ThematicBreak => {
                 self.commit_block(line_index, ctx);
             }
@@ -131,10 +130,10 @@ impl MdStream {
             return;
         }
 
-        if line_index == self.current_block_start_line {
+        if line_index == self.block_machine.current_block_start_line {
             // Defensive: the first line of a block is the single source of truth for the block mode.
             // This avoids stale-mode edge cases where `current_mode` is not `Unknown` at a new start.
-            self.current_mode = self.start_mode_for_line(self.line_str(line_index));
+            self.block_machine.current_mode = self.start_mode_for_line(self.line_str(line_index));
             self.maybe_commit_single_line(line_index, ctx);
             // Even on the first line, some modes need to update internal state (e.g. HTML tag stack).
             self.update_mode_with_line(line_index, ctx);
@@ -157,7 +156,7 @@ impl MdStream {
         if boundary {
             self.commit_block(line_index - 1, ctx);
             if let Some(m) = next_mode {
-                self.current_mode = m;
+                self.block_machine.current_mode = m;
             }
             self.maybe_commit_single_line(line_index, ctx);
             // If we started a new mode on this line, we must also update its per-line state.
@@ -195,7 +194,7 @@ impl MdStream {
 
         if boundary {
             self.commit_block(last - 1, ctx);
-            self.current_mode = self.start_mode_for_line(self.line_str(last));
+            self.block_machine.current_mode = self.start_mode_for_line(self.line_str(last));
         }
     }
 
@@ -203,25 +202,25 @@ impl MdStream {
         let curr_has_newline = self.input.line_has_newline(curr_line_index);
 
         // Never split inside fenced code blocks.
-        if let BlockMode::CodeFence { .. } = self.current_mode {
+        if let BlockMode::CodeFence { .. } = self.block_machine.current_mode {
             return false;
         }
-        if let BlockMode::CustomBoundary { .. } = self.current_mode {
+        if let BlockMode::CustomBoundary { .. } = self.block_machine.current_mode {
             return false;
         }
-        if let BlockMode::MathBlock { open_count } = self.current_mode {
+        if let BlockMode::MathBlock { open_count } = self.block_machine.current_mode {
             if open_count % 2 == 1 {
                 return false;
             }
         }
-        if let BlockMode::HtmlBlock { stack, in_comment } = &self.current_mode {
+        if let BlockMode::HtmlBlock { stack, in_comment } = &self.block_machine.current_mode {
             if *in_comment || !stack.is_empty() {
                 return false;
             }
         }
 
         // Footnote definition: continuation lines should remain in the same block.
-        if let BlockMode::FootnoteDefinition = self.current_mode {
+        if let BlockMode::FootnoteDefinition = self.block_machine.current_mode {
             if is_empty_line(curr) || is_footnote_continuation(curr) {
                 return false;
             }
@@ -233,11 +232,11 @@ impl MdStream {
         if is_empty_line(prev) && !is_empty_line(curr) {
             // Be robust against mode drift in streaming scenarios: the current block's "start line"
             // is the source of truth for whether we're inside a list/quote container.
-            let block_start_mode =
-                self.start_mode_for_line(self.line_str(self.current_block_start_line));
-            let in_list = matches!(self.current_mode, BlockMode::List)
+            let block_start_mode = self
+                .start_mode_for_line(self.line_str(self.block_machine.current_block_start_line));
+            let in_list = matches!(self.block_machine.current_mode, BlockMode::List)
                 || matches!(block_start_mode, BlockMode::List);
-            let in_blockquote = matches!(self.current_mode, BlockMode::BlockQuote)
+            let in_blockquote = matches!(self.block_machine.current_mode, BlockMode::BlockQuote)
                 || matches!(block_start_mode, BlockMode::BlockQuote);
             // Lists can legally contain blank lines between items and within an item's continuation.
             if in_list && (is_list_continuation(curr) || is_list_item_start_prefix(curr)) {
@@ -251,10 +250,12 @@ impl MdStream {
         }
 
         // Setext heading underline is part of the current paragraph block, not a new block boundary.
-        if matches!(self.current_mode, BlockMode::Paragraph | BlockMode::Unknown)
-            && setext_underline_char(curr).is_some()
+        if matches!(
+            self.block_machine.current_mode,
+            BlockMode::Paragraph | BlockMode::Unknown
+        ) && setext_underline_char(curr).is_some()
             && !is_empty_line(prev)
-            && self.current_block_start_line + 1 == curr_line_index
+            && self.block_machine.current_block_start_line + 1 == curr_line_index
         {
             return false;
         }
@@ -274,26 +275,26 @@ impl MdStream {
         }
         if is_blockquote_start(curr)
             && !is_blockquote_start(prev)
-            && !matches!(self.current_mode, BlockMode::BlockQuote)
+            && !matches!(self.block_machine.current_mode, BlockMode::BlockQuote)
         {
             return true;
         }
         if is_list_item_start(curr)
             && !is_list_item_start(prev)
-            && !matches!(self.current_mode, BlockMode::List)
+            && !matches!(self.block_machine.current_mode, BlockMode::List)
         {
             return true;
         }
 
         // Table detection: if current line is a delimiter and previous line contains pipes,
         // consider starting a table block at the previous line.
-        if matches!(self.current_mode, BlockMode::Paragraph | BlockMode::Unknown)
+        if matches!(self.block_machine.current_mode, BlockMode::Paragraph | BlockMode::Unknown)
             && curr_has_newline
             && self.is_table_delimiter(curr)
             && prev.contains('|')
             // table starts at prev line, so boundary at prev-1 if block started earlier.
             && curr_line_index >= 1
-            && self.current_block_start_line < curr_line_index - 1
+            && self.block_machine.current_block_start_line < curr_line_index - 1
         {
             return true;
         }
@@ -326,9 +327,9 @@ impl MdStream {
             (line.start(), line.end())
         };
         let line = &self.input.as_str()[start..end];
-        match &mut self.current_mode {
+        match &mut self.block_machine.current_mode {
             BlockMode::Unknown => {
-                self.current_mode = self.start_mode_for_line(line);
+                self.block_machine.current_mode = self.start_mode_for_line(line);
                 self.maybe_commit_single_line(line_index, ctx);
             }
             BlockMode::CodeFence {
@@ -336,7 +337,7 @@ impl MdStream {
                 fence_len,
             } => {
                 // Opening fence matches `fence_end()` pattern but must not close itself.
-                if line_index > self.current_block_start_line
+                if line_index > self.block_machine.current_block_start_line
                     && fence_end(line, *fence_char, *fence_len)
                 {
                     self.commit_block(line_index, ctx);
@@ -369,12 +370,12 @@ impl MdStream {
             BlockMode::Paragraph => {
                 // Upgrade to setext heading if underline appears right after a single paragraph line.
                 if setext_underline_char(line).is_some()
-                    && self.current_block_start_line + 1 == line_index
+                    && self.block_machine.current_block_start_line + 1 == line_index
                     && line_index > 0
                 {
                     let prev = self.input.line_str(line_index - 1);
                     if !is_empty_line(prev) {
-                        self.current_mode = BlockMode::Heading;
+                        self.block_machine.current_mode = BlockMode::Heading;
                         self.commit_block(line_index, ctx);
                         return;
                     }
@@ -383,7 +384,7 @@ impl MdStream {
                 if self.is_table_delimiter(line) && line_index > 0 {
                     let prev = self.input.line_str(line_index - 1);
                     if prev.contains('|') {
-                        self.current_mode = BlockMode::Table;
+                        self.block_machine.current_mode = BlockMode::Table;
                     }
                 }
             }

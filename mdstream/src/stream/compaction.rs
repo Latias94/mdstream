@@ -18,8 +18,8 @@ impl MdStream {
         }
 
         let old_line_count = self.input.line_count();
-        let old_block_start_line = self.current_block_start_line;
-        let old_processed_line = self.processed_line;
+        let old_block_start_line = self.block_machine.current_block_start_line;
+        let old_processed_line = self.block_machine.processed_line;
 
         let keep_from = if old_block_start_line < self.input.line_count() {
             self.input
@@ -40,10 +40,10 @@ impl MdStream {
             return;
         }
 
-        self.current_block_start_line = 0;
-        self.processed_line = old_processed_line.saturating_sub(old_block_start_line);
-        if self.processed_line > self.input.line_count() {
-            self.processed_line = self.input.line_count();
+        self.block_machine.current_block_start_line = 0;
+        self.block_machine.processed_line = old_processed_line.saturating_sub(old_block_start_line);
+        if self.block_machine.processed_line > self.input.line_count() {
+            self.block_machine.processed_line = self.input.line_count();
         }
 
         self.pending_display.clear();

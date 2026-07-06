@@ -1,3 +1,4 @@
+mod block_machine;
 mod compaction;
 mod footnotes;
 mod html;
@@ -5,6 +6,7 @@ mod input;
 mod machine;
 mod mode;
 
+use self::block_machine::BlockMachine;
 use self::input::LineBuffer;
 use self::mode::BlockMode;
 
@@ -21,11 +23,7 @@ pub struct MdStream {
     input: LineBuffer,
 
     committed: Vec<Block>,
-    processed_line: usize,
-    current_block_start_line: usize,
-    current_block_id: BlockId,
-    next_block_id: u64,
-    current_mode: BlockMode,
+    block_machine: BlockMachine,
 
     pending_display: PendingDisplayPipeline,
     pending_transformers: PendingTransformers,
@@ -69,10 +67,13 @@ impl std::fmt::Debug for MdStream {
             .field("buffer_len", &self.input.len())
             .field("lines_len", &self.input.line_count())
             .field("committed_len", &self.committed.len())
-            .field("processed_line", &self.processed_line)
-            .field("current_block_start_line", &self.current_block_start_line)
-            .field("current_block_id", &self.current_block_id)
-            .field("next_block_id", &self.next_block_id)
+            .field("processed_line", &self.block_machine.processed_line)
+            .field(
+                "current_block_start_line",
+                &self.block_machine.current_block_start_line,
+            )
+            .field("current_block_id", &self.block_machine.current_block_id)
+            .field("next_block_id", &self.block_machine.next_block_id)
             .field("pending_display", &self.pending_display)
             .field("pending_transformers", &self.pending_transformers)
             .field("boundaries", &self.boundaries)
@@ -91,11 +92,7 @@ impl MdStream {
             opts,
             input: LineBuffer::new(),
             committed: Vec::new(),
-            processed_line: 0,
-            current_block_start_line: 0,
-            current_block_id: BlockId(1),
-            next_block_id: 2,
-            current_mode: BlockMode::Unknown,
+            block_machine: BlockMachine::new(),
             pending_display: PendingDisplayPipeline::default(),
             pending_transformers: PendingTransformers::default(),
             boundaries: BoundaryRegistry::default(),
@@ -189,10 +186,12 @@ impl MdStream {
             });
         }
 
-        if self.current_block_start_line >= self.input.line_count() {
+        if self.block_machine.current_block_start_line >= self.input.line_count() {
             return None;
         }
-        let start_off = self.input.line_start(self.current_block_start_line)?;
+        let start_off = self
+            .input
+            .line_start(self.block_machine.current_block_start_line)?;
         if start_off >= self.input.len() {
             return None;
         }
@@ -200,15 +199,16 @@ impl MdStream {
             return None;
         }
 
-        let kind = if matches!(self.current_mode, BlockMode::Unknown) {
-            let mode = self.start_mode_for_line(self.line_str(self.current_block_start_line));
+        let kind = if matches!(self.block_machine.current_mode, BlockMode::Unknown) {
+            let mode = self
+                .start_mode_for_line(self.line_str(self.block_machine.current_block_start_line));
             mode.kind()
         } else {
-            self.current_mode.kind()
+            self.block_machine.current_mode.kind()
         };
 
         Some(PendingInfo {
-            id: self.current_block_id,
+            id: self.block_machine.current_block_id,
             kind,
             raw_start: start_off,
         })
@@ -245,7 +245,7 @@ impl MdStream {
         if let BlockMode::CodeFence {
             fence_char,
             fence_len,
-        } = self.current_mode
+        } = self.block_machine.current_mode
         {
             Some((fence_char, fence_len))
         } else {
@@ -276,10 +276,12 @@ impl MdStream {
             });
         }
 
-        if self.current_block_start_line >= self.input.line_count() {
+        if self.block_machine.current_block_start_line >= self.input.line_count() {
             return None;
         }
-        let start_off = self.input.line_start(self.current_block_start_line)?;
+        let start_off = self
+            .input
+            .line_start(self.block_machine.current_block_start_line)?;
         if start_off >= self.input.len() {
             return None;
         }
@@ -287,11 +289,12 @@ impl MdStream {
         if raw.is_empty() {
             return None;
         }
-        let kind = if matches!(self.current_mode, BlockMode::Unknown) {
-            let mode = self.start_mode_for_line(self.line_str(self.current_block_start_line));
+        let kind = if matches!(self.block_machine.current_mode, BlockMode::Unknown) {
+            let mode = self
+                .start_mode_for_line(self.line_str(self.block_machine.current_block_start_line));
             mode.kind()
         } else {
-            self.current_mode.kind()
+            self.block_machine.current_mode.kind()
         };
         let display = render_pending_display(
             kind,
@@ -300,7 +303,7 @@ impl MdStream {
             self.pending_transformers.as_mut_slice(),
         );
         Some(Block {
-            id: self.current_block_id,
+            id: self.block_machine.current_block_id,
             status: BlockStatus::Pending,
             kind,
             raw,
@@ -391,12 +394,15 @@ impl MdStream {
         }
 
         // Process newly completed lines.
-        while self.processed_line < self.input.line_count() {
-            if !self.input.line_has_newline(self.processed_line) {
+        while self.block_machine.processed_line < self.input.line_count() {
+            if !self
+                .input
+                .line_has_newline(self.block_machine.processed_line)
+            {
                 break;
             }
-            self.process_line(self.processed_line, ctx);
-            self.processed_line += 1;
+            self.process_line(self.block_machine.processed_line, ctx);
+            self.block_machine.processed_line += 1;
         }
 
         // Even if the current last line has no newline yet, we may have enough information to
@@ -415,13 +421,9 @@ impl MdStream {
         self.boundaries.clear_active();
 
         // Re-start IDs so consumers can treat it as a new document.
-        self.current_block_start_line = 0;
-        self.current_block_id = BlockId(1);
-        self.next_block_id = 2;
-        self.current_mode = BlockMode::Unknown;
-
         // We intentionally stop line processing in this mode.
-        self.processed_line = self.input.line_count();
+        self.block_machine
+            .reset_for_single_block(self.input.line_count());
     }
 
     pub fn finalize(&mut self) -> Update {
@@ -460,18 +462,19 @@ impl MdStream {
             return update;
         }
 
-        if self.current_block_start_line < self.input.line_count() {
+        if self.block_machine.current_block_start_line < self.input.line_count() {
             let end_line = self.input.line_count() - 1;
             let start_off = self
                 .input
-                .line_start(self.current_block_start_line)
+                .line_start(self.block_machine.current_block_start_line)
                 .unwrap_or(self.input.len());
             let end_off = self.input.len();
             if end_off > start_off {
                 // Commit the remaining pending block.
-                if matches!(self.current_mode, BlockMode::Unknown) {
-                    self.current_mode =
-                        self.start_mode_for_line(self.line_str(self.current_block_start_line));
+                if matches!(self.block_machine.current_mode, BlockMode::Unknown) {
+                    self.block_machine.current_mode = self.start_mode_for_line(
+                        self.line_str(self.block_machine.current_block_start_line),
+                    );
                 }
                 let raw = self.input.as_str()[start_off..end_off].to_string();
                 if raw.trim().is_empty() {
@@ -479,15 +482,15 @@ impl MdStream {
                     return update;
                 }
                 let block = Block {
-                    id: self.current_block_id,
+                    id: self.block_machine.current_block_id,
                     status: BlockStatus::Committed,
-                    kind: self.current_mode.kind(),
+                    kind: self.block_machine.current_mode.kind(),
                     raw,
                     display: None,
                 };
                 self.push_committed_block(block, &mut ctx);
                 // Reset to empty.
-                self.current_block_start_line = end_line + 1;
+                self.block_machine.current_block_start_line = end_line + 1;
             }
         }
         update.pending = None;
@@ -512,11 +515,7 @@ impl MdStream {
     pub fn reset(&mut self) {
         self.input.reset();
         self.committed.clear();
-        self.processed_line = 0;
-        self.current_block_start_line = 0;
-        self.current_block_id = BlockId(1);
-        self.next_block_id = 2;
-        self.current_mode = BlockMode::Unknown;
+        self.block_machine.reset();
         self.pending_display.clear();
         self.pending_transformers.reset_all();
         self.boundaries.reset_all();
