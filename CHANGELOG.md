@@ -5,6 +5,8 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
 
 ## Unreleased
 
+- New: added a Criterion benchmark harness and performance guide for core
+  streaming hot paths.
 - Changed: upgraded direct dependency requirements to current releases:
   `pulldown-cmark` 0.13.4, `tokio` 1.52.3, `ratatui` 0.30.2,
   `crossterm` 0.29.0, and `unicode-width` 0.2.2.

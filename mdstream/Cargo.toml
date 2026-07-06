@@ -17,6 +17,9 @@ exclude = ["repo-ref/**"]
 [dependencies]
 pulldown-cmark = { version = "0.13.4", optional = true }
 
+[dev-dependencies]
+criterion = "0.8.2"
+
 [features]
 default = []
 pulldown = ["dep:pulldown-cmark"]
@@ -24,3 +27,7 @@ sync = []
 
 [package.metadata.docs.rs]
 all-features = true
+
+[[bench]]
+name = "streaming"
+harness = false
