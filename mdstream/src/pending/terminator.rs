@@ -1,3 +1,5 @@
+use crate::syntax::facts::{is_space_or_tab, tail_window};
+
 #[derive(Debug, Clone)]
 pub struct TerminatorOptions {
     pub setext_headings: bool,
@@ -26,10 +28,6 @@ impl Default for TerminatorOptions {
             window_bytes: 16 * 1024,
         }
     }
-}
-
-fn is_space_or_tab(b: u8) -> bool {
-    b == b' ' || b == b'\t'
 }
 
 fn is_inside_incomplete_multiline_code_block(text: &str) -> bool {
@@ -80,19 +78,6 @@ fn is_inside_code_block(text: &str, position: usize) -> bool {
     }
 
     in_inline || in_multiline
-}
-
-fn tail_window(text: &str, window_bytes: usize) -> (&str, usize) {
-    if text.len() <= window_bytes {
-        return (text, 0);
-    }
-    let start = text.len() - window_bytes;
-    // Move to char boundary.
-    let mut s = start;
-    while !text.is_char_boundary(s) {
-        s += 1;
-    }
-    (&text[s..], s)
 }
 
 fn is_within_math_block(text: &str, position: usize) -> bool {

@@ -1,12 +1,4 @@
-fn strip_up_to_three_leading_spaces(line: &str) -> &str {
-    let mut s = line;
-    let mut spaces = 0usize;
-    while spaces < 3 && s.starts_with(' ') {
-        s = &s[1..];
-        spaces += 1;
-    }
-    s
-}
+use crate::syntax::facts::strip_up_to_three_leading_spaces;
 
 pub(crate) fn normalize_reference_label(label: &str) -> Option<String> {
     let trimmed = label.trim();

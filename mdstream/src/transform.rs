@@ -1,3 +1,4 @@
+use crate::syntax::facts::tail_window;
 use crate::types::BlockKind;
 
 #[derive(Debug, Clone, Copy)]
@@ -55,18 +56,6 @@ where
     fn transform(&mut self, input: PendingTransformInput<'_>) -> Option<String> {
         (self.0)(input)
     }
-}
-
-fn tail_window(text: &str, window_bytes: usize) -> (&str, usize) {
-    if text.len() <= window_bytes {
-        return (text, 0);
-    }
-    let start = text.len() - window_bytes;
-    let mut s = start;
-    while !text.is_char_boundary(s) {
-        s += 1;
-    }
-    (&text[s..], s)
 }
 
 #[derive(Debug, Clone)]

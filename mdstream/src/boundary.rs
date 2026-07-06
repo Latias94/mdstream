@@ -1,3 +1,5 @@
+use crate::syntax::facts::strip_up_to_three_leading_spaces;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundaryUpdate {
     Continue,
@@ -163,16 +165,6 @@ impl BoundaryPlugin for FnBoundaryPlugin {
             (f)();
         }
     }
-}
-
-fn strip_up_to_three_leading_spaces(line: &str) -> &str {
-    let mut s = line;
-    let mut spaces = 0usize;
-    while spaces < 3 && s.starts_with(' ') {
-        s = &s[1..];
-        spaces += 1;
-    }
-    s
 }
 
 /// A simple fence-like container plugin.

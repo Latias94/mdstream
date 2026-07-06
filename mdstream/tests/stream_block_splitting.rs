@@ -109,7 +109,8 @@ fn table_after_paragraph_is_separate_block() {
 #[test]
 fn splits_streamdown_benchmark_simple_table() {
     let mut s = MdStream::new(Options::default());
-    let table = include_str!("fixtures/streamdown_bench/table_simple.md").trim_end_matches('\n');
+    let table =
+        include_str!("fixtures/streamdown_bench/table_simple.md").trim_end_matches(['\r', '\n']);
     let input = format!("{table}\n\nAfter\n");
     let u = s.append(&input);
     assert!(u.committed.iter().any(|b| {
@@ -124,8 +125,8 @@ fn splits_streamdown_benchmark_simple_table() {
 #[test]
 fn splits_streamdown_benchmark_large_table() {
     let mut s = MdStream::new(Options::default());
-    let table =
-        include_str!("fixtures/streamdown_bench/table_large_100_rows.md").trim_end_matches('\n');
+    let table = include_str!("fixtures/streamdown_bench/table_large_100_rows.md")
+        .trim_end_matches(['\r', '\n']);
     let input = format!("{table}\n\nAfter\n");
     let u = s.append(&input);
     assert!(u.committed.iter().any(|b| {
@@ -213,7 +214,8 @@ fn does_not_treat_autolink_as_html_block() {
 #[test]
 fn splits_streamdown_benchmark_html_blocks() {
     let mut s = MdStream::new(Options::default());
-    let html = include_str!("fixtures/streamdown_bench/html_simple.md").trim_end_matches('\n');
+    let html =
+        include_str!("fixtures/streamdown_bench/html_simple.md").trim_end_matches(['\r', '\n']);
     let input = format!("{html}\n\nAfter\n");
     let u = s.append(&input);
     assert!(
@@ -227,7 +229,8 @@ fn splits_streamdown_benchmark_html_blocks() {
 #[test]
 fn splits_streamdown_benchmark_nested_html_block() {
     let mut s = MdStream::new(Options::default());
-    let html = include_str!("fixtures/streamdown_bench/html_nested.md").trim_end_matches('\n');
+    let html =
+        include_str!("fixtures/streamdown_bench/html_nested.md").trim_end_matches(['\r', '\n']);
     let input = format!("{html}\n\nAfter\n");
     let u = s.append(&input);
     assert!(u.committed.iter().any(|b| b.raw.contains(

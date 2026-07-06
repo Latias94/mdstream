@@ -23,8 +23,8 @@ fn assert_invariant(case_name: &str, markdown: &str, opts: Options, trials: u64,
 #[test]
 fn streamdown_benchmark_suite_chunking_invariance() {
     // Inputs sourced from Streamdown's `__benchmarks__/parse-blocks.bench.ts`.
-    let single_block =
-        include_str!("fixtures/streamdown_bench/basic_single_block.md").trim_end_matches('\n');
+    let single_block = include_str!("fixtures/streamdown_bench/basic_single_block.md")
+        .trim_end_matches(['\r', '\n']);
     let multiple_blocks_10 = include_str!("fixtures/streamdown_bench/basic_multiple_blocks_10.md");
     let single_code_block = include_str!("fixtures/streamdown_bench/code_single_code_block.md");
     let math_with_split_delimiters =
