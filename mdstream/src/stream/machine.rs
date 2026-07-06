@@ -1,4 +1,5 @@
-use super::footnotes::{is_footnote_continuation, is_footnote_definition_start};
+use super::boundary_detector::{BoundaryDetector, is_table_delimiter};
+use super::footnotes::is_footnote_definition_start;
 use super::html::{html_block_start_state, update_html_block_state};
 use super::mode::BlockMode;
 use super::{AppendCtx, MdStream};
@@ -6,8 +7,8 @@ use crate::boundary::BoundaryUpdate;
 use crate::options::FootnotesMode;
 use crate::syntax::facts::{
     count_double_dollars, fence_end, fence_start, is_atx_heading_start as is_heading,
-    is_blank_line as is_empty_line, is_blockquote_start, is_list_continuation, is_list_item_start,
-    is_list_item_start_prefix, is_thematic_break, setext_underline_char,
+    is_blank_line as is_empty_line, is_blockquote_start, is_list_item_start, is_thematic_break,
+    setext_underline_char,
 };
 use crate::types::{Block, BlockStatus};
 
@@ -199,124 +200,22 @@ impl MdStream {
     }
 
     fn is_new_block_boundary(&self, prev: &str, curr: &str, curr_line_index: usize) -> bool {
-        let curr_has_newline = self.input.line_has_newline(curr_line_index);
-
-        // Never split inside fenced code blocks.
-        if let BlockMode::CodeFence { .. } = self.block_machine.current_mode {
-            return false;
-        }
-        if let BlockMode::CustomBoundary { .. } = self.block_machine.current_mode {
-            return false;
-        }
-        if let BlockMode::MathBlock { open_count } = self.block_machine.current_mode {
-            if open_count % 2 == 1 {
-                return false;
-            }
-        }
-        if let BlockMode::HtmlBlock { stack, in_comment } = &self.block_machine.current_mode {
-            if *in_comment || !stack.is_empty() {
-                return false;
-            }
-        }
-
-        // Footnote definition: continuation lines should remain in the same block.
-        if let BlockMode::FootnoteDefinition = self.block_machine.current_mode {
-            if is_empty_line(curr) || is_footnote_continuation(curr) {
-                return false;
-            }
-            // A non-indented, non-empty line ends the footnote definition even without a blank line.
-            return true;
-        }
-
-        // A new block can start after an empty line.
-        if is_empty_line(prev) && !is_empty_line(curr) {
-            // Be robust against mode drift in streaming scenarios: the current block's "start line"
-            // is the source of truth for whether we're inside a list/quote container.
-            let block_start_mode = self
-                .start_mode_for_line(self.line_str(self.block_machine.current_block_start_line));
-            let in_list = matches!(self.block_machine.current_mode, BlockMode::List)
-                || matches!(block_start_mode, BlockMode::List);
-            let in_blockquote = matches!(self.block_machine.current_mode, BlockMode::BlockQuote)
-                || matches!(block_start_mode, BlockMode::BlockQuote);
-            // Lists can legally contain blank lines between items and within an item's continuation.
-            if in_list && (is_list_continuation(curr) || is_list_item_start_prefix(curr)) {
-                return false;
-            }
-            // Blockquotes can continue after blank lines only if the marker is present.
-            if in_blockquote && is_blockquote_start(curr) {
-                return false;
-            }
-            return true;
-        }
-
-        // Setext heading underline is part of the current paragraph block, not a new block boundary.
-        if matches!(
-            self.block_machine.current_mode,
-            BlockMode::Paragraph | BlockMode::Unknown
-        ) && setext_underline_char(curr).is_some()
-            && !is_empty_line(prev)
-            && self.block_machine.current_block_start_line + 1 == curr_line_index
-        {
-            return false;
-        }
-
-        // Certain block starters can interrupt paragraphs/lists/quotes.
-        if is_heading(curr) || (curr_has_newline && is_thematic_break(curr)) {
-            return true;
-        }
-        if fence_start(curr).is_some() {
-            return true;
-        }
-        if self.boundaries.matches_start(curr) {
-            return true;
-        }
-        if is_footnote_definition_start(curr) {
-            return true;
-        }
-        if is_blockquote_start(curr)
-            && !is_blockquote_start(prev)
-            && !matches!(self.block_machine.current_mode, BlockMode::BlockQuote)
-        {
-            return true;
-        }
-        if is_list_item_start(curr)
-            && !is_list_item_start(prev)
-            && !matches!(self.block_machine.current_mode, BlockMode::List)
-        {
-            return true;
-        }
-
-        // Table detection: if current line is a delimiter and previous line contains pipes,
-        // consider starting a table block at the previous line.
-        if matches!(self.block_machine.current_mode, BlockMode::Paragraph | BlockMode::Unknown)
-            && curr_has_newline
-            && self.is_table_delimiter(curr)
-            && prev.contains('|')
-            // table starts at prev line, so boundary at prev-1 if block started earlier.
-            && curr_line_index >= 1
-            && self.block_machine.current_block_start_line < curr_line_index - 1
-        {
-            return true;
-        }
-
-        false
-    }
-
-    fn is_table_delimiter(&self, line: &str) -> bool {
-        let s = line.trim();
-        if s.is_empty() {
-            return false;
-        }
-        // Simple delimiter pattern: contains '-' and optional pipes/colons.
-        let mut has_dash = false;
-        for c in s.chars() {
-            match c {
-                '|' | ':' | ' ' | '\t' => {}
-                '-' => has_dash = true,
-                _ => return false,
-            }
-        }
-        has_dash
+        let block_start_mode =
+            if self.block_machine.current_block_start_line < self.input.line_count() {
+                self.start_mode_for_line(self.line_str(self.block_machine.current_block_start_line))
+            } else {
+                BlockMode::Unknown
+            };
+        let detector = BoundaryDetector::new(
+            &self.block_machine.current_mode,
+            block_start_mode,
+            self.block_machine.current_block_start_line,
+            self.input.line_has_newline(curr_line_index),
+            self.boundaries.matches_start(curr),
+        );
+        detector
+            .detect(prev, curr, curr_line_index)
+            .starts_new_block()
     }
 
     fn update_mode_with_line(&mut self, line_index: usize, ctx: &mut AppendCtx<'_>) {
@@ -381,7 +280,7 @@ impl MdStream {
                     }
                 }
                 // Upgrade to table mode if delimiter row appears.
-                if self.is_table_delimiter(line) && line_index > 0 {
+                if is_table_delimiter(line) && line_index > 0 {
                     let prev = self.input.line_str(line_index - 1);
                     if prev.contains('|') {
                         self.block_machine.current_mode = BlockMode::Table;

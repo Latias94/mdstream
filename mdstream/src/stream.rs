@@ -1,4 +1,5 @@
 mod block_machine;
+mod boundary_detector;
 mod compaction;
 mod footnotes;
 mod html;
