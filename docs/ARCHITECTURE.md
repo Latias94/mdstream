@@ -101,6 +101,8 @@ Key contexts (inspired by Incremark):
 - footnote definitions: handle continuation indentation
 - block quotes & lists: conservative boundary rules to avoid splitting nested structures
 - HTML blocks: tag-stack based closure (best-effort) to avoid merging following paragraphs
+- table/thematic/setext candidates: wait for newline when an incomplete line could still be
+  invalidated by later chunk bytes
 
 ### Streaming transforms (pending pipeline)
 
@@ -156,3 +158,20 @@ rebuild from the current state. The primary example is switching into SingleBloc
 - `committed` blocks are append-only, stable, and never re-emitted with changed text.
 - At most one `pending` block exists at a time.
 - `append()` does not allocate proportional to total history (no full re-parse).
+- `append()` and `append_ref().to_owned()` must produce equivalent public updates.
+- Production code should avoid panic-based invariants; tests may intentionally panic only to
+  exercise recovery paths such as poisoned mutex handling.
+
+## Engineering guardrails
+
+The repo has three complementary hardening layers:
+
+- deterministic tests and property tests under `mdstream/tests/`, including generated
+  Markdown-ish chunking invariance cases;
+- Criterion benchmarks in `mdstream/benches/streaming.rs`, focused on public hot paths rather than
+  private modules;
+- standalone fuzz targets under `fuzz/`, kept outside the default workspace so normal `cargo test
+  --workspace` remains deterministic.
+
+CI compiles benchmarks and runs deterministic gates. Full Criterion measurements and long
+`cargo-fuzz` sessions are local or scheduled hardening workflows, not per-PR timing requirements.

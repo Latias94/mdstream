@@ -82,6 +82,11 @@ Optional Tokio glue (delta coalescing + helpers):
 mdstream-tokio = "0.2.0"
 ```
 
+Rust version support:
+
+- `mdstream`: Rust 1.85 or newer.
+- `mdstream-tokio`: Rust 1.88.0 or newer, matching its current TUI dependency floor.
+
 Backpressure policy (producer side):
 
 - `Block`: never drop; safest for real content.
@@ -283,9 +288,34 @@ adapter.apply_update(&u2);
 - Release checklist: `RELEASE_CHECKLIST.md`
 - Note: This project may prune `docs/` during releases; user-facing guidance lives in this README.
 
+## Maintainer workflow
+
+Primary local gates:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo nextest run --workspace --all-features
+cargo test --workspace --all-features --doc
+cargo check -p mdstream --examples
+cargo check -p mdstream --features pulldown --examples
+cargo check -p mdstream-tokio --examples
+cargo check -p mdstream --benches
+cargo package -p mdstream
+```
+
+Additional hardening:
+
+- Benchmarks: `cargo bench -p mdstream --bench streaming` (see `docs/PERFORMANCE.md`).
+- Fuzz targets: `cargo check --manifest-path fuzz/Cargo.toml --bins`; deeper `cargo-fuzz` runs are documented in `fuzz/README.md`.
+- MSRV checks are split: `cargo +1.85.0 test -p mdstream --tests --all-features` for the core crate and `cargo +1.88.0 nextest run --workspace --all-features` for the full workspace.
+
 ## Design notes (in-repo)
 
 - `docs/ADR_0001_STREAMING_CONCURRENCY.md`
+- `docs/ARCHITECTURE.md`
+- `docs/COMPATIBILITY.md`
+- `docs/PERFORMANCE.md`
 - Feature proposal/preview: `sync` (opt-in) for `Send + Sync` extension points.
 
 ## Credits
@@ -295,13 +325,14 @@ adapter.apply_update(&u2);
 
 ## Status
 
-Initial MVP implementation is in progress:
+Current implementation includes:
 
 - `MdStream` core state machine (blocks: committed + pending)
 - Pending terminator (Streamdown/remend-inspired)
 - Streaming boundary tests (Streamdown/Incremark-inspired)
 - Reference-style link definitions invalidation (opt-in, for adapters)
 - Optional `pulldown-cmark` adapter via the `pulldown` feature
+- Criterion benchmarks, property tests, and standalone fuzz targets for refactor safety
 
 Try the demo:
 

@@ -21,6 +21,9 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
   - [ ] `cargo check -p mdstream --features pulldown --examples`
   - [ ] `cargo check -p mdstream-tokio --examples`
   - [ ] `cargo check -p mdstream --benches`
+- [ ] Verify standalone fuzz package:
+  - [ ] `cargo check --manifest-path fuzz/Cargo.toml --bins`
+  - [ ] Optional deep run: `cargo +nightly fuzz build` and targeted `cargo +nightly fuzz run <target>`
 - [ ] Verify packaging does not include large/internal folders:
   - [ ] `cargo package -p mdstream` (check the generated `.crate` contents)
 

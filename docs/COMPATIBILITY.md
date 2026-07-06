@@ -69,10 +69,26 @@ streaming-first line scanner. As a result, there are some intentional difference
   - `mdstream` uses lightweight heuristics designed to be chunking-invariant; some non-benchmark edge
     cases may split differently.
   - Streaming-only stability tweaks exist to preserve chunking invariance (e.g. avoiding premature
-    list commits when a list marker is split across chunks).
+    list commits when a list marker is split across chunks, or waiting for newline before treating an
+    incomplete table delimiter candidate as stable).
 
 These differences are acceptable as long as Streamdown benchmark parity tests and chunking invariance
 tests remain green (see `tests/chunking_invariance_suite.rs`).
+
+## Randomized and fuzz coverage
+
+Deterministic compatibility tests are backed by randomized guards:
+
+- `tests/proptest_chunking.rs` generates Markdown-ish documents with Unicode, CRLF, blank-line runs,
+  fences, tables, HTML/comment fragments, math markers, footnotes, links, and reference definitions.
+- The property checks compare final `(BlockKind, raw)` output for whole input, line chunks, character
+  chunks, and pseudo-random char-boundary chunks.
+- `fuzz/fuzz_targets/stream_chunking.rs` stresses whole vs chunked parsing and owned vs borrowed
+  update equivalence.
+- `fuzz/fuzz_targets/terminator.rs` stresses pending Markdown termination options.
+
+The fuzz package is intentionally excluded from the default workspace; see `fuzz/README.md` for
+nightly `cargo-fuzz` usage.
 
 ## Streaming edge cases (must handle)
 

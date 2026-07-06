@@ -15,6 +15,8 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
   chunk boundaries cannot split paragraphs on transient `--` prefixes.
 - Fixed: removed avoidable production panic paths in committed block emission and
   sync pulldown scratch-buffer locking.
+- Changed: clarified README, usage, architecture, compatibility, performance,
+  fuzzing, and release-checklist guidance for the hardened workflow.
 - Changed: upgraded direct dependency requirements to current releases:
   `pulldown-cmark` 0.13.4, `tokio` 1.52.3, `ratatui` 0.30.2,
   `crossterm` 0.29.0, and `unicode-width` 0.2.2.

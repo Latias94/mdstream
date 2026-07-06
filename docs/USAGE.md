@@ -63,6 +63,17 @@ Notes:
 - `UpdateRef` borrows from the stream. It is not suitable for sending across threads/tasks.
 - If needed, use `UpdateRef::to_owned()` (allocating) or `append()` (owned update).
 
+Use `append_ref` when the same thread owns `MdStream` and renders immediately from the returned
+view. Use `append` when the update must be stored independently, sent across a channel, or owned by
+another task. `UpdateRef::to_owned()` is the explicit bridge between those two modes.
+
+| Situation | Recommended API |
+| --- | --- |
+| UI thread owns `MdStream` and renders each tick | `append_ref` / `finalize_ref` |
+| Worker sends updates to another task | `append` / `finalize` |
+| Borrowed hot path occasionally needs ownership | `UpdateRef::to_owned()` |
+| Tests compare public behavior | Compare `append()` with `append_ref().to_owned()` |
+
 ## `DocumentState` (UI State Helper)
 
 If you keep UI state as `(Vec<Block>, Option<Block>)`, you can use `Update::apply_to`. If you want a
@@ -122,6 +133,25 @@ Run the zero-dependency demo:
 
 ```sh
 cargo run -p mdstream --example tui_like
+```
+
+## Validation workflow
+
+For normal development, use nextest for integration and unit tests:
+
+```sh
+cargo nextest run --workspace --all-features
+```
+
+Doc tests, examples, benchmarks, and fuzz targets are separate gates:
+
+```sh
+cargo test --workspace --all-features --doc
+cargo check -p mdstream --examples
+cargo check -p mdstream --features pulldown --examples
+cargo check -p mdstream-tokio --examples
+cargo check -p mdstream --benches
+cargo check --manifest-path fuzz/Cargo.toml --bins
 ```
 
 ## Streamdown Defaults

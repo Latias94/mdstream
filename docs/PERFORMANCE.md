@@ -28,6 +28,12 @@ cargo check -p mdstream --benches
 Criterion reports throughput and statistical summaries under `target/criterion/`.
 Treat those numbers as machine-local baselines unless a future CI job records stable historical data on dedicated hardware.
 
+For a short smoke run while editing benchmark code:
+
+```bash
+cargo bench -p mdstream --bench streaming -- --sample-size 10 --warm-up-time 0.1 --measurement-time 0.1
+```
+
 ## Interpreting Results
 
 The benchmarks compare public API paths rather than private modules.
@@ -43,3 +49,7 @@ Use the scenarios this way:
 
 The normal CI gate should compile the benchmark target, but it should not fail pull requests on Criterion timing variance from shared GitHub runners.
 Use full benchmark runs locally before and after performance-sensitive refactors.
+
+`mdstream` keeps its core MSRV at Rust 1.85, so benchmark dependencies must also respect that floor.
+If a future Criterion release raises its MSRV above the core crate floor, keep the benchmark dev
+dependency pinned until the project intentionally raises `mdstream`'s MSRV.
