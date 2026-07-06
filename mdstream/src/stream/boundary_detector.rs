@@ -50,7 +50,10 @@ impl<'a> BoundaryDetector<'a> {
         curr: &str,
         curr_line_index: usize,
     ) -> BoundaryDecision {
-        if self.must_stay_in_current_block(curr) {
+        if let Some(decision) = self.footnote_definition_decision(curr) {
+            return decision;
+        }
+        if self.must_stay_in_current_block() {
             return BoundaryDecision::SameBlock;
         }
 
@@ -73,14 +76,23 @@ impl<'a> BoundaryDetector<'a> {
         BoundaryDecision::SameBlock
     }
 
-    fn must_stay_in_current_block(&self, curr: &str) -> bool {
+    fn must_stay_in_current_block(&self) -> bool {
         match self.current_mode {
             BlockMode::CodeFence { .. } | BlockMode::CustomBoundary { .. } => true,
             BlockMode::MathBlock { open_count } => open_count % 2 == 1,
             BlockMode::HtmlBlock { stack, in_comment } => *in_comment || !stack.is_empty(),
-            BlockMode::FootnoteDefinition => is_empty_line(curr) || is_footnote_continuation(curr),
             _ => false,
         }
+    }
+
+    fn footnote_definition_decision(&self, curr: &str) -> Option<BoundaryDecision> {
+        if !matches!(self.current_mode, BlockMode::FootnoteDefinition) {
+            return None;
+        }
+        if is_empty_line(curr) || is_footnote_continuation(curr) {
+            return Some(BoundaryDecision::SameBlock);
+        }
+        Some(BoundaryDecision::StartNewBlock)
     }
 
     fn after_blank_line_decision(&self, curr: &str) -> BoundaryDecision {
