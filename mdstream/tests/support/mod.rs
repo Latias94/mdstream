@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use mdstream::{BlockKind, MdStream, Options};
+use mdstream::{BlockKind, MdStream, Options, Update};
 
 pub fn collect_final_blocks(
     chunks: impl IntoIterator<Item = String>,
@@ -25,17 +25,34 @@ pub fn collect_final_blocks_with_stream(
 
     for chunk in chunks {
         let u = s.append(&chunk);
-        if u.reset {
-            out.clear();
-        }
-        out.extend(u.committed.into_iter().map(|b| (b.kind, b.raw)));
+        apply_update(&mut out, u);
     }
     let u = s.finalize();
-    if u.reset {
+    apply_update(&mut out, u);
+    out
+}
+
+pub fn collect_final_blocks_borrowed(
+    chunks: impl IntoIterator<Item = String>,
+    opts: Options,
+) -> Vec<(BlockKind, String)> {
+    let mut s = MdStream::new(opts);
+    let mut out = Vec::new();
+
+    for chunk in chunks {
+        let u = s.append_ref(&chunk).to_owned();
+        apply_update(&mut out, u);
+    }
+    let u = s.finalize_ref().to_owned();
+    apply_update(&mut out, u);
+    out
+}
+
+fn apply_update(out: &mut Vec<(BlockKind, String)>, update: Update) {
+    if update.reset {
         out.clear();
     }
-    out.extend(u.committed.into_iter().map(|b| (b.kind, b.raw)));
-    out
+    out.extend(update.committed.into_iter().map(|b| (b.kind, b.raw)));
 }
 
 pub fn collect_final_raw_with_stream(

@@ -103,6 +103,7 @@ Lifecycle:
 
 - registration appends the transformer to the internal pending transformer chain
 - transformers run in registration order after the built-in terminator has produced the current display string
+- pending code fences use a built-in close-fence fast path and currently skip custom transformers
 - returning `Some(String)` replaces the display passed to later transformers
 - returning `None` leaves display unchanged
 - `reset` is called when `MdStream::reset()` clears stream state

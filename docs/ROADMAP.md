@@ -17,22 +17,21 @@ This roadmap is intentionally practical: it prioritizes streaming stability and 
 - Reference-style link definitions invalidation (opt-in mode)
 - Optional `pulldown-cmark` adapter (feature-gated)
 
-## v0.2 (Ergonomics + Robustness)
+## Completed in current 0.2 development
 
-- Add `snapshot_blocks()` and `snapshot_text()` convenience APIs
-- Improve HTML block handling and table/list heuristics
-- More remend parity tests (regression suite)
-- Streaming UX helpers (coalescing deltas; newline/time-window flush) (optional feature)
-- Concurrency compatibility:
-  - `sync` feature proposal for `Send + Sync` extension points
-  - optional “actor” wrapper for cross-thread consumers
+- `snapshot_blocks()` convenience API
+- Improved HTML block handling and table/list heuristics
+- Expanded remend parity tests and Streamdown/Incremark-inspired regression suites
+- Tokio glue crate for coalescing deltas, sender backpressure policies, and actor helpers
+- Optional `sync` feature for `Send + Sync` extension points
+- Criterion benchmarks, performance guide, fuzz target compilation checks, and stronger CI/release gates
 
-## v0.3 (Cross-block semantics)
+## Next: Cross-block semantics and 1.0 API shaping
 
-- Footnote mode improvements:
-  - default remains stability-first
-  - optional invalidation-based strategy for advanced consumers
+- Broader public 1.0 API review across exported symbols
+- More adapter-facing semantics around document-scoped constructs
+- Scheduled fuzz campaigns and quantitative performance thresholds
 
-## v0.4+ (Performance)
+## Later
 
-- Performance benchmarks and regression suite
+- Additional renderer-specific adapters beyond the existing optional pulldown adapter

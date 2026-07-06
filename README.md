@@ -29,6 +29,10 @@ You probably **don’t** need `mdstream` if you only parse static Markdown once,
 - `Block`: carries `id`, `kind`, `raw`, and optional `display` (pending-only).
 - `PendingBlockRef`: a borrowed view of the current pending block (`raw` + optional `display`).
 - `DocumentState`: a UI-friendly container to apply `Update` safely (recommended).
+- Root-level pending repair helpers: `TerminatorOptions` and `terminate_markdown`.
+- Root-level syntax helpers: `CodeFenceHeader`, `parse_code_fence_header`,
+  `parse_code_fence_header_from_block`, `is_code_fence_closing_line`, and
+  `is_list_marker_line_prefix`.
 - Optional adapter: `PulldownAdapter` behind the `pulldown` feature.
 
 ## Goals

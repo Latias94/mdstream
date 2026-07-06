@@ -36,3 +36,8 @@ cargo +nightly fuzz run terminator
 generated chunk boundaries, and the borrowed `append_ref` path. `terminator`
 stresses `terminate_markdown` option combinations and a conservative output-size
 invariant.
+
+The fuzz package is intentionally excluded from the workspace, so it keeps a
+small local chunking harness instead of importing `mdstream/tests` support
+modules. Keep the deterministic proptest support and this fuzz-local mirror
+aligned when changing chunking invariants.

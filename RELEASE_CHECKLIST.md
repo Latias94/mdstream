@@ -4,8 +4,11 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
 
 ## Before tagging
 
-- [ ] Update `Cargo.toml` `package.version`
-- [ ] Update `CHANGELOG.md` for the release version
+- [ ] Update crate versions:
+  - [ ] `mdstream/Cargo.toml` `package.version`
+  - [ ] `mdstream-tokio/Cargo.toml` `package.version` if releasing Tokio glue
+  - [ ] `mdstream-tokio/Cargo.toml` `mdstream = "X.Y.Z"` dependency when the core crate version changes
+- [ ] Move `CHANGELOG.md` `Unreleased` entries into a dated `X.Y.Z` section
 - [ ] Ensure `README.md` contains all user-facing guidance (installation, quick start, examples)
 - [ ] Run formatting and lint:
   - [ ] `cargo fmt --all -- --check`
@@ -43,5 +46,5 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
 - [ ] Push tag
 - [ ] Publish core crate first: `cargo publish -p mdstream`
 - [ ] Wait until `mdstream` `X.Y.Z` is visible on crates.io
-- [ ] Publish Tokio glue crate: `cargo publish -p mdstream-tokio`
+- [ ] Publish Tokio glue crate after its `mdstream` dependency version is visible: `cargo publish -p mdstream-tokio`
 - [ ] Create a GitHub release for the tag (attach notes / changelog)

@@ -76,9 +76,15 @@ fn assert_chunking_invariant(
 
     let by_random = support::collect_final_blocks(
         support::chunk_pseudo_random(markdown, "proptest_chunking", seed, max_bytes),
-        opts,
+        opts.clone(),
     );
     prop_assert_eq!(&by_random, &expected);
+
+    let borrowed_random = support::collect_final_blocks_borrowed(
+        support::chunk_pseudo_random(markdown, "proptest_chunking_borrowed", seed, max_bytes),
+        opts,
+    );
+    prop_assert_eq!(&borrowed_random, &expected);
 
     Ok(())
 }
