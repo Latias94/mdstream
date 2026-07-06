@@ -98,12 +98,8 @@ impl MdStream {
             .observe_committed_block(&block, self.opts.reference_definitions);
         ctx.invalidated.extend(effects.invalidated);
 
+        ctx.push_committed_clone(&block);
         self.committed.push(block);
-        let block = self
-            .committed
-            .last()
-            .expect("committed block must exist after push");
-        ctx.push_committed_clone(block);
     }
 
     fn maybe_commit_single_line(&mut self, line_index: usize, ctx: &mut AppendCtx<'_>) {

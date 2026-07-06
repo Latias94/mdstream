@@ -13,6 +13,8 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
   standalone fuzz package for stream chunking and pending terminator hardening.
 - Fixed: delayed incomplete table-delimiter candidates until newline so streaming
   chunk boundaries cannot split paragraphs on transient `--` prefixes.
+- Fixed: removed avoidable production panic paths in committed block emission and
+  sync pulldown scratch-buffer locking.
 - Changed: upgraded direct dependency requirements to current releases:
   `pulldown-cmark` 0.13.4, `tokio` 1.52.3, `ratatui` 0.30.2,
   `crossterm` 0.29.0, and `unicode-width` 0.2.2.

@@ -9,7 +9,7 @@ use pulldown_cmark::{Event, Options as PulldownOptions, Parser};
 #[cfg(not(feature = "sync"))]
 use std::cell::RefCell;
 #[cfg(feature = "sync")]
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 #[cfg(not(feature = "sync"))]
 type ParseScratch = RefCell<String>;
@@ -68,9 +68,7 @@ impl PulldownAdapter {
         }
         #[cfg(feature = "sync")]
         {
-            if let Ok(mut s) = self.parse_scratch.lock() {
-                s.clear();
-            }
+            self.lock_parse_scratch().clear();
         }
     }
 
@@ -126,16 +124,21 @@ impl PulldownAdapter {
         }
         #[cfg(feature = "sync")]
         {
-            let mut scratch = self
-                .parse_scratch
-                .lock()
-                .expect("mdstream: pulldown parse scratch mutex poisoned");
+            let mut scratch = self.lock_parse_scratch();
             scratch.clear();
             scratch.reserve(self.reference_definitions_text.len() + 2 + raw.len());
             scratch.push_str(&self.reference_definitions_text);
             scratch.push_str("\n\n");
             scratch.push_str(raw);
             parse_events_static(&scratch, self.opts.pulldown)
+        }
+    }
+
+    #[cfg(feature = "sync")]
+    fn lock_parse_scratch(&self) -> MutexGuard<'_, String> {
+        match self.parse_scratch.lock() {
+            Ok(scratch) => scratch,
+            Err(poisoned) => poisoned.into_inner(),
         }
     }
 
@@ -177,4 +180,38 @@ fn parse_events_static(input: &str, options: PulldownOptions) -> Vec<Event<'stat
     Parser::new_ext(input, options)
         .map(|e| e.into_static())
         .collect()
+}
+
+#[cfg(all(test, feature = "sync"))]
+mod tests {
+    use std::panic::{self, AssertUnwindSafe};
+
+    use pulldown_cmark::{Event, Tag};
+
+    use super::*;
+
+    fn contains_link(events: &[Event<'static>]) -> bool {
+        events
+            .iter()
+            .any(|event| matches!(event, Event::Start(Tag::Link { .. })))
+    }
+
+    #[test]
+    fn parse_scratch_recovers_from_poisoned_mutex() {
+        let mut adapter = PulldownAdapter::new(PulldownAdapterOptions::default());
+        adapter.reference_definitions_text = "[ref]: https://example.com".to_string();
+
+        let poison_result = panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut scratch = adapter.lock_parse_scratch();
+            scratch.push_str("stale partial parse");
+            panic!("poison scratch mutex");
+        }));
+        assert!(poison_result.is_err());
+
+        let events = adapter.parse_with_definitions("See [ref].");
+        assert!(contains_link(&events));
+
+        let scratch = adapter.lock_parse_scratch();
+        assert!(!scratch.starts_with("stale partial parse"));
+    }
 }
