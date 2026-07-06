@@ -1,5 +1,6 @@
 pub mod analyze;
 pub mod boundary;
+mod extensions;
 pub mod options;
 pub mod pending;
 mod reference;

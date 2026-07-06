@@ -9,6 +9,7 @@ use self::input::Line;
 use self::mode::BlockMode;
 
 use crate::boundary::BoundaryPlugin;
+use crate::extensions::{BoundaryRegistry, PendingTransformers};
 use crate::options::{FootnotesMode, Options};
 use crate::pending::{PendingDisplayPipeline, render_pending_display};
 use crate::semantics::DocumentSemantics;
@@ -28,9 +29,8 @@ pub struct MdStream {
     current_mode: BlockMode,
 
     pending_display: PendingDisplayPipeline,
-    pending_transformers: Vec<Box<dyn PendingTransformer>>,
-    boundary_plugins: Vec<Box<dyn BoundaryPlugin>>,
-    active_boundary_plugin: Option<usize>,
+    pending_transformers: PendingTransformers,
+    boundaries: BoundaryRegistry,
     semantics: DocumentSemantics,
     pending_cr: bool,
     last_finalized_buffer_len: usize,
@@ -76,9 +76,8 @@ impl std::fmt::Debug for MdStream {
             .field("current_block_id", &self.current_block_id)
             .field("next_block_id", &self.next_block_id)
             .field("pending_display", &self.pending_display)
-            .field("pending_transformers_len", &self.pending_transformers.len())
-            .field("boundary_plugins_len", &self.boundary_plugins.len())
-            .field("active_boundary_plugin", &self.active_boundary_plugin)
+            .field("pending_transformers", &self.pending_transformers)
+            .field("boundaries", &self.boundaries)
             .field("semantics", &self.semantics)
             .field("last_finalized_buffer_len", &self.last_finalized_buffer_len)
             .finish()
@@ -105,9 +104,8 @@ impl MdStream {
             next_block_id: 2,
             current_mode: BlockMode::Unknown,
             pending_display: PendingDisplayPipeline::default(),
-            pending_transformers: Vec::new(),
-            boundary_plugins: Vec::new(),
-            active_boundary_plugin: None,
+            pending_transformers: PendingTransformers::default(),
+            boundaries: BoundaryRegistry::default(),
             semantics: DocumentSemantics::default(),
             pending_cr: false,
             last_finalized_buffer_len: 0,
@@ -144,7 +142,7 @@ impl MdStream {
     where
         T: PendingTransformer + 'static,
     {
-        self.pending_transformers.push(Box::new(transformer));
+        self.pending_transformers.push(transformer);
         self.pending_display.clear();
     }
 
@@ -160,7 +158,7 @@ impl MdStream {
     where
         T: BoundaryPlugin + 'static,
     {
-        self.boundary_plugins.push(Box::new(plugin));
+        self.boundaries.push(plugin);
         self.pending_display.clear();
     }
 
@@ -236,7 +234,7 @@ impl MdStream {
             raw,
             code_fence,
             &self.opts.terminator,
-            &mut self.pending_transformers,
+            self.pending_transformers.as_mut_slice(),
         );
     }
 
@@ -275,7 +273,7 @@ impl MdStream {
                 kind,
                 &raw,
                 &self.opts.terminator,
-                &mut self.pending_transformers,
+                self.pending_transformers.as_mut_slice(),
             );
             return Some(Block {
                 id: BlockId(1),
@@ -307,7 +305,7 @@ impl MdStream {
             kind,
             &raw,
             &self.opts.terminator,
-            &mut self.pending_transformers,
+            self.pending_transformers.as_mut_slice(),
         );
         Some(Block {
             id: self.current_block_id,
@@ -422,7 +420,7 @@ impl MdStream {
         self.committed.clear();
         self.semantics.clear_references();
         self.pending_display.clear();
-        self.active_boundary_plugin = None;
+        self.boundaries.clear_active();
 
         // Re-start IDs so consumers can treat it as a new document.
         self.current_block_start_line = 0;
@@ -532,13 +530,8 @@ impl MdStream {
         self.next_block_id = 2;
         self.current_mode = BlockMode::Unknown;
         self.pending_display.clear();
-        for t in &mut self.pending_transformers {
-            t.reset();
-        }
-        for p in self.boundary_plugins.iter_mut() {
-            p.reset();
-        }
-        self.active_boundary_plugin = None;
+        self.pending_transformers.reset_all();
+        self.boundaries.reset_all();
         self.semantics.reset();
         self.pending_cr = false;
         self.last_finalized_buffer_len = 0;

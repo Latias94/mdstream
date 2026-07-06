@@ -13,11 +13,7 @@ use crate::types::{Block, BlockId, BlockStatus};
 
 impl MdStream {
     pub(super) fn start_mode_for_line(&self, line: &str) -> BlockMode {
-        if let Some(idx) = self
-            .boundary_plugins
-            .iter()
-            .position(|p| p.matches_start(line))
-        {
+        if let Some(idx) = self.boundaries.start_index(line) {
             return BlockMode::CustomBoundary {
                 plugin_index: idx,
                 started: false,
@@ -75,7 +71,7 @@ impl MdStream {
             self.current_block_id = BlockId(self.next_block_id);
             self.next_block_id += 1;
             self.current_mode = BlockMode::Unknown;
-            self.active_boundary_plugin = None;
+            self.boundaries.clear_active();
             self.pending_display.clear();
             return;
         }
@@ -92,7 +88,7 @@ impl MdStream {
         self.current_block_id = BlockId(self.next_block_id);
         self.next_block_id += 1;
         self.current_mode = BlockMode::Unknown;
-        self.active_boundary_plugin = None;
+        self.boundaries.clear_active();
         self.pending_display.clear();
     }
 
@@ -268,7 +264,7 @@ impl MdStream {
         if fence_start(curr).is_some() {
             return true;
         }
-        if self.boundary_plugins.iter().any(|p| p.matches_start(curr)) {
+        if self.boundaries.matches_start(curr) {
             return true;
         }
         if is_footnote_definition_start(curr) {
@@ -346,16 +342,16 @@ impl MdStream {
                 started,
             } => {
                 let idx = *plugin_index;
-                if idx >= self.boundary_plugins.len() {
+                if !self.boundaries.contains(idx) {
                     return;
                 }
-                self.active_boundary_plugin = Some(idx);
+                self.boundaries.set_active(idx);
                 if !*started {
-                    self.boundary_plugins[idx].start(line);
+                    self.boundaries.start(idx, line);
                     *started = true;
                 }
-                if self.boundary_plugins[idx].update(line) == BoundaryUpdate::Close {
-                    self.active_boundary_plugin = None;
+                if self.boundaries.update(idx, line) == BoundaryUpdate::Close {
+                    self.boundaries.clear_active();
                     self.commit_block(line_index, ctx);
                 }
             }
