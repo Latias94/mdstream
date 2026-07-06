@@ -139,7 +139,7 @@ flowchart TB
 
 ### Sources and Research
 
-- Existing repo patterns: `mdstream/tests/support/mod.rs`, `mdstream/tests/chunking_invariance_suite.rs`, `mdstream/tests/stream_streamdown_*`, `mdstream/tests/update_ref.rs`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `RELEASE_CHECKLIST.md`.
+- Existing repo patterns: `mdstream/tests/support/mod.rs`, `mdstream/tests/chunking_invariance_suite.rs`, `mdstream/tests/stream_streamdown_*`, `mdstream/tests/append_ref_behavior.rs`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `RELEASE_CHECKLIST.md`.
 - External implementation references to consult during execution: Criterion.rs book (`https://bheisler.github.io/criterion.rs/book/`), Rust Fuzz Book (`https://rust-fuzz.github.io/book/`), nextest documentation (`https://nexte.st/`), and GitHub Actions workflow syntax docs (`https://docs.github.com/actions`).
 - Institutional learning search found no `CONCEPTS.md` or `docs/solutions/` corpus in this repo, so this plan is grounded in current code and docs rather than prior solution notes.
 
@@ -264,7 +264,7 @@ flowchart TB
 | Packaging | `cargo package -p mdstream` remains valid; release docs explain `mdstream-tokio` publish ordering | U2, U5 |
 | Production panic scan | `mdstream/src` and `mdstream-tokio/src` contain no avoidable production panic macros or unwrap/expect calls | U4 |
 
-On Windows, local test runs that launch binaries with names like `update_ref` may require `__COMPAT_LAYER=RUNASINVOKER` to avoid UAC interference.
+Windows test target names should avoid installer-trigger words such as `update` so local `cargo test` and `nextest` runs do not trip UAC heuristics.
 
 ---
 

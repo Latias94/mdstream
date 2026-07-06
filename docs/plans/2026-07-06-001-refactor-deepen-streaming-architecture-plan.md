@@ -169,7 +169,7 @@ Files:
 
 - `mdstream/tests/support/mod.rs`
 - `mdstream/tests/chunking_invariance_suite.rs`
-- `mdstream/tests/update_ref.rs`
+- `mdstream/tests/append_ref_behavior.rs`
 - `mdstream/tests/stream_streamdown_streaming_simulation_parity.rs`
 - Add `mdstream/tests/stream_trace_equivalence.rs`
 - Add `mdstream/tests/extension_lifecycle.rs` if lifecycle behavior is not already covered.
@@ -428,9 +428,9 @@ Run focused verification after each unit, then the full gate before considering 
 
 Focused suites by unit:
 
-- U1/U3: `cargo test -p mdstream --test chunking_invariance_suite --test stream_streamdown_streaming_simulation_parity --test stream_block_splitting --test update_ref`
+- U1/U3: `cargo test -p mdstream --test chunking_invariance_suite --test stream_streamdown_streaming_simulation_parity --test stream_block_splitting --test append_ref_behavior`
 - U2: `cargo test -p mdstream --test stream_streamdown_code_blocks --test stream_streamdown_html_blocks --test boundary_tag_plugin --test analyzed_stream_math`
-- U4: `cargo test -p mdstream --test terminator_remend_parity --test terminator_streamdown_cases --test pending_transformers --test update_ref`
+- U4: `cargo test -p mdstream --test terminator_remend_parity --test terminator_streamdown_cases --test pending_transformers --test append_ref_behavior`
 - U5: `cargo test -p mdstream --test reference_definitions_invalidation --test pulldown_reference_definitions --test incremark_footnote_invalidation_mode --test document_state`
 - U6: `cargo test -p mdstream --test boundary_plugin --test fn_boundary_plugin --test container_boundary_plugin --test analyzed_stream_core --test analyzed_stream_overlays`
 - U7: `cargo test -p mdstream-tokio --tests`
