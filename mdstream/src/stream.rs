@@ -14,9 +14,8 @@ use self::mode::BlockMode;
 
 use crate::boundary::BoundaryPlugin;
 use crate::options::{FootnotesMode, Options};
-use crate::pending::terminate_markdown;
-use crate::syntax::facts::code_fence_suffix;
-use crate::transform::{PendingTransformInput, PendingTransformer};
+use crate::pending::{PendingDisplayPipeline, render_pending_display};
+use crate::transform::PendingTransformer;
 use crate::types::{Block, BlockId, BlockKind, BlockStatus, PendingBlockRef, Update, UpdateRef};
 
 pub struct MdStream {
@@ -31,8 +30,7 @@ pub struct MdStream {
     next_block_id: u64,
     current_mode: BlockMode,
 
-    pending_display_cache: Option<String>,
-    pending_display_cache_suffix: Option<String>,
+    pending_display: PendingDisplayPipeline,
     pending_transformers: Vec<Box<dyn PendingTransformer>>,
     boundary_plugins: Vec<Box<dyn BoundaryPlugin>>,
     active_boundary_plugin: Option<usize>,
@@ -83,14 +81,7 @@ impl std::fmt::Debug for MdStream {
             .field("current_block_start_line", &self.current_block_start_line)
             .field("current_block_id", &self.current_block_id)
             .field("next_block_id", &self.next_block_id)
-            .field(
-                "pending_display_cache",
-                &self.pending_display_cache.is_some(),
-            )
-            .field(
-                "pending_display_cache_suffix",
-                &self.pending_display_cache_suffix.is_some(),
-            )
+            .field("pending_display", &self.pending_display)
             .field("pending_transformers_len", &self.pending_transformers.len())
             .field("boundary_plugins_len", &self.boundary_plugins.len())
             .field("active_boundary_plugin", &self.active_boundary_plugin)
@@ -119,8 +110,7 @@ impl MdStream {
             current_block_id: BlockId(1),
             next_block_id: 2,
             current_mode: BlockMode::Unknown,
-            pending_display_cache: None,
-            pending_display_cache_suffix: None,
+            pending_display: PendingDisplayPipeline::default(),
             pending_transformers: Vec::new(),
             boundary_plugins: Vec::new(),
             active_boundary_plugin: None,
@@ -163,8 +153,7 @@ impl MdStream {
         T: PendingTransformer + 'static,
     {
         self.pending_transformers.push(Box::new(transformer));
-        self.pending_display_cache = None;
-        self.pending_display_cache_suffix = None;
+        self.pending_display.clear();
     }
 
     pub fn with_pending_transformer<T>(mut self, transformer: T) -> Self
@@ -180,8 +169,7 @@ impl MdStream {
         T: BoundaryPlugin + 'static,
     {
         self.boundary_plugins.push(Box::new(plugin));
-        self.pending_display_cache = None;
-        self.pending_display_cache_suffix = None;
+        self.pending_display.clear();
     }
 
     pub fn with_boundary_plugin<T>(mut self, plugin: T) -> Self
@@ -245,11 +233,18 @@ impl MdStream {
 
     fn ensure_current_pending_display(&mut self) {
         let Some(info) = self.current_pending_info() else {
-            self.pending_display_cache = None;
-            self.pending_display_cache_suffix = None;
+            self.pending_display.clear();
             return;
         };
-        self.ensure_pending_display_for(info.kind, info.raw_start);
+        let raw = &self.buffer[info.raw_start..];
+        let code_fence = self.current_code_fence_mode();
+        self.pending_display.ensure_for(
+            info.kind,
+            raw,
+            code_fence,
+            &self.opts.terminator,
+            &mut self.pending_transformers,
+        );
     }
 
     fn current_pending_ref_readonly(&self) -> Option<PendingBlockRef<'_>> {
@@ -259,100 +254,20 @@ impl MdStream {
             id: info.id,
             kind: info.kind,
             raw,
-            display: self.pending_display_cache.as_deref(),
+            display: self.pending_display.display(),
         })
     }
 
-    fn transform_pending_display_at(
-        &mut self,
-        kind: BlockKind,
-        raw_start: usize,
-        mut display: String,
-    ) -> String {
-        if self.pending_transformers.is_empty() {
-            return display;
-        }
-        let raw = &self.buffer[raw_start..];
-        for t in &mut self.pending_transformers {
-            if let Some(next) = t.transform(PendingTransformInput {
-                kind,
-                raw,
-                display: &display,
-            }) {
-                display = next;
-            }
-        }
-        display
-    }
-
-    fn ensure_pending_display_for(&mut self, kind: BlockKind, raw_start: usize) {
-        if matches!(kind, BlockKind::CodeFence) {
-            if let BlockMode::CodeFence {
-                fence_char,
-                fence_len,
-            } = self.current_mode
-            {
-                if self.pending_display_cache.is_some()
-                    && self.pending_display_cache_suffix.is_some()
-                {
-                    return;
-                }
-                let raw = &self.buffer[raw_start..];
-                let suffix = code_fence_suffix(raw.ends_with('\n'), fence_char, fence_len);
-                let mut display = String::with_capacity(raw.len() + suffix.len());
-                display.push_str(raw);
-                display.push_str(&suffix);
-                self.pending_display_cache = Some(display);
-                self.pending_display_cache_suffix = Some(suffix);
-                return;
-            }
-        }
-
-        if self.pending_display_cache.is_some() {
-            return;
-        }
-        let display = {
-            let raw = &self.buffer[raw_start..];
-            terminate_markdown(raw, &self.opts.terminator)
-        };
-        let display = self.transform_pending_display_at(kind, raw_start, display);
-        self.pending_display_cache = Some(display);
-        self.pending_display_cache_suffix = None;
-    }
-
-    fn try_incremental_pending_display_append(&mut self, appended: &str) -> bool {
-        let Some(suffix) = self.pending_display_cache_suffix.as_ref() else {
-            return false;
-        };
-        let Some(display) = self.pending_display_cache.as_mut() else {
-            self.pending_display_cache_suffix = None;
-            return false;
-        };
-        let BlockMode::CodeFence {
+    fn current_code_fence_mode(&self) -> Option<(char, usize)> {
+        if let BlockMode::CodeFence {
             fence_char,
             fence_len,
         } = self.current_mode
-        else {
-            self.pending_display_cache_suffix = None;
-            self.pending_display_cache = None;
-            return false;
-        };
-
-        let prev_raw_ended_with_nl = !suffix.starts_with('\n');
-        let new_raw_ended_with_nl = if appended.is_empty() {
-            prev_raw_ended_with_nl
+        {
+            Some((fence_char, fence_len))
         } else {
-            appended.ends_with('\n')
-        };
-
-        let base_len = display.len().saturating_sub(suffix.len());
-        display.truncate(base_len);
-        display.push_str(appended);
-
-        let new_suffix = code_fence_suffix(new_raw_ended_with_nl, fence_char, fence_len);
-        display.push_str(&new_suffix);
-        self.pending_display_cache_suffix = Some(new_suffix);
-        true
+            None
+        }
     }
 
     fn pending_block_snapshot(&mut self) -> Option<Block> {
@@ -362,10 +277,11 @@ impl MdStream {
                 return None;
             }
             let kind = BlockKind::Unknown;
-            let display = self.transform_pending_display(
+            let display = render_pending_display(
                 kind,
                 &raw,
-                terminate_markdown(&raw, &self.opts.terminator),
+                &self.opts.terminator,
+                &mut self.pending_transformers,
             );
             return Some(Block {
                 id: BlockId(1),
@@ -393,8 +309,12 @@ impl MdStream {
         } else {
             self.current_mode.kind()
         };
-        let mut display = terminate_markdown(&raw, &self.opts.terminator);
-        display = self.transform_pending_display(kind, &raw, display);
+        let display = render_pending_display(
+            kind,
+            &raw,
+            &self.opts.terminator,
+            &mut self.pending_transformers,
+        );
         Some(Block {
             id: self.current_block_id,
             status: BlockStatus::Pending,
@@ -405,7 +325,7 @@ impl MdStream {
     }
 
     fn current_pending_block(&mut self) -> Option<Block> {
-        if let Some(cached) = &self.pending_display_cache {
+        if let Some(cached) = self.pending_display.display() {
             let info = self.current_pending_info()?;
             let raw = self.buffer[info.raw_start..].to_string();
             if raw.is_empty() {
@@ -416,39 +336,17 @@ impl MdStream {
                 status: BlockStatus::Pending,
                 kind: info.kind,
                 raw,
-                display: Some(cached.clone()),
+                display: Some(cached.to_string()),
             });
         }
 
         let p = self.pending_block_snapshot();
         if let Some(p) = &p {
             if let Some(d) = &p.display {
-                self.pending_display_cache = Some(d.clone());
-                self.pending_display_cache_suffix = None;
+                self.pending_display.set_owned_display(d.clone());
             }
         }
         p
-    }
-
-    fn transform_pending_display(
-        &mut self,
-        kind: BlockKind,
-        raw: &str,
-        mut display: String,
-    ) -> String {
-        if self.pending_transformers.is_empty() {
-            return display;
-        }
-        for t in &mut self.pending_transformers {
-            if let Some(next) = t.transform(PendingTransformInput {
-                kind,
-                raw,
-                display: &display,
-            }) {
-                display = next;
-            }
-        }
-        display
     }
 
     pub fn append(&mut self, chunk: &str) -> Update {
@@ -487,10 +385,12 @@ impl MdStream {
         let chunk = self.normalize_newlines_cow(chunk);
 
         // Best-effort incremental update for code-fence pending display.
-        let pending_display_kept = self.try_incremental_pending_display_append(chunk.as_ref());
+        let code_fence = self.current_code_fence_mode();
+        let pending_display_kept = self
+            .pending_display
+            .try_incremental_code_fence_append(chunk.as_ref(), code_fence);
         if !pending_display_kept {
-            self.pending_display_cache = None;
-            self.pending_display_cache_suffix = None;
+            self.pending_display.clear();
         }
 
         if !self.footnotes_detected {
@@ -547,8 +447,7 @@ impl MdStream {
 
         self.committed.clear();
         self.reference_usage_index.clear();
-        self.pending_display_cache = None;
-        self.pending_display_cache_suffix = None;
+        self.pending_display.clear();
         self.active_boundary_plugin = None;
 
         // Re-start IDs so consumers can treat it as a new document.
@@ -657,8 +556,7 @@ impl MdStream {
         self.current_block_id = BlockId(1);
         self.next_block_id = 2;
         self.current_mode = BlockMode::Unknown;
-        self.pending_display_cache = None;
-        self.pending_display_cache_suffix = None;
+        self.pending_display.clear();
         for t in &mut self.pending_transformers {
             t.reset();
         }

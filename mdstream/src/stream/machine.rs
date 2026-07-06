@@ -80,8 +80,7 @@ impl MdStream {
             self.next_block_id += 1;
             self.current_mode = BlockMode::Unknown;
             self.active_boundary_plugin = None;
-            self.pending_display_cache = None;
-            self.pending_display_cache_suffix = None;
+            self.pending_display.clear();
             return;
         }
         let block = Block {
@@ -98,8 +97,7 @@ impl MdStream {
         self.next_block_id += 1;
         self.current_mode = BlockMode::Unknown;
         self.active_boundary_plugin = None;
-        self.pending_display_cache = None;
-        self.pending_display_cache_suffix = None;
+        self.pending_display.clear();
     }
 
     pub(super) fn push_committed_block(&mut self, block: Block, ctx: &mut AppendCtx<'_>) {

@@ -50,8 +50,7 @@ impl MdStream {
             self.processed_line = self.lines.len();
         }
 
-        self.pending_display_cache = None;
-        self.pending_display_cache_suffix = None;
+        self.pending_display.clear();
         self.last_finalized_buffer_len = self.last_finalized_buffer_len.saturating_sub(keep_from);
 
         // Best-effort sanity: avoid holding obviously wrong indices if something went off.
