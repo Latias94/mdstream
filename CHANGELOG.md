@@ -8,7 +8,7 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
 - New: added a Criterion benchmark harness and performance guide for core
   streaming hot paths.
 - Changed: expanded CI and release checks around nextest, doc tests, examples,
-  benchmark compilation, packaging, and split MSRV validation.
+  benchmark/fuzz compilation, packaging, and split MSRV validation.
 - New: added property tests for generated Markdown-ish chunk boundaries and a
   standalone fuzz package for stream chunking and pending terminator hardening.
 - Fixed: delayed incomplete table-delimiter candidates until newline so streaming

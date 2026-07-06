@@ -155,6 +155,9 @@ jobs:
       - name: Check benchmarks
         run: cargo check -p mdstream --benches
 
+      - name: Check fuzz targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins
+
       - name: Cargo package
         run: |
           # `mdstream-tokio` depends on `mdstream = ^X.Y.Z`. During `cargo package`, Cargo resolves

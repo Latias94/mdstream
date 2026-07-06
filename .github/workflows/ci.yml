@@ -103,5 +103,8 @@ jobs:
       - name: Check benchmarks
         run: cargo check -p mdstream --benches
 
+      - name: Check fuzz targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins
+
       - name: Package mdstream
         run: cargo package -p mdstream

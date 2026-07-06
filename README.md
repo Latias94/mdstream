@@ -301,13 +301,14 @@ cargo check -p mdstream --examples
 cargo check -p mdstream --features pulldown --examples
 cargo check -p mdstream-tokio --examples
 cargo check -p mdstream --benches
+cargo check --manifest-path fuzz/Cargo.toml --bins
 cargo package -p mdstream
 ```
 
 Additional hardening:
 
 - Benchmarks: `cargo bench -p mdstream --bench streaming` (see `docs/PERFORMANCE.md`).
-- Fuzz targets: `cargo check --manifest-path fuzz/Cargo.toml --bins`; deeper `cargo-fuzz` runs are documented in `fuzz/README.md`.
+- Longer `cargo-fuzz` runs are documented in `fuzz/README.md`.
 - MSRV checks are split: `cargo +1.85.0 test -p mdstream --tests --all-features` for the core crate and `cargo +1.88.0 nextest run --workspace --all-features` for the full workspace.
 
 ## Design notes (in-repo)
