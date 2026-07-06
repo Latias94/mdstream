@@ -91,7 +91,8 @@ pub struct Update {
     pub reset: bool,
     /// Optional list of committed block IDs that adapters may want to re-parse.
     ///
-    /// Note: populated in post-MVP invalidation mode.
+    /// Populated when document-scoped semantics, such as late reference definitions, affect
+    /// previously committed blocks.
     pub invalidated: Vec<BlockId>,
 }
 

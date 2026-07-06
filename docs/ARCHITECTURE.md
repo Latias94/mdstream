@@ -131,11 +131,12 @@ Some Markdown constructs are inherently document-scoped:
 
 The default can prioritize streaming stability (SingleBlock for footnotes) while still allowing advanced consumers to opt into invalidation.
 
-Today, invalidation is implemented for reference-style link definitions. Footnote invalidation is planned post-MVP.
+Today, invalidation events are implemented for reference-style link definitions. `FootnotesMode::Invalidate`
+keeps footnote definitions as regular streaming blocks instead of forcing a whole-document reset.
 
-Internally, document-scoped behavior lives in `DocumentSemantics` rather than the block state
-machine. This keeps block boundaries separate from effects that may invalidate earlier committed
-blocks or require a full reset.
+Internally, document-scoped behavior is coordinated by `DocumentSemantics`, with focused footnote
+and reference effect modules behind it. This keeps block boundaries separate from effects that may
+invalidate earlier committed blocks or require a full reset.
 
 ### Footnote definition boundary rules
 

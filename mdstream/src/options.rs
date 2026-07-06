@@ -4,9 +4,7 @@ use crate::pending::TerminatorOptions;
 pub enum FootnotesMode {
     /// If footnotes are detected, treat the whole document as a single block.
     SingleBlock,
-    /// Keep blocks but allow adapters to selectively re-parse via invalidation events.
-    ///
-    /// Note: Invalidation support is planned post-MVP.
+    /// Keep footnote definitions as regular streaming blocks instead of switching to single-block mode.
     Invalidate,
 }
 
@@ -15,8 +13,6 @@ pub enum ReferenceDefinitionsMode {
     /// Keep blocks stable; reference definitions may be interpreted late by adapters.
     StabilityFirst,
     /// Emit invalidation events so adapters can selectively re-parse affected blocks.
-    ///
-    /// Note: Invalidation support is planned post-MVP.
     Invalidate,
 }
 
