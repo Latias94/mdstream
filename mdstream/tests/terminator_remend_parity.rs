@@ -1,4 +1,4 @@
-use mdstream::pending::{TerminatorOptions, terminate_markdown};
+use mdstream::{TerminatorOptions, terminate_markdown};
 
 fn remend(text: &str) -> String {
     terminate_markdown(text, &TerminatorOptions::default())

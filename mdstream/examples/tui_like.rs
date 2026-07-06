@@ -1,7 +1,7 @@
 use mdstream::{
     AnalyzedStream, BlockHintAnalyzer, BlockHintMeta, BlockKind, CodeFenceAnalyzer, CodeFenceClass,
     DocumentState, FootnotesMode, IncompleteImageDropTransformer,
-    IncompleteLinkPlaceholderTransformer, Options,
+    IncompleteLinkPlaceholderTransformer, Options, TerminatorOptions,
 };
 
 fn print_block(prefix: &str, id: u64, kind: BlockKind, text: &str) {
@@ -17,7 +17,7 @@ fn main() {
     // Streamdown-compatible pending transformers instead.
     let opts = Options {
         footnotes: FootnotesMode::SingleBlock,
-        terminator: mdstream::pending::TerminatorOptions {
+        terminator: TerminatorOptions {
             links: false,
             images: false,
             ..Default::default()

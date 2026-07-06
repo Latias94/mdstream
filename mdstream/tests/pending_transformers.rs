@@ -1,4 +1,4 @@
-use mdstream::{FnPendingTransformer, MdStream, Options};
+use mdstream::{FnPendingTransformer, MdStream, Options, TerminatorOptions};
 
 #[test]
 fn pending_transformer_can_override_display() {
@@ -19,10 +19,31 @@ fn pending_transformer_can_override_display() {
 }
 
 #[test]
+fn default_pending_repair_is_observable_through_stream() {
+    let mut link_stream = MdStream::new(Options::default());
+    let link_update = link_stream.append("See [docs](");
+    let link_pending = link_update.pending.expect("pending");
+    assert_eq!(link_pending.raw, "See [docs](");
+    assert_eq!(
+        link_pending.display.as_deref(),
+        Some("See [docs](streamdown:incomplete-link)")
+    );
+
+    let mut formatting_stream = MdStream::new(Options::default());
+    let formatting_update = formatting_stream.append("Text with **bold and `code");
+    let formatting_pending = formatting_update.pending.expect("pending");
+    assert_eq!(formatting_pending.raw, "Text with **bold and `code");
+    assert_eq!(
+        formatting_pending.display.as_deref(),
+        Some("Text with **bold and `code**`")
+    );
+}
+
+#[test]
 fn built_in_incomplete_link_placeholder_transformer_can_be_enabled() {
     // Disable built-in terminator handling so this test exercises the transformer.
     let opts = Options {
-        terminator: mdstream::pending::TerminatorOptions {
+        terminator: TerminatorOptions {
             links: false,
             images: false,
             ..Default::default()
@@ -45,7 +66,7 @@ fn built_in_incomplete_link_placeholder_transformer_can_be_enabled() {
 #[test]
 fn built_in_incomplete_image_drop_transformer_can_be_enabled() {
     let opts = Options {
-        terminator: mdstream::pending::TerminatorOptions {
+        terminator: TerminatorOptions {
             links: false,
             images: false,
             ..Default::default()

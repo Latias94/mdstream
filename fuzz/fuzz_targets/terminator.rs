@@ -2,7 +2,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use mdstream::pending::{TerminatorOptions, terminate_markdown};
+use mdstream::{TerminatorOptions, terminate_markdown};
 
 #[derive(Arbitrary, Debug)]
 struct TerminatorCase {

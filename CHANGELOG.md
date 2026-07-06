@@ -5,6 +5,9 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
 
 ## Unreleased
 
+- Changed: made low-level `pending` and `syntax` modules internal; import
+  `TerminatorOptions`, `terminate_markdown`, and syntax helpers from the crate
+  root instead.
 - New: added a Criterion benchmark harness and performance guide for core
   streaming hot paths.
 - Changed: expanded CI and release checks around nextest, doc tests, examples,

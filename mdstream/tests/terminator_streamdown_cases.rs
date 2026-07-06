@@ -1,4 +1,4 @@
-use mdstream::pending::{TerminatorOptions, terminate_markdown};
+use mdstream::{TerminatorOptions, terminate_markdown};
 
 #[test]
 fn setext_heading_protection() {
