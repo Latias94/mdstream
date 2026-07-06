@@ -15,7 +15,7 @@ categories = ["text-processing", "parsing"]
 exclude = ["repo-ref/**"]
 
 [dependencies]
-pulldown-cmark = { version = "0.13", optional = true }
+pulldown-cmark = { version = "0.13.4", optional = true }
 
 [features]
 default = []

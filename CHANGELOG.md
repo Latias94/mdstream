@@ -5,7 +5,11 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
 
 ## Unreleased
 
-- TBD
+- Changed: upgraded direct dependency requirements to current releases:
+  `pulldown-cmark` 0.13.4, `tokio` 1.52.3, `ratatui` 0.30.2,
+  `crossterm` 0.29.0, and `unicode-width` 0.2.2.
+- Changed: raised `mdstream-tokio` MSRV to Rust 1.88.0 to match
+  `ratatui` 0.30.2.
 
 ## 0.2.0
 

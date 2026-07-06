@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Tokio glue for mdstream (delta coalescing and optional actor helpers)."
 readme = "../README.md"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88.0"
 authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Latias94/mdstream"
@@ -12,9 +12,9 @@ homepage = "https://github.com/Latias94/mdstream"
 
 [dependencies]
 mdstream = { version = "0.2.0", path = "../mdstream" }
-tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+tokio = { version = "1.52.3", features = ["sync", "time", "rt", "macros"] }
 
 [dev-dependencies]
-ratatui = "0.29"
-crossterm = "0.28"
-unicode-width = "0.2"
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+unicode-width = "0.2.2"

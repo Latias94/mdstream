@@ -82,12 +82,11 @@ async fn main() -> io::Result<()> {
 
     std::thread::spawn(move || {
         loop {
-            if let Ok(true) = crossterm::event::poll(Duration::from_millis(50)) {
-                if let Ok(ev) = crossterm::event::read() {
-                    if tx_ev.blocking_send(ev).is_err() {
-                        break;
-                    }
-                }
+            if let Ok(true) = crossterm::event::poll(Duration::from_millis(50))
+                && let Ok(ev) = crossterm::event::read()
+                && tx_ev.blocking_send(ev).is_err()
+            {
+                break;
             }
         }
     });
@@ -127,12 +126,16 @@ async fn main() -> io::Result<()> {
     res
 }
 
-async fn run<B: ratatui::backend::Backend>(
+async fn run<B>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     rx: &mut CoalescingReceiver,
     rx_ev: &mut mpsc::Receiver<Event>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    B: ratatui::backend::Backend,
+    io::Error: From<B::Error>,
+{
     let mut last_area_w: u16 = 0;
     let mut last_area_h: u16 = 0;
 
