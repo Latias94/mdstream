@@ -1108,36 +1108,15 @@ impl MdStream {
 
     fn current_pending_block(&mut self) -> Option<Block> {
         if let Some(cached) = &self.pending_display_cache {
-            // Fast path: pending raw still needs to be refreshed.
-            if self.opts.footnotes == FootnotesMode::SingleBlock && self.footnotes_detected {
-                let raw = self.buffer.clone();
-                if raw.is_empty() {
-                    return None;
-                }
-                return Some(Block {
-                    id: BlockId(1),
-                    status: BlockStatus::Pending,
-                    kind: BlockKind::Unknown,
-                    raw,
-                    display: Some(cached.clone()),
-                });
-            }
-
-            if self.current_block_start_line >= self.lines.len() {
-                return None;
-            }
-            let start_off = self.lines[self.current_block_start_line].start;
-            if start_off >= self.buffer.len() {
-                return None;
-            }
-            let raw = self.buffer[start_off..].to_string();
+            let info = self.current_pending_info()?;
+            let raw = self.buffer[info.raw_start..].to_string();
             if raw.is_empty() {
                 return None;
             }
             return Some(Block {
-                id: self.current_block_id,
+                id: info.id,
                 status: BlockStatus::Pending,
-                kind: Self::kind_for_mode(&self.current_mode),
+                kind: info.kind,
                 raw,
                 display: Some(cached.clone()),
             });
@@ -1180,6 +1159,7 @@ impl MdStream {
         self.append_core(chunk, &mut ctx);
         update.reset = ctx.reset;
         update.invalidated = ctx.invalidated;
+        self.ensure_current_pending_display();
         update.pending = self.current_pending_block();
         update
     }

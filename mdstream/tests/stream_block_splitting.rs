@@ -1,5 +1,9 @@
 use mdstream::{MdStream, Options};
 
+fn normalize_newlines(input: &str) -> String {
+    input.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 #[test]
 fn splits_paragraphs_on_blank_line() {
     let mut s = MdStream::new(Options::default());
@@ -70,7 +74,7 @@ fn splits_streamdown_benchmark_document_with_footnotes_as_single_pending_block()
     assert!(u.committed.is_empty());
     let pending = u.pending.expect("pending");
     assert_eq!(pending.id.0, 1);
-    assert_eq!(pending.raw, input);
+    assert_eq!(pending.raw, normalize_newlines(input));
 }
 
 #[test]
@@ -82,7 +86,7 @@ fn splits_streamdown_benchmark_document_with_many_footnotes_as_single_pending_bl
     assert!(u.committed.is_empty());
     let pending = u.pending.expect("pending");
     assert_eq!(pending.id.0, 1);
-    assert_eq!(pending.raw, input);
+    assert_eq!(pending.raw, normalize_newlines(input));
 }
 
 #[test]
