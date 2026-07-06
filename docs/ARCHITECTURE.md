@@ -82,11 +82,15 @@ Internally we maintain:
 
 The public entry point is still `MdStream`, but the implementation is split by responsibility:
 
-- `stream/input.rs`: newline normalization, line indexing, and buffer rebuilding.
+- `stream/input.rs`: `LineBuffer`, newline normalization, line indexing, and compaction-safe buffer rebuilding.
+- `stream/block_machine.rs`: committed block cursors, pending block start, `BlockId` allocation, and mode ownership.
+- `stream/boundary_detector.rs`: stable boundary decisions for block starts, continuations, and custom plugins.
 - `stream/mode.rs`: block-mode state and `BlockKind` mapping.
-- `stream/machine.rs`: stable boundary detection, block committing, and mode transitions.
+- `stream/machine.rs`: `MdStream` facade coordination that turns input lines and machine events into updates.
 - `pending/pipeline.rs`: pending display cache, code-fence suffix fast path, terminator calls, and pending transformer chain.
-- `semantics/mod.rs`: document-scoped reference invalidation and footnote detection state.
+- `pending/repair/*`: pending Markdown repair helpers for links, inline spans, emphasis, setext headings, and terminator context.
+- `semantics/mod.rs`: document-scoped effects coordinator.
+- `semantics/{footnotes,references}.rs`: focused footnote reset policy and reference-definition invalidation state.
 - `extensions/*`: internal registries for boundary plugins and pending transformers.
 - `mdstream-tokio/src/{sender,receiver,actor,options}.rs`: Tokio feeding strategy around the runtime-agnostic core.
 
