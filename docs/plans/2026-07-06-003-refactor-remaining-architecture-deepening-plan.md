@@ -185,7 +185,7 @@ flowchart TB
 - **Goal:** Establish the migration baseline for low-level public exports and pending repair behavior before changing internals.
 - **Requirements:** R1, R3, R8, R9.
 - **Dependencies:** None.
-- **Files:** `mdstream/src/lib.rs`, `mdstream/src/pending/mod.rs`, `mdstream/src/options.rs`, `mdstream/tests/terminator_streamdown_cases.rs`, `mdstream/tests/terminator_remend_parity.rs`, `mdstream/tests/pending_transformers.rs`, `mdstream/tests/update_ref.rs`, `mdstream/examples/tui_like.rs`.
+- **Files:** `mdstream/src/lib.rs`, `mdstream/src/pending/mod.rs`, `mdstream/src/options.rs`, `mdstream/tests/terminator_streamdown_cases.rs`, `mdstream/tests/terminator_remend_parity.rs`, `mdstream/tests/pending_transformers.rs`, `mdstream/tests/append_ref_behavior.rs`, `mdstream/examples/tui_like.rs`.
 - **Approach:** Inventory current external paths used by in-repo examples and tests, decide which symbols remain root-level public, and add or adjust characterization tests that prove pending display through `MdStream` rather than only direct terminator calls.
 - **Execution note:** Start proof-first for any changed import or direct terminator expectation: update the test to the desired public surface, observe the expected compile or assertion failure, then implement the surface change.
 - **Patterns to follow:** `Block::code_fence_header` root-accessible helper style in `mdstream/src/types.rs`, README API-at-a-glance section, existing pending transformer tests.
@@ -321,7 +321,7 @@ flowchart TB
 | Doc tests | `cargo test --workspace --all-features --doc` | U5-U8 |
 | Core examples | `cargo check -p mdstream --examples` and `cargo check -p mdstream --features pulldown --examples` | U5-U8 |
 | Tokio examples | `cargo check -p mdstream-tokio --examples` | U7, U8 |
-| Pending repair focus | `cargo test -p mdstream --test terminator_streamdown_cases --test terminator_remend_parity --test pending_transformers --test update_ref` | U1, U2 |
+| Pending repair focus | `cargo test -p mdstream --test terminator_streamdown_cases --test terminator_remend_parity --test pending_transformers --test append_ref_behavior` | U1, U2 |
 | Boundary and stream-state focus | `cargo test -p mdstream --test stream_block_splitting --test stream_streamdown_tables --test boundary_plugin --test boundary_tag_plugin --test container_boundary_plugin --test fn_boundary_plugin --test stream_trace_equivalence --test buffer_compaction` | U3 |
 | Semantics focus | `cargo test -p mdstream --test reference_definitions_invalidation --test pulldown_reference_definitions --test incremark_footnote_invalidation_mode --test stream_incremark_regressions --test document_state` | U4 |
 | Property and fuzz compile | `cargo test -p mdstream --test proptest_chunking` and `cargo check --manifest-path fuzz/Cargo.toml --bins` | U2, U3, U6 |
@@ -332,7 +332,7 @@ flowchart TB
 | Package | `cargo package -p mdstream` | U8 |
 | Public-surface search | No stale `mdstream::pending` or outdated post-MVP comments remain unless intentionally documented | U5, U8 |
 
-On Windows, local test runs that launch binaries with names like `update_ref` may require `__COMPAT_LAYER=RUNASINVOKER`.
+Windows test target names should avoid installer-trigger words such as `update` so local `cargo test` and `nextest` runs do not trip UAC heuristics.
 
 ---
 

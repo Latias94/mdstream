@@ -131,5 +131,8 @@ async fn actor_exits_when_output_receiver_closes() {
             }
         }
     }
-    assert!(closed, "actor should drop input receiver after output closes");
+    assert!(
+        closed,
+        "actor should drop input receiver after output closes"
+    );
 }
