@@ -101,3 +101,14 @@ fn chunking_invariance_handles_crlf_split_across_chunks() {
     );
     assert_eq!(blocks_split_crlf, expected);
 }
+
+#[test]
+fn incomplete_table_delimiter_candidate_waits_for_newline() {
+    let opts = Options::default();
+    let markdown = "a# Heading\n|# Heading\n-->\n";
+
+    let expected = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());
+    let blocks_chars = support::collect_final_blocks(support::chunk_chars(markdown), opts);
+
+    assert_eq!(blocks_chars, expected);
+}

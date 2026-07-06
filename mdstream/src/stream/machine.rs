@@ -200,6 +200,11 @@ impl MdStream {
     }
 
     fn is_new_block_boundary(&self, prev: &str, curr: &str, curr_line_index: usize) -> bool {
+        let curr_has_newline = self
+            .lines
+            .get(curr_line_index)
+            .is_some_and(|line| line.has_newline);
+
         // Never split inside fenced code blocks.
         if let BlockMode::CodeFence { .. } = self.current_mode {
             return false;
@@ -258,7 +263,7 @@ impl MdStream {
         }
 
         // Certain block starters can interrupt paragraphs/lists/quotes.
-        if is_heading(curr) || is_thematic_break(curr) {
+        if is_heading(curr) || (curr_has_newline && is_thematic_break(curr)) {
             return true;
         }
         if fence_start(curr).is_some() {
@@ -286,6 +291,7 @@ impl MdStream {
         // Table detection: if current line is a delimiter and previous line contains pipes,
         // consider starting a table block at the previous line.
         if matches!(self.current_mode, BlockMode::Paragraph | BlockMode::Unknown)
+            && curr_has_newline
             && self.is_table_delimiter(curr)
             && prev.contains('|')
             // table starts at prev line, so boundary at prev-1 if block started earlier.

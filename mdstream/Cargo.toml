@@ -19,6 +19,7 @@ pulldown-cmark = { version = "0.13.4", optional = true }
 
 [dev-dependencies]
 criterion = "0.7.0"
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
 [features]
 default = []

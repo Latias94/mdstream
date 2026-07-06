@@ -1,3 +1,4 @@
 [workspace]
 members = ["mdstream", "mdstream-tokio"]
+exclude = ["fuzz"]
 resolver = "2"

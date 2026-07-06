@@ -1,0 +1,29 @@
+[package]
+name = "mdstream-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1.4.2", features = ["derive"] }
+libfuzzer-sys = "0.4.13"
+mdstream = { path = "../mdstream" }
+
+[[bin]]
+name = "stream_chunking"
+path = "fuzz_targets/stream_chunking.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "terminator"
+path = "fuzz_targets/terminator.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
