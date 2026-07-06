@@ -52,19 +52,23 @@ impl MdStream {
     }
 
     pub(super) fn commit_block(&mut self, end_line_inclusive: usize, ctx: &mut AppendCtx<'_>) {
-        if self.current_block_start_line >= self.lines.len() {
+        if self.current_block_start_line >= self.input.line_count() {
             return;
         }
         if end_line_inclusive < self.current_block_start_line {
             return;
         }
-        let start_off = self.lines[self.current_block_start_line].start;
-        let end_off = self.lines[end_line_inclusive].end_with_newline();
+        let Some(start_off) = self.input.line_start(self.current_block_start_line) else {
+            return;
+        };
+        let Some(end_off) = self.input.line_end_with_newline(end_line_inclusive) else {
+            return;
+        };
         if end_off <= start_off {
             return;
         }
 
-        let raw = self.buffer[start_off..end_off].to_string();
+        let raw = self.input.as_str()[start_off..end_off].to_string();
         if raw.trim().is_empty() {
             // Never emit whitespace-only blocks. Keep stable behavior by advancing the block cursor.
             self.current_block_start_line = end_line_inclusive + 1;
@@ -112,12 +116,12 @@ impl MdStream {
     }
 
     pub(super) fn line_str(&self, line_index: usize) -> &str {
-        self.lines[line_index].as_str(&self.buffer)
+        self.input.line_str(line_index)
     }
 
     pub(super) fn process_line(&mut self, line_index: usize, ctx: &mut AppendCtx<'_>) {
         // Skip if this line does not yet end with newline; we can't do stable boundary checks.
-        if !self.lines[line_index].has_newline {
+        if !self.input.line_has_newline(line_index) {
             return;
         }
 
@@ -167,14 +171,14 @@ impl MdStream {
     }
 
     pub(super) fn process_incomplete_tail_boundary(&mut self, ctx: &mut AppendCtx<'_>) {
-        if self.lines.len() < 2 {
+        if self.input.line_count() < 2 {
             return;
         }
-        let last = self.lines.len() - 1;
-        if self.lines[last].has_newline {
+        let last = self.input.line_count() - 1;
+        if self.input.line_has_newline(last) {
             return;
         }
-        if !self.lines[last - 1].has_newline {
+        if !self.input.line_has_newline(last - 1) {
             return;
         }
 
@@ -196,10 +200,7 @@ impl MdStream {
     }
 
     fn is_new_block_boundary(&self, prev: &str, curr: &str, curr_line_index: usize) -> bool {
-        let curr_has_newline = self
-            .lines
-            .get(curr_line_index)
-            .is_some_and(|line| line.has_newline);
+        let curr_has_newline = self.input.line_has_newline(curr_line_index);
 
         // Never split inside fenced code blocks.
         if let BlockMode::CodeFence { .. } = self.current_mode {
@@ -319,10 +320,12 @@ impl MdStream {
 
     fn update_mode_with_line(&mut self, line_index: usize, ctx: &mut AppendCtx<'_>) {
         let (start, end) = {
-            let l = &self.lines[line_index];
-            (l.start, l.end)
+            let Some(line) = self.input.line(line_index) else {
+                return;
+            };
+            (line.start(), line.end())
         };
-        let line = &self.buffer[start..end];
+        let line = &self.input.as_str()[start..end];
         match &mut self.current_mode {
             BlockMode::Unknown => {
                 self.current_mode = self.start_mode_for_line(line);
@@ -369,7 +372,7 @@ impl MdStream {
                     && self.current_block_start_line + 1 == line_index
                     && line_index > 0
                 {
-                    let prev = self.lines[line_index - 1].as_str(&self.buffer);
+                    let prev = self.input.line_str(line_index - 1);
                     if !is_empty_line(prev) {
                         self.current_mode = BlockMode::Heading;
                         self.commit_block(line_index, ctx);
@@ -378,7 +381,7 @@ impl MdStream {
                 }
                 // Upgrade to table mode if delimiter row appears.
                 if self.is_table_delimiter(line) && line_index > 0 {
-                    let prev = self.lines[line_index - 1].as_str(&self.buffer);
+                    let prev = self.input.line_str(line_index - 1);
                     if prev.contains('|') {
                         self.current_mode = BlockMode::Table;
                     }

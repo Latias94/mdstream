@@ -6,7 +6,7 @@ impl MdStream {
         let Some(max) = self.opts.max_buffer_bytes else {
             return;
         };
-        if self.buffer.len() <= max {
+        if self.input.len() <= max {
             return;
         }
 
@@ -17,42 +17,39 @@ impl MdStream {
             return;
         }
 
-        let old_line_count = self.lines.len();
+        let old_line_count = self.input.line_count();
         let old_block_start_line = self.current_block_start_line;
         let old_processed_line = self.processed_line;
 
-        let keep_from = if old_block_start_line < self.lines.len() {
-            self.lines[old_block_start_line].start
+        let keep_from = if old_block_start_line < self.input.line_count() {
+            self.input
+                .line_start(old_block_start_line)
+                .unwrap_or(self.input.len())
         } else {
-            self.buffer.len()
+            self.input.len()
         };
         if keep_from == 0 {
             return;
         }
-        if keep_from > self.buffer.len() {
+        if keep_from > self.input.len() {
             return;
         }
 
-        let mut keep_from = keep_from;
-        while keep_from < self.buffer.len() && !self.buffer.is_char_boundary(keep_from) {
-            keep_from += 1;
+        let compacted_from = self.input.compact_from(keep_from);
+        if compacted_from == 0 {
+            return;
         }
-        if keep_from >= self.buffer.len() {
-            self.buffer.clear();
-        } else {
-            self.buffer = self.buffer[keep_from..].to_string();
-        }
-
-        self.rebuild_lines_from_buffer();
 
         self.current_block_start_line = 0;
         self.processed_line = old_processed_line.saturating_sub(old_block_start_line);
-        if self.processed_line > self.lines.len() {
-            self.processed_line = self.lines.len();
+        if self.processed_line > self.input.line_count() {
+            self.processed_line = self.input.line_count();
         }
 
         self.pending_display.clear();
-        self.last_finalized_buffer_len = self.last_finalized_buffer_len.saturating_sub(keep_from);
+        self.last_finalized_buffer_len = self
+            .last_finalized_buffer_len
+            .saturating_sub(compacted_from);
 
         // Best-effort sanity: avoid holding obviously wrong indices if something went off.
         debug_assert!(
