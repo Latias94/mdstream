@@ -1,7 +1,6 @@
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
-use crate::reference;
+use crate::reference::ReferenceDefinitions;
 use crate::types::{Block, BlockId, Update};
 
 use pulldown_cmark::{Event, Options as PulldownOptions, Parser};
@@ -37,9 +36,7 @@ pub struct PulldownAdapter {
     opts: PulldownAdapterOptions,
     committed_raw: HashMap<BlockId, String>,
     committed_cache: HashMap<BlockId, Vec<Event<'static>>>,
-    reference_definitions: BTreeMap<String, String>,
-    reference_definitions_text: String,
-    reference_definitions_dirty: bool,
+    reference_definitions: ReferenceDefinitions,
     parse_scratch: ParseScratch,
 }
 
@@ -49,9 +46,7 @@ impl PulldownAdapter {
             opts,
             committed_raw: HashMap::new(),
             committed_cache: HashMap::new(),
-            reference_definitions: BTreeMap::new(),
-            reference_definitions_text: String::new(),
-            reference_definitions_dirty: false,
+            reference_definitions: ReferenceDefinitions::default(),
             parse_scratch: Default::default(),
         }
     }
@@ -60,8 +55,6 @@ impl PulldownAdapter {
         self.committed_raw.clear();
         self.committed_cache.clear();
         self.reference_definitions.clear();
-        self.reference_definitions_text.clear();
-        self.reference_definitions_dirty = false;
         #[cfg(not(feature = "sync"))]
         {
             self.parse_scratch.borrow_mut().clear();
@@ -78,8 +71,8 @@ impl PulldownAdapter {
         }
         for block in &update.committed {
             self.committed_raw.insert(block.id, block.raw.clone());
-            self.collect_reference_definitions(&block.raw);
-            self.refresh_reference_definitions_text();
+            self.reference_definitions.observe_text(&block.raw);
+            self.reference_definitions.refresh();
             let events = self.parse_with_definitions(&block.raw);
             self.committed_cache.insert(block.id, events);
         }
@@ -109,15 +102,16 @@ impl PulldownAdapter {
     }
 
     fn parse_with_definitions(&self, raw: &str) -> Vec<Event<'static>> {
-        if self.reference_definitions_text.is_empty() {
+        let prelude = self.reference_definitions.prelude_text();
+        if prelude.is_empty() {
             return parse_events_static(raw, self.opts.pulldown);
         }
         #[cfg(not(feature = "sync"))]
         {
             let mut scratch = self.parse_scratch.borrow_mut();
             scratch.clear();
-            scratch.reserve(self.reference_definitions_text.len() + 2 + raw.len());
-            scratch.push_str(&self.reference_definitions_text);
+            scratch.reserve(prelude.len() + 2 + raw.len());
+            scratch.push_str(prelude);
             scratch.push_str("\n\n");
             scratch.push_str(raw);
             parse_events_static(&scratch, self.opts.pulldown)
@@ -126,8 +120,8 @@ impl PulldownAdapter {
         {
             let mut scratch = self.lock_parse_scratch();
             scratch.clear();
-            scratch.reserve(self.reference_definitions_text.len() + 2 + raw.len());
-            scratch.push_str(&self.reference_definitions_text);
+            scratch.reserve(prelude.len() + 2 + raw.len());
+            scratch.push_str(prelude);
             scratch.push_str("\n\n");
             scratch.push_str(raw);
             parse_events_static(&scratch, self.opts.pulldown)
@@ -140,39 +134,6 @@ impl PulldownAdapter {
             Ok(scratch) => scratch,
             Err(poisoned) => poisoned.into_inner(),
         }
-    }
-
-    fn collect_reference_definitions(&mut self, raw: &str) {
-        // Best-effort: extract single-line reference definitions and keep the latest per label.
-        for line in raw.split('\n') {
-            if let Some((label, def_line)) = reference::extract_reference_definition_line(line) {
-                match self.reference_definitions.entry(label) {
-                    Entry::Vacant(v) => {
-                        v.insert(def_line);
-                        self.reference_definitions_dirty = true;
-                    }
-                    Entry::Occupied(mut o) => {
-                        if o.get() != &def_line {
-                            o.insert(def_line);
-                            self.reference_definitions_dirty = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn refresh_reference_definitions_text(&mut self) {
-        if !self.reference_definitions_dirty {
-            return;
-        }
-        self.reference_definitions_text = self
-            .reference_definitions
-            .values()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.reference_definitions_dirty = false;
     }
 }
 
@@ -199,7 +160,10 @@ mod tests {
     #[test]
     fn parse_scratch_recovers_from_poisoned_mutex() {
         let mut adapter = PulldownAdapter::new(PulldownAdapterOptions::default());
-        adapter.reference_definitions_text = "[ref]: https://example.com".to_string();
+        adapter
+            .reference_definitions
+            .observe_text("[ref]: https://example.com");
+        adapter.reference_definitions.refresh();
 
         let poison_result = panic::catch_unwind(AssertUnwindSafe(|| {
             let mut scratch = adapter.lock_parse_scratch();

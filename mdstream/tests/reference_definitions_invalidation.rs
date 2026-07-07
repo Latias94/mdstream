@@ -95,3 +95,70 @@ fn reference_definitions_inside_code_fences_do_not_trigger_invalidations() {
     let u = s.append("```text\n[ref]: https://example.com\n```\n\nNext\n");
     assert!(u.invalidated.is_empty());
 }
+
+#[test]
+fn image_reference_usages_are_invalidated_by_late_definitions() {
+    let opts = Options {
+        reference_definitions: ReferenceDefinitionsMode::Invalidate,
+        ..Default::default()
+    };
+
+    let mut s = MdStream::new(opts);
+    s.append("![alt][img]\n\n![ref][]\n\n");
+    let u =
+        s.append("[img]: https://example.com/a.png\n[ref]: https://example.com/b.png\n\nNext\n");
+
+    assert_eq!(
+        u.invalidated,
+        vec![mdstream::BlockId(1), mdstream::BlockId(2)]
+    );
+}
+
+#[test]
+fn definition_block_does_not_invalidate_itself() {
+    let opts = Options {
+        reference_definitions: ReferenceDefinitionsMode::Invalidate,
+        ..Default::default()
+    };
+
+    let mut s = MdStream::new(opts);
+    let u = s.append("See [ref].\n[ref]: https://example.com\n\nNext\n");
+
+    assert!(u.invalidated.is_empty());
+}
+
+#[test]
+fn multiple_definitions_deduplicate_and_sort_invalidated_ids() {
+    let opts = Options {
+        reference_definitions: ReferenceDefinitionsMode::Invalidate,
+        ..Default::default()
+    };
+
+    let mut s = MdStream::new(opts);
+    s.append("See [a].\n\nSee [b].\n\nSee [a] again.\n\n");
+    let u = s.append("[b]: https://example.com/b\n[a]: https://example.com/a\n[a]: https://example.com/a2\n\nNext\n");
+
+    assert_eq!(
+        u.invalidated,
+        vec![
+            mdstream::BlockId(1),
+            mdstream::BlockId(2),
+            mdstream::BlockId(3)
+        ]
+    );
+}
+
+#[test]
+fn reset_clears_reference_usage_state() {
+    let opts = Options {
+        reference_definitions: ReferenceDefinitionsMode::Invalidate,
+        ..Default::default()
+    };
+
+    let mut s = MdStream::new(opts);
+    s.append("See [ref].\n\n");
+    s.reset();
+    let u = s.append("[ref]: https://example.com\n\nNext\n");
+
+    assert!(u.invalidated.is_empty());
+}
