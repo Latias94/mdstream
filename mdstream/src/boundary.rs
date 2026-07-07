@@ -1,6 +1,6 @@
 use crate::syntax::containers::{
-    IndentPolicy, names_match, parse_directive_container_line, parse_fence_container_line,
-    parse_tag_closing, parse_tag_opening,
+    names_match, parse_directive_container_line, parse_fence_container_line, parse_tag_closing,
+    parse_tag_opening,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,13 +210,11 @@ impl FenceBoundaryPlugin {
     }
 
     fn fence_len_at_start(&self, line: &str) -> usize {
-        parse_fence_container_line(line, self.fence_char, IndentPolicy::UpToThreeSpaces)
-            .marker_length
+        parse_fence_container_line(line, self.fence_char).marker_length
     }
 
     fn is_end_line(&self, line: &str, opened_len: usize) -> bool {
-        let parsed =
-            parse_fence_container_line(line, self.fence_char, IndentPolicy::UpToThreeSpaces);
+        let parsed = parse_fence_container_line(line, self.fence_char);
         if parsed.marker_length < opened_len {
             return false;
         }
@@ -308,7 +306,7 @@ impl TagBoundaryPlugin {
     }
 
     fn matches_opening(&self, line: &str) -> bool {
-        let Some(opening) = parse_tag_opening(line, IndentPolicy::UpToThreeSpaces) else {
+        let Some(opening) = parse_tag_opening(line) else {
             return false;
         };
 
@@ -319,7 +317,7 @@ impl TagBoundaryPlugin {
     }
 
     fn matches_closing(&self, line: &str) -> bool {
-        let Some(closing) = parse_tag_closing(line, IndentPolicy::UpToThreeSpaces) else {
+        let Some(closing) = parse_tag_closing(line) else {
             return false;
         };
         if !names_match(closing.name, self.tag.as_str(), self.case_insensitive) {

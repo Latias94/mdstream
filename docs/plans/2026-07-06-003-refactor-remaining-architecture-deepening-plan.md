@@ -3,9 +3,11 @@ title: Remaining Architecture Deepening - Plan
 type: refactor
 date: 2026-07-06
 artifact_contract: ce-unified-plan/v1
-artifact_readiness: implementation-ready
+artifact_readiness: archived
 product_contract_source: ce-plan-bootstrap
-execution: code
+execution: historical
+archive_status: superseded
+superseded_by: docs/plans/2026-07-07-001-refactor-architecture-deepening-plan.md
 ---
 
 # Remaining Architecture Deepening - Plan

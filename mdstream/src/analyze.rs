@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::syntax::containers::{
-    IndentPolicy, names_match, normalize_name, parse_tag_closing, parse_tag_opening,
+    names_match, normalize_name, parse_tag_closing, parse_tag_opening,
 };
 use crate::syntax::facts::count_double_dollars;
 use crate::syntax::{is_code_fence_closing_line, parse_code_fence_header_from_block};
@@ -346,9 +346,9 @@ fn split_tag_block_content(raw: &str, tag: &str, case_insensitive: bool) -> (boo
     if let Some(idx) = last_nonempty_idx {
         let line = lines[idx];
         let line_no_nl = line.strip_suffix('\n').unwrap_or(line);
-        if parse_tag_closing(line_no_nl, IndentPolicy::AnyLeadingWhitespace).is_some_and(
-            |closing| closing.standalone && names_match(closing.name, tag, case_insensitive),
-        ) {
+        if parse_tag_closing(line_no_nl).is_some_and(|closing| {
+            closing.standalone && names_match(closing.name, tag, case_insensitive)
+        }) {
             closed = true;
             lines.remove(idx);
         }
@@ -363,7 +363,7 @@ impl BlockAnalyzer for TaggedBlockAnalyzer {
     fn analyze_block(&mut self, block: &Block) -> Option<Self::Meta> {
         // Only consider blocks whose first line looks like an opening custom tag.
         let first_line = block.raw.split('\n').next().unwrap_or(&block.raw);
-        let opening = parse_tag_opening(first_line, IndentPolicy::AnyLeadingWhitespace)?;
+        let opening = parse_tag_opening(first_line)?;
         let tag = normalize_name(opening.name, self.case_insensitive);
         let attrs = opening.attributes.map(str::to_string);
 

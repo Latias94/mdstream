@@ -1,12 +1,6 @@
 use super::facts::strip_up_to_three_leading_spaces;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IndentPolicy {
-    UpToThreeSpaces,
-    AnyLeadingWhitespace,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TagOpening<'a> {
     pub(crate) name: &'a str,
     pub(crate) attributes: Option<&'a str>,
@@ -38,13 +32,6 @@ impl DirectiveContainerLine<'_> {
     }
 }
 
-fn strip_indent(line: &str, policy: IndentPolicy) -> &str {
-    match policy {
-        IndentPolicy::UpToThreeSpaces => strip_up_to_three_leading_spaces(line),
-        IndentPolicy::AnyLeadingWhitespace => line.trim_start(),
-    }
-}
-
 fn is_tag_name_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b':'
 }
@@ -61,8 +48,8 @@ fn parse_tag_name(input: &str) -> Option<(&str, &str)> {
     Some((&input[..name_end], &input[name_end..]))
 }
 
-pub(crate) fn parse_tag_opening(line: &str, policy: IndentPolicy) -> Option<TagOpening<'_>> {
-    let s = strip_indent(line, policy).trim_end();
+pub(crate) fn parse_tag_opening(line: &str) -> Option<TagOpening<'_>> {
+    let s = strip_up_to_three_leading_spaces(line).trim_end();
     if !s.starts_with('<') || s.starts_with("</") {
         return None;
     }
@@ -80,8 +67,8 @@ pub(crate) fn parse_tag_opening(line: &str, policy: IndentPolicy) -> Option<TagO
     })
 }
 
-pub(crate) fn parse_tag_closing(line: &str, policy: IndentPolicy) -> Option<TagClosing<'_>> {
-    let s = strip_indent(line, policy).trim_end();
+pub(crate) fn parse_tag_closing(line: &str) -> Option<TagClosing<'_>> {
+    let s = strip_up_to_three_leading_spaces(line).trim_end();
     if !s.starts_with("</") {
         return None;
     }
@@ -104,12 +91,8 @@ pub(crate) fn parse_tag_closing(line: &str, policy: IndentPolicy) -> Option<TagC
     })
 }
 
-pub(crate) fn parse_fence_container_line(
-    line: &str,
-    fence_char: char,
-    policy: IndentPolicy,
-) -> FenceContainerLine {
-    let s = strip_indent(line, policy);
+pub(crate) fn parse_fence_container_line(line: &str, fence_char: char) -> FenceContainerLine {
+    let s = strip_up_to_three_leading_spaces(line);
     let s = s.trim_end_matches([' ', '\t']);
     let bytes = s.as_bytes();
     let ch = fence_char as u8;

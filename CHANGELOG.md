@@ -15,6 +15,8 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
   analyzers, core invalidation, and the pulldown adapter.
 - Fixed: custom tag block analysis now treats only standalone matching closing
   tag lines as closed, so trailing text after `</tag>` remains pending/open.
+- Fixed: custom tag block analysis now ignores tag-like lines indented as code
+  blocks instead of treating them as application tags.
 - Changed: made low-level `pending` and `syntax` modules internal; import
   `TerminatorOptions`, `terminate_markdown`, and syntax helpers from the crate
   root instead.

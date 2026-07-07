@@ -3,9 +3,11 @@ title: Deepen Streaming Architecture - Plan
 type: refactor
 date: 2026-07-06
 artifact_contract: ce-unified-plan/v1
-artifact_readiness: implementation-ready
+artifact_readiness: archived
 product_contract_source: ce-plan-bootstrap
-execution: code
+execution: historical
+archive_status: completed
+canonical_docs: docs/ARCHITECTURE.md
 ---
 
 # Goal Capsule

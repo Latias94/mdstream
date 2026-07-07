@@ -47,6 +47,11 @@ fn tagged_block_analyzer_does_not_analyze_indented_code_like_tag_block() {
     let u = s.append("    <thinking>\nA\n    </thinking>\n");
 
     assert!(u.committed_meta.is_empty());
+    assert!(u.pending_meta.is_none());
+
+    let u = s.finalize();
+    assert!(u.committed_meta.is_empty());
+    assert!(u.pending_meta.is_none());
 }
 
 #[test]

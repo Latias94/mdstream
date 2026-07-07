@@ -33,6 +33,7 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
   - [ ] Optional deep run: `cargo +nightly fuzz build` and targeted `cargo +nightly fuzz run <target>`
 - [ ] Verify packaging does not include large/internal folders:
   - [ ] `cargo package -p mdstream` (check the generated `.crate` contents)
+  - [ ] `cargo package -p mdstream-tokio` (when releasing Tokio glue)
 
 ## Prune `docs/` (if desired)
 
