@@ -1,8 +1,9 @@
+use super::MdStream;
 use super::boundary_detector::{BoundaryDetector, is_table_delimiter};
+use super::engine::AppendCtx;
 use super::footnotes::is_footnote_definition_start;
 use super::html::{html_block_start_state, update_html_block_state};
 use super::mode::BlockMode;
-use super::{AppendCtx, MdStream};
 use crate::boundary::BoundaryUpdate;
 use crate::options::FootnotesMode;
 use crate::syntax::facts::{
@@ -100,7 +101,7 @@ impl MdStream {
         let effects = self
             .semantics
             .observe_committed_block(&block, self.opts.reference_definitions);
-        ctx.invalidated.extend(effects.invalidated);
+        ctx.extend_invalidated(effects.invalidated);
 
         ctx.push_committed_clone(&block);
         self.committed.push(block);

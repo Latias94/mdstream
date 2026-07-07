@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(feature = "pulldown")]
+use std::collections::BTreeMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::options::ReferenceDefinitionsMode;
 use crate::syntax::facts::strip_up_to_three_leading_spaces;
@@ -65,12 +67,14 @@ impl ReferenceIndex {
 }
 
 #[derive(Debug, Default)]
+#[cfg(feature = "pulldown")]
 pub(crate) struct ReferenceDefinitions {
     definitions: BTreeMap<String, String>,
     prelude_text: String,
     dirty: bool,
 }
 
+#[cfg(feature = "pulldown")]
 impl ReferenceDefinitions {
     pub(crate) fn clear(&mut self) {
         self.definitions.clear();
@@ -168,6 +172,7 @@ pub(crate) fn extract_reference_definition_label(line: &str) -> Option<String> {
     normalize_reference_label(label)
 }
 
+#[cfg(feature = "pulldown")]
 pub(crate) fn extract_reference_definition_line(line: &str) -> Option<(String, String)> {
     let label = extract_reference_definition_label(line)?;
     Some((label, line.trim_end().to_string()))
