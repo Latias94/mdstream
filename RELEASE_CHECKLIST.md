@@ -33,7 +33,7 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
   - [ ] Optional deep run: `cargo +nightly fuzz build` and targeted `cargo +nightly fuzz run <target>`
 - [ ] Verify packaging does not include large/internal folders:
   - [ ] `cargo package -p mdstream` (check the generated `.crate` contents)
-  - [ ] `cargo package -p mdstream-tokio` (when releasing Tokio glue)
+  - [ ] `cargo package -p mdstream-tokio --list` (file list inspection before the new core crate is on crates.io)
 
 ## Prune `docs/` (if desired)
 
@@ -47,5 +47,6 @@ This checklist is optimized for `mdstream` releases where the `docs/` folder may
 - [ ] Push tag
 - [ ] Publish core crate first: `cargo publish -p mdstream`
 - [ ] Wait until `mdstream` `X.Y.Z` is visible on crates.io
+- [ ] Verify Tokio glue packaging after the new core crate is visible: `cargo package -p mdstream-tokio`
 - [ ] Publish Tokio glue crate after its `mdstream` dependency version is visible: `cargo publish -p mdstream-tokio`
 - [ ] Create a GitHub release for the tag (attach notes / changelog)

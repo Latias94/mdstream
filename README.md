@@ -77,14 +77,14 @@ and receives chunks via a channel:
 
 ```toml
 [dependencies]
-mdstream = "0.2.0"
+mdstream = "0.3.0"
 ```
 
 Optional Tokio glue (delta coalescing + helpers):
 
 ```toml
 [dependencies]
-mdstream-tokio = "0.2.0"
+mdstream-tokio = "0.3.0"
 ```
 
 Rust version support:
@@ -281,7 +281,7 @@ assert!(u2.invalidated.contains(&mdstream::BlockId(1)));
 
 ```toml
 [dependencies]
-mdstream = { version = "0.2.0", features = ["pulldown"] }
+mdstream = { version = "0.3.0", features = ["pulldown"] }
 ```
 
 When `reference_definitions` invalidation is enabled, the adapter can re-parse only the invalidated

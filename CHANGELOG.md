@@ -5,38 +5,45 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
 
 ## Unreleased
 
-- New: added `MdStreamBuilder` as a setup-time API for composing options,
-  boundary plugins, and pending transformers before building an `MdStream`.
-- Changed: split the stream append/finalize transaction engine out of the
-  public `MdStream` facade and centralized Streamdown-compatible defaults
-  through the builder path.
-- Changed: centralized tag, fence-container, directive-container, and reference
-  definition semantics behind crate-private modules shared by boundary plugins,
-  analyzers, core invalidation, and the pulldown adapter.
-- Fixed: custom tag block analysis now treats only standalone matching closing
-  tag lines as closed, so trailing text after `</tag>` remains pending/open.
-- Fixed: custom tag block analysis now ignores tag-like lines indented as code
-  blocks instead of treating them as application tags.
-- Changed: made low-level `pending` and `syntax` modules internal; import
-  `TerminatorOptions`, `terminate_markdown`, and syntax helpers from the crate
-  root instead.
-- New: added a Criterion benchmark harness and performance guide for core
-  streaming hot paths.
-- Changed: expanded CI and release checks around nextest, doc tests, examples,
+## 0.3.0 - 2026-07-07
+
+This release focuses on a cleaner public API, safer streaming edge cases, and
+stronger release verification.
+
+### Breaking Changes
+
+- Low-level `mdstream::pending` and `mdstream::syntax` module paths are now
+  internal. Import `TerminatorOptions`, `terminate_markdown`, and syntax helpers
+  from the crate root instead.
+
+### Added
+
+- Added `MdStreamBuilder` for setup-heavy streams that register boundary plugins
+  or pending transformers before runtime.
+- Added benchmark, property-test, and fuzzing coverage for streaming hot paths
+  and chunk-boundary robustness.
+
+### Fixed
+
+- Fixed custom tag analysis for non-standalone closing tags such as
+  `</tag> trailing`.
+- Fixed custom tag analysis so code-indented tag-like lines are not treated as
+  application tags.
+- Fixed incomplete table delimiter handling across streaming chunk boundaries.
+- Removed avoidable production panic paths, including sync pulldown
+  scratch-buffer recovery.
+
+### Changed
+
+- Centralized Streamdown-compatible defaults plus internal container/reference
+  handling so plugins, analyzers, core invalidation, and the pulldown adapter
+  share one interpretation.
+- Expanded CI and release checks for nextest, doc tests, examples,
   benchmark/fuzz compilation, packaging, and split MSRV validation.
-- New: added property tests for generated Markdown-ish chunk boundaries and a
-  standalone fuzz package for stream chunking and pending terminator hardening.
-- Fixed: delayed incomplete table-delimiter candidates until newline so streaming
-  chunk boundaries cannot split paragraphs on transient `--` prefixes.
-- Fixed: removed avoidable production panic paths in committed block emission and
-  sync pulldown scratch-buffer locking.
-- Changed: clarified README, usage, architecture, compatibility, performance,
-  fuzzing, and release-checklist guidance for the hardened workflow.
-- Changed: upgraded direct dependency requirements to current releases:
-  `pulldown-cmark` 0.13.4, `tokio` 1.52.3, `ratatui` 0.30.2,
-  `crossterm` 0.29.0, and `unicode-width` 0.2.2.
-- Changed: raised `mdstream-tokio` MSRV to Rust 1.88.0 to match
-  `ratatui` 0.30.2.
+- Upgraded direct dependency requirements: `pulldown-cmark` 0.13.4,
+  `tokio` 1.52.3, `ratatui` 0.30.2, `crossterm` 0.29.0, and
+  `unicode-width` 0.2.2.
+- Raised `mdstream-tokio` MSRV to Rust 1.88.0. `mdstream` remains Rust 1.85+.
 
 ## 0.2.0
 

@@ -1,6 +1,6 @@
 [package]
 name = "mdstream"
-version = "0.2.0"
+version = "0.3.0"
 description = "Streaming-first Markdown middleware for LLM output (committed + pending blocks, render-agnostic)."
 readme = "../README.md"
 edition = "2024"
