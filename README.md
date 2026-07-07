@@ -201,6 +201,7 @@ available. The builder is a setup convenience, not a separate runtime engine.
 
 ```sh
 cargo run -p mdstream --example minimal
+cargo run -p mdstream --example builder_extensions
 cargo run -p mdstream --example footnotes_reset
 cargo run -p mdstream --example stateful_transformer
 cargo run -p mdstream --example tui_like

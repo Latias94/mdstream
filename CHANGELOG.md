@@ -5,6 +5,11 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
 
 ## Unreleased
 
+### Added
+
+- Added a `builder_extensions` example showing how to configure boundary
+  plugins and pending transformers with `MdStreamBuilder`.
+
 ## 0.3.0 - 2026-07-07
 
 This release focuses on a cleaner public API, safer streaming edge cases, and
@@ -33,6 +38,13 @@ stronger release verification.
 - Removed avoidable production panic paths, including sync pulldown
   scratch-buffer recovery.
 
+### Dependency Updates
+
+- Upgraded direct dependency requirements: `pulldown-cmark` 0.13.4,
+  `tokio` 1.52.3, `ratatui` 0.30.2, `crossterm` 0.29.0, and
+  `unicode-width` 0.2.2.
+- Raised `mdstream-tokio` MSRV to Rust 1.88.0. `mdstream` remains Rust 1.85+.
+
 ### Changed
 
 - Centralized Streamdown-compatible defaults plus internal container/reference
@@ -40,10 +52,6 @@ stronger release verification.
   share one interpretation.
 - Expanded CI and release checks for nextest, doc tests, examples,
   benchmark/fuzz compilation, packaging, and split MSRV validation.
-- Upgraded direct dependency requirements: `pulldown-cmark` 0.13.4,
-  `tokio` 1.52.3, `ratatui` 0.30.2, `crossterm` 0.29.0, and
-  `unicode-width` 0.2.2.
-- Raised `mdstream-tokio` MSRV to Rust 1.88.0. `mdstream` remains Rust 1.85+.
 
 ## 0.2.0
 
