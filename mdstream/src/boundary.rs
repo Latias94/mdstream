@@ -1,4 +1,7 @@
-use crate::syntax::facts::strip_up_to_three_leading_spaces;
+use crate::syntax::containers::{
+    IndentPolicy, names_match, parse_directive_container_line, parse_fence_container_line,
+    parse_tag_closing, parse_tag_opening,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundaryUpdate {
@@ -207,32 +210,17 @@ impl FenceBoundaryPlugin {
     }
 
     fn fence_len_at_start(&self, line: &str) -> usize {
-        let s = strip_up_to_three_leading_spaces(line);
-        let bytes = s.as_bytes();
-        let ch = self.fence_char as u8;
-        let mut len = 0usize;
-        while len < bytes.len() && bytes[len] == ch {
-            len += 1;
-        }
-        len
+        parse_fence_container_line(line, self.fence_char, IndentPolicy::UpToThreeSpaces)
+            .marker_length
     }
 
     fn is_end_line(&self, line: &str, opened_len: usize) -> bool {
-        let s = strip_up_to_three_leading_spaces(line);
-        let s = s.trim_end_matches([' ', '\t']);
-        let bytes = s.as_bytes();
-        let ch = self.fence_char as u8;
-        let mut len = 0usize;
-        while len < bytes.len() && bytes[len] == ch {
-            len += 1;
-        }
-        if len < opened_len {
+        let parsed =
+            parse_fence_container_line(line, self.fence_char, IndentPolicy::UpToThreeSpaces);
+        if parsed.marker_length < opened_len {
             return false;
         }
-        if !self.require_standalone_end {
-            return true;
-        }
-        s[len..].trim().is_empty()
+        !self.require_standalone_end || parsed.standalone_tail
     }
 }
 
@@ -319,83 +307,28 @@ impl TagBoundaryPlugin {
         Self::new("thinking")
     }
 
-    fn is_tag_name_char(b: u8) -> bool {
-        b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b':'
-    }
-
-    fn norm_tag<'a>(&self, tag: &'a str) -> std::borrow::Cow<'a, str> {
-        if self.case_insensitive {
-            std::borrow::Cow::Owned(tag.to_ascii_lowercase())
-        } else {
-            std::borrow::Cow::Borrowed(tag)
-        }
-    }
-
     fn matches_opening(&self, line: &str) -> bool {
-        let s = strip_up_to_three_leading_spaces(line).trim_end();
-        if !s.starts_with('<') {
-            return false;
-        }
-        // Require the tag to be complete on this line.
-        let Some(gt) = s.find('>') else {
+        let Some(opening) = parse_tag_opening(line, IndentPolicy::UpToThreeSpaces) else {
             return false;
         };
-        let inside = &s[1..gt];
-        if inside.starts_with('/') || inside.starts_with('!') || inside.starts_with('?') {
-            return false;
-        }
 
-        let bytes = inside.as_bytes();
-        if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
+        if !names_match(opening.name, self.tag.as_str(), self.case_insensitive) {
             return false;
         }
-        let mut name_end = 1usize;
-        while name_end < bytes.len() && Self::is_tag_name_char(bytes[name_end]) {
-            name_end += 1;
-        }
-        let name = &inside[..name_end];
-        let name = self.norm_tag(name);
-        let want = self.norm_tag(self.tag.as_str());
-        if name != want {
-            return false;
-        }
-
-        let rest = inside[name_end..].trim();
-        if rest.is_empty() {
-            return true;
-        }
-        if !self.allow_attributes {
-            return false;
-        }
-        true
+        opening.attributes.is_none() || self.allow_attributes
     }
 
     fn matches_closing(&self, line: &str) -> bool {
-        let s = strip_up_to_three_leading_spaces(line).trim_end();
-        if !s.starts_with("</") {
+        let Some(closing) = parse_tag_closing(line, IndentPolicy::UpToThreeSpaces) else {
+            return false;
+        };
+        if !names_match(closing.name, self.tag.as_str(), self.case_insensitive) {
             return false;
         }
-        let want = self.norm_tag(self.tag.as_str());
-
-        let after = &s[2..];
-        let bytes = after.as_bytes();
-        if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
-            return false;
-        }
-        let mut name_end = 1usize;
-        while name_end < bytes.len() && Self::is_tag_name_char(bytes[name_end]) {
-            name_end += 1;
-        }
-        let name = self.norm_tag(&after[..name_end]);
-        if name != want {
-            return false;
-        }
-
-        let rest = after[name_end..].trim();
         if self.require_standalone_end {
-            rest == ">"
+            closing.standalone
         } else {
-            rest.contains('>')
+            closing.complete
         }
     }
 }
@@ -423,20 +356,6 @@ impl BoundaryPlugin for TagBoundaryPlugin {
     fn reset(&mut self) {
         self.active = false;
     }
-}
-
-#[derive(Debug, Clone)]
-struct ContainerMatch {
-    marker_length: usize,
-    is_end: bool,
-}
-
-fn is_container_name_start(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-fn is_container_name_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
 /// An Incremark-compatible `:::` container plugin.
@@ -478,83 +397,33 @@ impl ContainerBoundaryPlugin {
         }
     }
 
-    fn detect_container(&self, line: &str) -> Option<ContainerMatch> {
+    fn detect_container<'a>(
+        &self,
+        line: &'a str,
+    ) -> Option<crate::syntax::containers::DirectiveContainerLine<'a>> {
         // Equivalent to Incremark's:
         // ^(\s*)(:{3,})(?:\s+(\w[\w-]*))?(?:\s+(.*))?\s*$
-        let s = line.trim_end();
-        let s = s.trim_start();
-        let bytes = s.as_bytes();
-        let marker = self.marker as u8;
-        let mut i = 0usize;
-        while i < bytes.len() && bytes[i] == marker {
-            i += 1;
-        }
-        if i < self.min_marker_length {
-            return None;
-        }
-        let marker_length = i;
-        let mut rest = s[i..].trim_end_matches([' ', '\t']);
-        if rest.is_empty() {
-            return Some(ContainerMatch {
-                marker_length,
-                is_end: true,
-            });
-        }
-
-        // Incremark requires at least one whitespace before name/attrs.
-        if !rest
-            .as_bytes()
-            .first()
-            .is_some_and(|b| b.is_ascii_whitespace())
-        {
-            return None;
-        }
-        rest = rest.trim_start_matches([' ', '\t']);
-
-        // Parse optional name.
-        let rest_bytes = rest.as_bytes();
-        let mut name_end = 0usize;
-        if rest_bytes
-            .first()
-            .is_some_and(|b| is_container_name_start(*b))
-        {
-            name_end = 1;
-            while name_end < rest_bytes.len() && is_container_name_char(rest_bytes[name_end]) {
-                name_end += 1;
-            }
-        }
-
-        let name = if name_end > 0 {
-            rest[..name_end].to_string()
-        } else {
-            String::new()
-        };
-
-        let attrs = rest[name_end..].trim();
-        let has_attrs = !attrs.is_empty();
-        if has_attrs && !self.allow_attributes {
+        let parsed = parse_directive_container_line(line, self.marker, self.min_marker_length)?;
+        if parsed.attributes.is_some() && !self.allow_attributes {
             return None;
         }
 
-        let is_end = name.is_empty() && !has_attrs;
-        if !is_end {
+        if !parsed.is_end() {
             if let Some(allowed) = &self.allowed_names {
-                if !allowed.is_empty() && !allowed.iter().any(|n| n == &name) {
+                let name = parsed.name.unwrap_or("");
+                if !allowed.is_empty() && !allowed.iter().any(|n| n == name) {
                     return None;
                 }
             }
         }
 
-        Some(ContainerMatch {
-            marker_length,
-            is_end,
-        })
+        Some(parsed)
     }
 }
 
 impl BoundaryPlugin for ContainerBoundaryPlugin {
     fn matches_start(&self, line: &str) -> bool {
-        self.detect_container(line).is_some_and(|m| !m.is_end)
+        self.detect_container(line).is_some_and(|m| !m.is_end())
     }
 
     fn start(&mut self, line: &str) {
@@ -564,7 +433,7 @@ impl BoundaryPlugin for ContainerBoundaryPlugin {
             self.just_started = false;
             return;
         };
-        if m.is_end {
+        if m.is_end() {
             self.base_marker_length = None;
             self.depth = 0;
             self.just_started = false;
@@ -589,7 +458,7 @@ impl BoundaryPlugin for ContainerBoundaryPlugin {
         let Some(m) = self.detect_container(line) else {
             return BoundaryUpdate::Continue;
         };
-        if m.is_end && m.marker_length >= base {
+        if m.is_end() && m.marker_length >= base {
             self.depth = self.depth.saturating_sub(1);
             if self.depth == 0 {
                 self.base_marker_length = None;
@@ -597,7 +466,7 @@ impl BoundaryPlugin for ContainerBoundaryPlugin {
             }
             return BoundaryUpdate::Continue;
         }
-        if !m.is_end {
+        if !m.is_end() {
             self.depth += 1;
         }
         BoundaryUpdate::Continue

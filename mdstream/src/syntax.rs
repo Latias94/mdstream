@@ -1,3 +1,4 @@
+pub(crate) mod containers;
 pub(crate) mod facts;
 
 use facts::{fence_end, fence_start, is_space_or_tab, strip_up_to_three_leading_spaces};

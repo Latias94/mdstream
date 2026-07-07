@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 
+use crate::syntax::containers::{
+    IndentPolicy, names_match, normalize_name, parse_tag_closing, parse_tag_opening,
+};
 use crate::syntax::facts::count_double_dollars;
 use crate::syntax::{is_code_fence_closing_line, parse_code_fence_header_from_block};
 use crate::types::BlockStatus;
@@ -321,69 +324,6 @@ impl Default for TaggedBlockAnalyzer {
     }
 }
 
-fn custom_tag_name_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b':'
-}
-
-fn parse_custom_opening_tag(
-    line: &str,
-    case_insensitive: bool,
-) -> Option<(String, Option<String>)> {
-    let s = line.trim_start();
-    if !s.starts_with('<') || s.starts_with("</") {
-        return None;
-    }
-    let gt = s.find('>')?;
-    let inside = &s[1..gt];
-    let bytes = inside.as_bytes();
-    if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
-        return None;
-    }
-    let mut name_end = 1usize;
-    while name_end < bytes.len() && custom_tag_name_char(bytes[name_end]) {
-        name_end += 1;
-    }
-    let mut name = inside[..name_end].to_string();
-    if case_insensitive {
-        name = name.to_ascii_lowercase();
-    }
-    let attrs = inside[name_end..].trim();
-    let attrs = if attrs.is_empty() {
-        None
-    } else {
-        Some(attrs.to_string())
-    };
-    Some((name, attrs))
-}
-
-fn is_custom_closing_tag(line: &str, tag: &str, case_insensitive: bool) -> bool {
-    let s = line.trim_start();
-    if !s.starts_with("</") {
-        return false;
-    }
-    let Some(gt) = s.find('>') else {
-        return false;
-    };
-    let inside = &s[2..gt];
-    let bytes = inside.as_bytes();
-    if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
-        return false;
-    }
-    let mut name_end = 1usize;
-    while name_end < bytes.len() && custom_tag_name_char(bytes[name_end]) {
-        name_end += 1;
-    }
-    let mut name = inside[..name_end].to_string();
-    if case_insensitive {
-        name = name.to_ascii_lowercase();
-    }
-    if name != tag {
-        return false;
-    }
-    // Standalone closing tag line.
-    inside[name_end..].trim().is_empty()
-}
-
 fn split_tag_block_content(raw: &str, tag: &str, case_insensitive: bool) -> (bool, String) {
     let mut lines: Vec<&str> = raw.split_inclusive('\n').collect();
     if lines.is_empty() {
@@ -406,7 +346,9 @@ fn split_tag_block_content(raw: &str, tag: &str, case_insensitive: bool) -> (boo
     if let Some(idx) = last_nonempty_idx {
         let line = lines[idx];
         let line_no_nl = line.strip_suffix('\n').unwrap_or(line);
-        if is_custom_closing_tag(line_no_nl, tag, case_insensitive) {
+        if parse_tag_closing(line_no_nl, IndentPolicy::AnyLeadingWhitespace).is_some_and(
+            |closing| closing.standalone && names_match(closing.name, tag, case_insensitive),
+        ) {
             closed = true;
             lines.remove(idx);
         }
@@ -421,7 +363,9 @@ impl BlockAnalyzer for TaggedBlockAnalyzer {
     fn analyze_block(&mut self, block: &Block) -> Option<Self::Meta> {
         // Only consider blocks whose first line looks like an opening custom tag.
         let first_line = block.raw.split('\n').next().unwrap_or(&block.raw);
-        let (tag, attrs) = parse_custom_opening_tag(first_line, self.case_insensitive)?;
+        let opening = parse_tag_opening(first_line, IndentPolicy::AnyLeadingWhitespace)?;
+        let tag = normalize_name(opening.name, self.case_insensitive);
+        let attrs = opening.attributes.map(str::to_string);
 
         if let Some(allowed) = &self.allowed_tags {
             if !allowed.iter().any(|t| {
