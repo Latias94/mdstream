@@ -21,6 +21,7 @@ You probably **don’t** need `mdstream` if you only parse static Markdown once,
 ## API at a glance
 
 - `MdStream`: streaming block splitter (`append` / `finalize`) that produces `Update`.
+- `MdStreamBuilder`: setup-time builder for options, boundary plugins, and pending transformers.
 - `MdStream::append_ref` / `finalize_ref`: borrowed update views (`UpdateRef`) for high-frequency UIs
   that want to avoid cloning the pending tail on every tick.
 - `MdStream::snapshot_blocks(&mut self)`: take a best-effort snapshot (may run stateful transformers).
@@ -177,6 +178,25 @@ if let Some(p) = state.pending() {
 If you prefer to manage your own `(Vec<Block>, Option<Block>)`, you can apply updates with
 `Update::apply_to`.
 
+For setup-heavy streams, use the builder and then keep runtime updates on `MdStream`:
+
+```rust
+use mdstream::{
+    ContainerBoundaryPlugin, IncompleteLinkPlaceholderTransformer, MdStream, Options,
+};
+
+let mut stream = MdStream::builder(Options::default())
+    .boundary_plugin(ContainerBoundaryPlugin::default())
+    .pending_transformer(IncompleteLinkPlaceholderTransformer::default())
+    .build();
+
+let update = stream.append("::: note\nstreaming");
+let _ = update;
+```
+
+`MdStream::new`, `MdStream::streamdown_defaults`, and the existing `push_*` / `with_*` methods remain
+available. The builder is a setup convenience, not a separate runtime engine.
+
 ## Examples
 
 ```sh
@@ -235,6 +255,8 @@ reference definition implementation:
 - Usage extraction over-approximates: false positives may cause extra invalidations; the goal is to
   avoid missing invalidations.
 - Definitions inside fenced code blocks do not trigger invalidations.
+- The same internal reference definition store feeds the optional `pulldown-cmark` adapter so
+  invalidated blocks can be re-parsed with the latest committed definitions.
 
 Example:
 
@@ -307,6 +329,7 @@ cargo check -p mdstream-tokio --examples
 cargo check -p mdstream --benches
 cargo check --manifest-path fuzz/Cargo.toml --bins
 cargo package -p mdstream
+cargo package -p mdstream-tokio
 ```
 
 Additional hardening:
@@ -333,6 +356,7 @@ Additional hardening:
 Current implementation includes:
 
 - `MdStream` core state machine (blocks: committed + pending)
+- `MdStreamBuilder` setup API for extension-heavy streams
 - Pending terminator (Streamdown/remend-inspired)
 - Streaming boundary tests (Streamdown/Incremark-inspired)
 - Reference-style link definitions invalidation (opt-in, for adapters)

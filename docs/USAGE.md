@@ -35,6 +35,27 @@ if let Some(p) = u.pending {
 }
 ```
 
+## Setup-time Builder
+
+Use `MdStreamBuilder` when a stream needs several extension points configured before runtime:
+
+```rust
+use mdstream::{
+    ContainerBoundaryPlugin, IncompleteLinkPlaceholderTransformer, MdStream, Options,
+};
+
+let mut s = MdStream::builder(Options::default())
+    .boundary_plugin(ContainerBoundaryPlugin::default())
+    .pending_transformer(IncompleteLinkPlaceholderTransformer::default())
+    .build();
+
+let u = s.append("::: note\nHello [docs](");
+let _ = u;
+```
+
+`MdStream::new`, `MdStream::streamdown_defaults`, `push_*`, and `with_*` remain available. The
+builder only makes setup-heavy construction easier to read.
+
 ## Borrowed updates (`append_ref`)
 
 If your UI owns the stream (common for TUIs), `append_ref` avoids cloning the pending tail on every
@@ -152,6 +173,8 @@ cargo check -p mdstream --features pulldown --examples
 cargo check -p mdstream-tokio --examples
 cargo check -p mdstream --benches
 cargo check --manifest-path fuzz/Cargo.toml --bins
+cargo package -p mdstream
+cargo package -p mdstream-tokio
 ```
 
 ## Streamdown Defaults

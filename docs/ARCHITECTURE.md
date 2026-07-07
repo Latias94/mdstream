@@ -82,15 +82,24 @@ Internally we maintain:
 
 The public entry point is still `MdStream`, but the implementation is split by responsibility:
 
+- `stream.rs`: public facade, setup helpers, pending snapshots, and reset coordination.
+- `stream/builder.rs`: setup-time `MdStreamBuilder` for composing options and extensions.
+- `stream/engine.rs`: append/finalize transaction ordering, `Update`/`UpdateRef` assembly,
+  reset effects, and buffer compaction handoff.
 - `stream/input.rs`: `LineBuffer`, newline normalization, line indexing, and compaction-safe buffer rebuilding.
 - `stream/block_machine.rs`: committed block cursors, pending block start, `BlockId` allocation, and mode ownership.
 - `stream/boundary_detector.rs`: stable boundary decisions for block starts, continuations, and custom plugins.
 - `stream/mode.rs`: block-mode state and `BlockKind` mapping.
-- `stream/machine.rs`: `MdStream` facade coordination that turns input lines and machine events into updates.
+- `stream/machine.rs`: line-level mode transitions and committed block emission.
+- `syntax/containers.rs`: crate-private tag, fence-container, and directive-container syntax facts
+  shared by boundary plugins and analyzers.
 - `pending/pipeline.rs`: pending display cache, code-fence suffix fast path, terminator calls, and pending transformer chain.
 - `pending/repair/*`: pending Markdown repair helpers for links, inline spans, emphasis, setext headings, and terminator context.
+- `reference.rs`: reference-label normalization, definition scanning, usage indexing, and pulldown
+  definition prelude state.
 - `semantics/mod.rs`: document-scoped effects coordinator.
-- `semantics/{footnotes,references}.rs`: focused footnote reset policy and reference-definition invalidation state.
+- `semantics/{footnotes,references}.rs`: focused footnote reset policy and reference invalidation
+  integration over the internal reference index.
 - `extensions/*`: internal registries for boundary plugins and pending transformers.
 - `mdstream-tokio/src/{sender,receiver,actor,options}.rs`: Tokio feeding strategy around the runtime-agnostic core.
 
@@ -139,8 +148,11 @@ Today, invalidation events are implemented for reference-style link definitions.
 keeps footnote definitions as regular streaming blocks instead of forcing a whole-document reset.
 
 Internally, document-scoped behavior is coordinated by `DocumentSemantics`, with focused footnote
-and reference effect modules behind it. This keeps block boundaries separate from effects that may
-invalidate earlier committed blocks or require a full reset.
+and reference effect modules behind it. Reference handling is intentionally deeper than the semantics
+wrapper: `reference.rs` owns the shared label normalization, definition extraction, committed-usage
+index, and pulldown definition prelude state. This keeps block boundaries separate from effects that
+may invalidate earlier committed blocks or require a full reset, while preventing the core and adapter
+from drifting on reference-definition rules.
 
 ### Footnote definition boundary rules
 

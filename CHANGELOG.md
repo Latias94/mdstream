@@ -5,6 +5,16 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
 
 ## Unreleased
 
+- New: added `MdStreamBuilder` as a setup-time API for composing options,
+  boundary plugins, and pending transformers before building an `MdStream`.
+- Changed: split the stream append/finalize transaction engine out of the
+  public `MdStream` facade and centralized Streamdown-compatible defaults
+  through the builder path.
+- Changed: centralized tag, fence-container, directive-container, and reference
+  definition semantics behind crate-private modules shared by boundary plugins,
+  analyzers, core invalidation, and the pulldown adapter.
+- Fixed: custom tag block analysis now treats only standalone matching closing
+  tag lines as closed, so trailing text after `</tag>` remains pending/open.
 - Changed: made low-level `pending` and `syntax` modules internal; import
   `TerminatorOptions`, `terminate_markdown`, and syntax helpers from the crate
   root instead.

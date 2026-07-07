@@ -24,6 +24,7 @@ Status: implemented (MVP-level).
 `mdstream` provides:
 
 - `BoundaryPlugin` trait
+- `MdStreamBuilder::boundary_plugin(...)` for setup-time registration
 - `MdStream::push_boundary_plugin(...)` and `MdStream::with_boundary_plugin(...)`
 - `FenceBoundaryPlugin` as a small reference implementation (e.g. `:::warning ... :::`)
 - `TagBoundaryPlugin` as another built-in example (e.g. `<thinking> ... </thinking>`)
@@ -54,11 +55,6 @@ use mdstream::{
     Options, TagBoundaryPlugin,
 };
 
-let mut s = MdStream::new(Options::default());
-s.push_boundary_plugin(FenceBoundaryPlugin::triple_colon());
-s.push_boundary_plugin(TagBoundaryPlugin::thinking());
-s.push_boundary_plugin(ContainerBoundaryPlugin::default());
-
 // A tiny custom container:
 // - starts at a line that is exactly "@@@"
 // - ends at the next line that is exactly "@@@"
@@ -72,7 +68,13 @@ let plugin = FnBoundaryPlugin::new(
         }
     },
 );
-s.push_boundary_plugin(plugin);
+
+let mut s = MdStream::builder(Options::default())
+    .boundary_plugin(FenceBoundaryPlugin::triple_colon())
+    .boundary_plugin(TagBoundaryPlugin::thinking())
+    .boundary_plugin(ContainerBoundaryPlugin::default())
+    .boundary_plugin(plugin)
+    .build();
 ```
 
 ### 2) PendingTransformer
@@ -94,6 +96,7 @@ Status: implemented (MVP-level).
 `mdstream` provides:
 
 - `PendingTransformer` trait
+- `MdStreamBuilder::pending_transformer(...)` for setup-time registration
 - `MdStream::push_pending_transformer(...)` and `MdStream::with_pending_transformer(...)`
 - Built-in transformers for Streamdown-compatible behavior:
   - `IncompleteLinkPlaceholderTransformer`
@@ -113,12 +116,16 @@ Minimal example:
 ```rust
 use mdstream::{FnPendingTransformer, MdStream, Options};
 
-let mut s = MdStream::new(Options::default());
 // Append a marker so downstream parsers never see an empty string.
-s.push_pending_transformer(FnPendingTransformer(|input| {
-    if input.display.is_empty() { Some("<empty>".to_string()) } else { None }
-}));
+let mut s = MdStream::builder(Options::default())
+    .pending_transformer(FnPendingTransformer(|input| {
+        if input.display.is_empty() { Some("<empty>".to_string()) } else { None }
+    }))
+    .build();
 ```
+
+The older `push_*` and `with_*` methods remain useful when a stream needs dynamic registration, but
+the builder is the preferred setup-time path for new code.
 
 ### 3) BlockAnalyzer
 
