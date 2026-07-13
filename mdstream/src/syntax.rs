@@ -22,10 +22,7 @@ pub fn parse_code_fence_header(line: &str) -> Option<CodeFenceHeader<'_>> {
     let (fence_char, fence_len) = fence_start(line)?;
 
     let info = s[fence_len..].trim();
-    let language = info
-        .split_whitespace()
-        .next()
-        .and_then(|tok| if tok.is_empty() { None } else { Some(tok) });
+    let language = info.split_whitespace().next().filter(|tok| !tok.is_empty());
 
     Some(CodeFenceHeader {
         fence_char,
