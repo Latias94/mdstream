@@ -1,0 +1,47 @@
+{
+  "schema": "mdstream.conformance/0.4-draft.1",
+  "id": "remend.streaming-bold",
+  "description": "Pinned Remend projection for a representative growing GPT prefix.",
+  "source": "Here is a **bold statement",
+  "dialect": {
+    "id": "remend.pending-text",
+    "extensions": ["emphasis"]
+  },
+  "profile": {
+    "id": "remend.pending-repair/1.3.0",
+    "claim_scope": ["pending_repair"],
+    "pipeline": ["remend"]
+  },
+  "provenance": {
+    "kind": "upstream",
+    "repository_url": "https://github.com/vercel/streamdown",
+    "commit_sha": "e5deed330aa4231751a106445d93d62e4716a22f",
+    "package": "remend",
+    "package_version": "1.3.0",
+    "license": "Apache-2.0",
+    "upstream_path": "packages/remend/__tests__/streaming.test.ts",
+    "upstream_test_name": "should handle typical GPT response chunks",
+    "oracle_kind": "exact_pending_projection",
+    "extraction": {
+      "kind": "transformed",
+      "steps": ["select the third growing prefix"]
+    }
+  },
+  "options": {},
+  "schedules": [
+    { "id": "whole", "schedule": { "kind": "whole" } },
+    {
+      "id": "seeded-2",
+      "schedule": {
+        "kind": "seeded",
+        "label": "remend.streaming-bold",
+        "seed": 7,
+        "trial": 2,
+        "max_bytes": 5
+      }
+    }
+  ],
+  "expected": {
+    "pending_projection": "Here is a **bold statement**"
+  }
+}

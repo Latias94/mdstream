@@ -1,0 +1,48 @@
+{
+  "schema": "mdstream.conformance/0.4-draft.1",
+  "id": "incremark.mixed-final-ast",
+  "description": "Pinned Incremark self-consistency characterization for mixed Chinese Markdown.",
+  "source": "# 标题\n\n段落内容。\n\n- 列表项 1\n- 列表项 2\n\n```javascript\nconst x = 1;\n```\n\n> 引用内容\n\n脚注[^1]。\n\n[^1]: 脚注说明。",
+  "dialect": {
+    "id": "incremark.marked-default",
+    "extensions": ["gfm", "footnotes"]
+  },
+  "profile": {
+    "id": "incremark.final-ast/0.3.10+marked-default",
+    "claim_scope": ["final_ast_characterization"],
+    "pipeline": ["IncremarkParser", "marked-default-builder", "normalizeAst"]
+  },
+  "provenance": {
+    "kind": "upstream",
+    "repository_url": "https://github.com/kingshuaishuai/incremark",
+    "commit_sha": "0e20ef433307ee9f252aaff756ea6127c2a03eae",
+    "package": "@incremark/core",
+    "package_version": "0.3.10",
+    "license": "MIT",
+    "upstream_path": "packages/core/src/__tests__/simple-incremental.test.ts",
+    "upstream_test_name": "混合内容",
+    "oracle_kind": "upstream_predicate",
+    "extraction": { "kind": "literal" }
+  },
+  "options": { "gfm": true },
+  "schedules": [
+    { "id": "whole", "schedule": { "kind": "whole" } },
+    { "id": "characters", "schedule": { "kind": "characters" } },
+    {
+      "id": "seeded-0",
+      "schedule": {
+        "kind": "seeded",
+        "label": "incremark.mixed-final-ast",
+        "seed": 0,
+        "trial": 0,
+        "max_bytes": 13
+      }
+    }
+  ],
+  "expected": {
+    "upstream_predicates": [
+      "the normalized finalized AST from character appends equals the normalized one-pass AST",
+      "normalization removes position and _gfmTasklistFirstMemberOfTasklist"
+    ]
+  }
+}

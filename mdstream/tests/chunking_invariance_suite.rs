@@ -1,6 +1,9 @@
 mod support;
 
-use mdstream::Options;
+use std::path::PathBuf;
+
+use mdstream::{BlockKind, FootnotesMode, Options};
+use mdstream_conformance::{LegacyBlock, load_fixture_dir};
 
 fn assert_invariant(case_name: &str, markdown: &str, opts: Options, trials: u64, max_bytes: usize) {
     let expected = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());
@@ -111,4 +114,70 @@ fn incomplete_table_delimiter_candidate_waits_for_newline() {
     let blocks_chars = support::collect_final_blocks(support::chunk_chars(markdown), opts);
 
     assert_eq!(blocks_chars, expected);
+}
+
+#[test]
+fn checked_in_legacy_framing_goldens_hold_for_every_declared_schedule() {
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../conformance/fixtures");
+    let fixtures = load_fixture_dir(fixture_dir).unwrap();
+    let fixtures = fixtures
+        .iter()
+        .filter(|fixture| fixture.expected.legacy_framing.is_some())
+        .collect::<Vec<_>>();
+    assert!(
+        !fixtures.is_empty(),
+        "legacy golden corpus must not be empty"
+    );
+
+    for fixture in fixtures {
+        let expected = fixture.expected.legacy_framing.as_ref().unwrap();
+        let options = Options {
+            footnotes: match fixture
+                .options
+                .get("footnotes")
+                .and_then(|value| value.as_str())
+            {
+                Some("invalidate") => FootnotesMode::Invalidate,
+                _ => FootnotesMode::SingleBlock,
+            },
+            ..Options::default()
+        };
+        for named in &fixture.schedules {
+            let chunks = named
+                .schedule
+                .slices(&fixture.source)
+                .unwrap()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            let actual = support::collect_final_blocks(chunks, options.clone())
+                .into_iter()
+                .map(|(kind, raw)| LegacyBlock {
+                    kind: block_kind_name(kind).to_string(),
+                    raw,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                &actual, expected,
+                "fixture={} schedule={}",
+                fixture.id, named.id
+            );
+        }
+    }
+}
+
+fn block_kind_name(kind: BlockKind) -> &'static str {
+    match kind {
+        BlockKind::Paragraph => "paragraph",
+        BlockKind::Heading => "heading",
+        BlockKind::ThematicBreak => "thematic_break",
+        BlockKind::CodeFence => "code_fence",
+        BlockKind::List => "list",
+        BlockKind::BlockQuote => "block_quote",
+        BlockKind::Table => "table",
+        BlockKind::HtmlBlock => "html_block",
+        BlockKind::MathBlock => "math_block",
+        BlockKind::FootnoteDefinition => "footnote_definition",
+        BlockKind::Unknown => "unknown",
+    }
 }

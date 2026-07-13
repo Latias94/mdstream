@@ -1,0 +1,25 @@
+[package]
+name = "mdstream-conformance"
+version = "0.4.0"
+description = "Engine-neutral fixtures and replay laws for mdstream's streaming content protocol."
+edition = "2024"
+rust-version = "1.85"
+authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Latias94/mdstream"
+homepage = "https://github.com/Latias94/mdstream"
+publish = false
+
+[dependencies]
+mdstream-protocol = { path = "../mdstream-protocol", version = "0.4.0" }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+
+[dev-dependencies]
+# idna 1.1 pulls ICU 2.2, whose MSRV exceeds the core Rust 1.85 lane.
+idna = "=1.0.3"
+idna_adapter = "=1.1.0"
+jsonschema = { version = "=0.30.0", default-features = false }
+
+[package.metadata.docs.rs]
+all-features = true

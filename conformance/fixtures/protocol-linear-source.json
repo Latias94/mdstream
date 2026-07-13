@@ -1,0 +1,143 @@
+{
+  "schema": "mdstream.conformance/0.4-draft.1",
+  "id": "protocol.linear-source",
+  "description": "Equivalent whole and character traces with different sequence histories.",
+  "source": "abc",
+  "dialect": {
+    "id": "mdstream.draft",
+    "extensions": []
+  },
+  "profile": {
+    "id": "mdstream.protocol/0.4-draft.1",
+    "claim_scope": ["protocol_replay"],
+    "pipeline": []
+  },
+  "provenance": {
+    "kind": "synthetic",
+    "generator": "mdstream-conformance protocol fixture generator",
+    "oracle_kind": "canonical_protocol"
+  },
+  "options": {},
+  "schedules": [
+    {
+      "id": "whole",
+      "schedule": { "kind": "whole" }
+    },
+    {
+      "id": "characters",
+      "schedule": { "kind": "characters" }
+    }
+  ],
+  "traces": [
+    {
+      "id": "whole",
+      "schedule": "whole",
+      "setup_changes": 0,
+      "input_events": [
+        { "kind": "append", "chunk": "abc", "change_end": 1 },
+        { "kind": "finish", "change_end": 2 }
+      ],
+      "changes": [
+        {
+          "schema": "mdstream.content/0.4-draft.1",
+          "maturity": "draft",
+          "epoch": "1",
+          "sequence": "0",
+          "change_id": "whole:start",
+          "epoch_start": { "predecessor": null },
+          "source": { "expected_cursor": "0", "suffix": "abc" },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4-draft.1",
+          "maturity": "draft",
+          "epoch": "1",
+          "sequence": "1",
+          "change_id": "whole:finish",
+          "epoch_start": null,
+          "source": { "expected_cursor": "3", "suffix": "" },
+          "operations": [{ "kind": "finish_document" }]
+        }
+      ]
+    },
+    {
+      "id": "characters",
+      "schedule": "characters",
+      "setup_changes": 0,
+      "input_events": [
+        { "kind": "append", "chunk": "a", "change_end": 1 },
+        { "kind": "append", "chunk": "b", "change_end": 2 },
+        { "kind": "append", "chunk": "c", "change_end": 3 },
+        { "kind": "finish", "change_end": 4 }
+      ],
+      "changes": [
+        {
+          "schema": "mdstream.content/0.4-draft.1",
+          "maturity": "draft",
+          "epoch": "1",
+          "sequence": "0",
+          "change_id": "chars:start",
+          "epoch_start": { "predecessor": null },
+          "source": { "expected_cursor": "0", "suffix": "a" },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4-draft.1",
+          "maturity": "draft",
+          "epoch": "1",
+          "sequence": "1",
+          "change_id": "chars:1",
+          "epoch_start": null,
+          "source": { "expected_cursor": "1", "suffix": "b" },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4-draft.1",
+          "maturity": "draft",
+          "epoch": "1",
+          "sequence": "2",
+          "change_id": "chars:2",
+          "epoch_start": null,
+          "source": { "expected_cursor": "2", "suffix": "c" },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4-draft.1",
+          "maturity": "draft",
+          "epoch": "1",
+          "sequence": "3",
+          "change_id": "chars:finish",
+          "epoch_start": null,
+          "source": { "expected_cursor": "3", "suffix": "" },
+          "operations": [{ "kind": "finish_document" }]
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "normalized_snapshot": {
+      "schema": "mdstream.content/0.4-draft.1",
+      "maturity": "draft",
+      "epoch": "1",
+      "lifecycle": "finalized",
+      "source": "abc",
+      "roots": {
+        "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+        "children": []
+      },
+      "nodes": [],
+      "resources": [],
+      "next_node_id": "0",
+      "next_resource_id": "0"
+    }
+  },
+  "required_checkpoints": [
+    {
+      "id": "characters.finalized",
+      "trace": "characters",
+      "after_change": 3,
+      "lifecycle": "finalized",
+      "source": "abc"
+    }
+  ]
+}

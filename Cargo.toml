@@ -1,4 +1,9 @@
 [workspace]
-members = ["mdstream", "mdstream-protocol", "mdstream-tokio"]
+members = [
+    "mdstream",
+    "mdstream-conformance",
+    "mdstream-protocol",
+    "mdstream-tokio",
+]
 exclude = ["fuzz"]
 resolver = "2"

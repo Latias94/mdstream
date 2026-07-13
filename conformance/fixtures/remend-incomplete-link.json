@@ -1,0 +1,35 @@
+{
+  "schema": "mdstream.conformance/0.4-draft.1",
+  "id": "remend.incomplete-link",
+  "description": "Pinned Remend pending-only projection for an incomplete link label.",
+  "source": "Text with [incomplete link",
+  "dialect": {
+    "id": "remend.pending-text",
+    "extensions": ["incomplete-links"]
+  },
+  "profile": {
+    "id": "remend.pending-repair/1.3.0",
+    "claim_scope": ["pending_repair"],
+    "pipeline": ["remend"]
+  },
+  "provenance": {
+    "kind": "upstream",
+    "repository_url": "https://github.com/vercel/streamdown",
+    "commit_sha": "e5deed330aa4231751a106445d93d62e4716a22f",
+    "package": "remend",
+    "package_version": "1.3.0",
+    "license": "Apache-2.0",
+    "upstream_path": "packages/remend/__tests__/links.test.ts",
+    "upstream_test_name": "should preserve incomplete links with special marker",
+    "oracle_kind": "exact_pending_projection",
+    "extraction": { "kind": "literal" }
+  },
+  "options": {},
+  "schedules": [
+    { "id": "whole", "schedule": { "kind": "whole" } },
+    { "id": "characters", "schedule": { "kind": "characters" } }
+  ],
+  "expected": {
+    "pending_projection": "Text with [incomplete link](streamdown:incomplete-link)"
+  }
+}

@@ -1,0 +1,1146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mdstream.dev/schemas/conformance/0.4-draft.1/fixture.json",
+  "title": "mdstream conformance fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "description",
+    "source",
+    "dialect",
+    "profile",
+    "provenance",
+    "schedules",
+    "expected"
+  ],
+  "properties": {
+    "schema": { "const": "mdstream.conformance/0.4-draft.1" },
+    "id": { "$ref": "#/$defs/identifier" },
+    "description": { "type": "string", "minLength": 1 },
+    "source": { "type": "string" },
+    "dialect": { "$ref": "#/$defs/dialect" },
+    "profile": { "$ref": "#/$defs/profile" },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "options": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "schedules": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/namedSchedule" }
+    },
+    "traces": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/protocolTrace" },
+      "default": []
+    },
+    "expected": { "$ref": "#/$defs/expectation" },
+    "required_checkpoints": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/checkpoint" },
+      "default": []
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "profile": {
+            "properties": {
+              "claim_scope": { "contains": { "const": "protocol_replay" } }
+            },
+            "required": ["claim_scope"]
+          }
+        },
+        "required": ["profile"]
+      },
+      "then": {
+        "properties": {
+          "traces": { "minItems": 1 },
+          "expected": { "required": ["normalized_snapshot"] },
+          "provenance": {
+            "properties": { "oracle_kind": { "const": "canonical_protocol" } },
+            "required": ["oracle_kind"]
+          }
+        },
+        "required": ["traces"]
+      },
+      "else": {
+        "properties": { "traces": { "maxItems": 0 } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "profile": {
+            "properties": {
+              "claim_scope": { "contains": { "const": "legacy_block_framing" } }
+            },
+            "required": ["claim_scope"]
+          }
+        },
+        "required": ["profile"]
+      },
+      "then": {
+        "properties": {
+          "expected": {
+            "anyOf": [
+              { "required": ["legacy_framing"] },
+              { "required": ["upstream_predicates"] }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "profile": {
+            "properties": {
+              "claim_scope": { "contains": { "const": "pending_repair" } }
+            },
+            "required": ["claim_scope"]
+          }
+        },
+        "required": ["profile"]
+      },
+      "then": {
+        "properties": {
+          "expected": { "required": ["pending_projection"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "profile": {
+            "properties": {
+              "claim_scope": { "contains": { "const": "final_ast_characterization" } }
+            },
+            "required": ["claim_scope"]
+          }
+        },
+        "required": ["profile"]
+      },
+      "then": {
+        "properties": {
+          "expected": {
+            "anyOf": [
+              { "required": ["upstream_ast"] },
+              { "required": ["upstream_predicates"] }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "profile": {
+            "properties": {
+              "claim_scope": { "contains": { "const": "lifecycle_characterization" } }
+            },
+            "required": ["claim_scope"]
+          }
+        },
+        "required": ["profile"]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "profile": {
+                "properties": {
+                  "claim_scope": { "contains": { "const": "protocol_replay" } }
+                },
+                "required": ["claim_scope"]
+              },
+              "required_checkpoints": { "minItems": 1 }
+            },
+            "required": ["profile", "required_checkpoints"]
+          },
+          {
+            "properties": {
+              "expected": { "required": ["upstream_predicates"] }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": { "oracle_kind": { "const": "canonical_protocol" } },
+            "required": ["oracle_kind"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "profile": {
+            "properties": {
+              "claim_scope": { "contains": { "const": "protocol_replay" } }
+            },
+            "required": ["claim_scope"]
+          },
+          "traces": { "minItems": 1 },
+          "expected": { "required": ["normalized_snapshot"] }
+        },
+        "required": ["profile", "traces"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": { "oracle_kind": { "const": "exact_block_sequence" } },
+            "required": ["oracle_kind"]
+          }
+        }
+      },
+      "then": { "properties": { "expected": { "required": ["legacy_framing"] } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": { "oracle_kind": { "const": "exact_pending_projection" } },
+            "required": ["oracle_kind"]
+          }
+        }
+      },
+      "then": { "properties": { "expected": { "required": ["pending_projection"] } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": { "oracle_kind": { "const": "pinned_final_ast" } },
+            "required": ["oracle_kind"]
+          }
+        }
+      },
+      "then": { "properties": { "expected": { "required": ["upstream_ast"] } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": { "oracle_kind": { "const": "upstream_predicate" } },
+            "required": ["oracle_kind"]
+          }
+        }
+      },
+      "then": { "properties": { "expected": { "required": ["upstream_predicates"] } } }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._/+\\-]+$"
+    },
+    "decimal": {
+      "type": "string",
+      "oneOf": [
+        {
+          "pattern": "^(0|[1-9][0-9]{0,18})$"
+        },
+        {
+          "allOf": [
+            {
+              "pattern": "^1[0-9]{19}$"
+            },
+            {
+              "not": {
+                "pattern": "^(19[0-9]{18}|18[5-9][0-9]{17}|184[5-9][0-9]{16}|1844[7-9][0-9]{15}|18446[8-9][0-9]{14}|184467[5-9][0-9]{13}|1844674[5-9][0-9]{12}|18446744[1-9][0-9]{11}|184467440[8-9][0-9]{10}|1844674407[4-9][0-9]{9}|18446744073[8-9][0-9]{8}|184467440737[1-9][0-9]{7}|18446744073709[6-9][0-9]{5}|184467440737095[6-9][0-9]{4}|1844674407370955[2-9][0-9]{3}|18446744073709551[7-9][0-9]{2}|184467440737095516[2-9][0-9]|1844674407370955161[6-9])$"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "opaque": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "dialect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "extensions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "claim_scope"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "claim_scope": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "protocol_replay",
+              "legacy_block_framing",
+              "pending_repair",
+              "final_ast_characterization",
+              "lifecycle_characterization"
+            ]
+          }
+        },
+        "pipeline": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "oracleKind": {
+      "enum": [
+        "canonical_protocol",
+        "exact_block_sequence",
+        "exact_pending_projection",
+        "pinned_final_ast",
+        "upstream_predicate"
+      ]
+    },
+    "extraction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "literal" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "pinned_generated" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "steps"],
+          "properties": {
+            "kind": { "const": "transformed" },
+            "steps": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string" }
+            }
+          }
+        }
+      ]
+    },
+    "provenance": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "generator", "oracle_kind"],
+          "properties": {
+            "kind": { "const": "synthetic" },
+            "generator": { "type": "string", "minLength": 1 },
+            "oracle_kind": { "$ref": "#/$defs/oracleKind" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "repository_url",
+            "commit_sha",
+            "package",
+            "package_version",
+            "license",
+            "upstream_path",
+            "upstream_test_name",
+            "oracle_kind",
+            "extraction"
+          ],
+          "properties": {
+            "kind": { "const": "upstream" },
+            "repository_url": { "type": "string", "pattern": "^https://" },
+            "commit_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$" },
+            "package": { "type": "string", "minLength": 1 },
+            "package_version": { "type": "string", "minLength": 1 },
+            "license": { "type": "string", "minLength": 1 },
+            "upstream_path": { "type": "string", "minLength": 1 },
+            "upstream_test_name": { "type": "string", "minLength": 1 },
+            "oracle_kind": { "$ref": "#/$defs/oracleKind" },
+            "extraction": { "$ref": "#/$defs/extraction" }
+          }
+        }
+      ]
+    },
+    "chunkSchedule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "whole" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "lines" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "characters" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "cuts"],
+          "properties": {
+            "kind": { "const": "byte_cuts" },
+            "cuts": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "label", "trial", "max_bytes"],
+          "properties": {
+            "kind": { "const": "seeded" },
+            "label": { "type": "string" },
+            "seed": { "type": "integer", "minimum": 0, "default": 0 },
+            "trial": { "type": "integer", "minimum": 0 },
+            "max_bytes": { "type": "integer", "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "namedSchedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "schedule"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "schedule": { "$ref": "#/$defs/chunkSchedule" }
+      }
+    },
+    "coordinate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["epoch", "sequence", "change_id", "source_cursor"],
+      "properties": {
+        "epoch": { "$ref": "#/$defs/decimal" },
+        "sequence": { "$ref": "#/$defs/decimal" },
+        "change_id": { "$ref": "#/$defs/opaque" },
+        "source_cursor": { "$ref": "#/$defs/decimal" }
+      }
+    },
+    "sourceRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "$ref": "#/$defs/decimal" },
+        "end": { "$ref": "#/$defs/decimal" }
+      }
+    },
+    "resourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "$ref": "#/$defs/decimal" },
+        "version": { "$ref": "#/$defs/opaque" }
+      }
+    },
+    "semanticText": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "source" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "normalized" },
+            "value": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "semanticResourceKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "destination", "title"],
+          "properties": {
+            "kind": { "const": "link" },
+            "destination": { "type": "string" },
+            "title": { "type": ["string", "null"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "protocol", "key", "destination", "title"],
+          "properties": {
+            "kind": { "const": "citation" },
+            "protocol": { "const": "mdstream.citation/1" },
+            "key": { "type": "string", "minLength": 1 },
+            "destination": { "type": "string" },
+            "title": { "type": ["string", "null"] }
+          }
+        }
+      ]
+    },
+    "semanticResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "content"],
+      "properties": {
+        "id": { "$ref": "#/$defs/decimal" },
+        "version": { "$ref": "#/$defs/opaque" },
+        "content": { "$ref": "#/$defs/semanticResourceKind" }
+      }
+    },
+    "childList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "children"],
+      "properties": {
+        "version": { "$ref": "#/$defs/opaque" },
+        "children": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/decimal" }
+        }
+      }
+    },
+    "contentKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "paragraph",
+                "emphasis",
+                "strong",
+                "strikethrough",
+                "thematic_break",
+                "table_head",
+                "table_body",
+                "table_row",
+                "soft_break",
+                "hard_break"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "level"],
+          "properties": {
+            "kind": { "const": "heading" },
+            "level": { "type": "integer", "minimum": 1, "maximum": 6 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": { "const": "text" },
+            "text": { "$ref": "#/$defs/semanticText" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "target", "reference_label", "style"],
+          "properties": {
+            "kind": { "const": "link" },
+            "target": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/resourceRef" }
+              ]
+            },
+            "reference_label": { "type": ["string", "null"] },
+            "style": { "$ref": "#/$defs/linkStyle" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "target", "reference_label", "style", "alt"],
+          "properties": {
+            "kind": { "const": "image" },
+            "target": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/resourceRef" }
+              ]
+            },
+            "reference_label": { "type": ["string", "null"] },
+            "style": { "$ref": "#/$defs/linkStyle" },
+            "alt": { "$ref": "#/$defs/semanticText" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": { "const": "inline_code" },
+            "text": { "$ref": "#/$defs/semanticText" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "fenced", "language", "meta", "mermaid", "text"],
+          "properties": {
+            "kind": { "const": "code_block" },
+            "fenced": { "type": "boolean" },
+            "language": { "type": ["string", "null"] },
+            "meta": { "type": ["string", "null"] },
+            "mermaid": { "type": "boolean" },
+            "text": { "$ref": "#/$defs/semanticText" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "ordered", "start", "tight"],
+          "properties": {
+            "kind": { "const": "list" },
+            "ordered": { "type": "boolean" },
+            "start": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "tight": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "checked"],
+          "properties": {
+            "kind": { "const": "list_item" },
+            "checked": { "type": ["boolean", "null"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "style"],
+          "properties": {
+            "kind": { "const": "block_quote" },
+            "style": {
+              "enum": ["plain", "note", "tip", "important", "warning", "caution"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "alignments"],
+          "properties": {
+            "kind": { "const": "table" },
+            "alignments": {
+              "type": "array",
+              "items": { "enum": ["none", "left", "center", "right"] }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "column"],
+          "properties": {
+            "kind": { "const": "table_cell" },
+            "column": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "block", "opaque"],
+          "properties": {
+            "kind": { "const": "html" },
+            "block": { "type": "boolean" },
+            "opaque": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "display", "text"],
+          "properties": {
+            "kind": { "const": "math" },
+            "display": { "type": "boolean" },
+            "text": { "$ref": "#/$defs/semanticText" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "label"],
+          "properties": {
+            "kind": { "enum": ["footnote_definition", "footnote_reference"] },
+            "label": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "key", "target"],
+          "properties": {
+            "kind": { "const": "citation_definition" },
+            "key": { "type": "string", "minLength": 1 },
+            "target": { "$ref": "#/$defs/resourceRef" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "key", "target"],
+          "properties": {
+            "kind": { "const": "citation_reference" },
+            "key": { "type": "string", "minLength": 1 },
+            "target": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/resourceRef" }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "namespace", "name", "opaque", "attributes"],
+          "properties": {
+            "kind": { "const": "custom" },
+            "namespace": { "type": "string", "minLength": 1 },
+            "name": { "type": "string", "minLength": 1 },
+            "opaque": { "type": "boolean" },
+            "attributes": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        }
+      ]
+    },
+    "linkStyle": {
+      "enum": [
+        "inline",
+        "reference",
+        "reference_unknown",
+        "collapsed",
+        "collapsed_unknown",
+        "shortcut",
+        "shortcut_unknown",
+        "autolink",
+        "email"
+      ]
+    },
+    "nodeProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "stability", "source", "body", "content"],
+      "properties": {
+        "version": { "$ref": "#/$defs/opaque" },
+        "stability": { "enum": ["provisional", "stable"] },
+        "source": { "$ref": "#/$defs/sourceRange" },
+        "body": { "$ref": "#/$defs/sourceRange" },
+        "content": { "$ref": "#/$defs/contentKind" }
+      }
+    },
+    "contentNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "stability", "source", "body", "children", "content"],
+      "properties": {
+        "id": { "$ref": "#/$defs/decimal" },
+        "version": { "$ref": "#/$defs/opaque" },
+        "stability": { "enum": ["provisional", "stable"] },
+        "source": { "$ref": "#/$defs/sourceRange" },
+        "body": { "$ref": "#/$defs/sourceRange" },
+        "children": { "$ref": "#/$defs/childList" },
+        "content": { "$ref": "#/$defs/contentKind" }
+      }
+    },
+    "childListOwner": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "document" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "node_id"],
+          "properties": {
+            "kind": { "const": "node" },
+            "node_id": { "$ref": "#/$defs/decimal" }
+          }
+        }
+      ]
+    },
+    "projectionOp": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "node"],
+          "properties": {
+            "kind": { "const": "insert_node" },
+            "node": { "$ref": "#/$defs/contentNode" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "node_id", "expected_version", "projection"],
+          "properties": {
+            "kind": { "const": "replace_node" },
+            "node_id": { "$ref": "#/$defs/decimal" },
+            "expected_version": { "$ref": "#/$defs/opaque" },
+            "projection": { "$ref": "#/$defs/nodeProjection" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "node_id", "expected_version", "new_version"],
+          "properties": {
+            "kind": { "const": "stabilize_node" },
+            "node_id": { "$ref": "#/$defs/decimal" },
+            "expected_version": { "$ref": "#/$defs/opaque" },
+            "new_version": { "$ref": "#/$defs/opaque" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "node_id", "expected_version"],
+          "properties": {
+            "kind": { "const": "remove_node" },
+            "node_id": { "$ref": "#/$defs/decimal" },
+            "expected_version": { "$ref": "#/$defs/opaque" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "owner",
+            "expected_version",
+            "start",
+            "delete_count",
+            "insert",
+            "new_version"
+          ],
+          "properties": {
+            "kind": { "const": "splice_children" },
+            "owner": { "$ref": "#/$defs/childListOwner" },
+            "expected_version": { "$ref": "#/$defs/opaque" },
+            "start": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+            "delete_count": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+            "insert": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/decimal" }
+            },
+            "new_version": { "$ref": "#/$defs/opaque" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "resource"],
+          "properties": {
+            "kind": { "const": "insert_resource" },
+            "resource": { "$ref": "#/$defs/semanticResource" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "resource_id", "expected_version", "resource"],
+          "properties": {
+            "kind": { "const": "replace_resource" },
+            "resource_id": { "$ref": "#/$defs/decimal" },
+            "expected_version": { "$ref": "#/$defs/opaque" },
+            "resource": { "$ref": "#/$defs/semanticResource" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "resource_id", "expected_version"],
+          "properties": {
+            "kind": { "const": "remove_resource" },
+            "resource_id": { "$ref": "#/$defs/decimal" },
+            "expected_version": { "$ref": "#/$defs/opaque" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "finish_document" } }
+        }
+      ]
+    },
+    "changeSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "maturity",
+        "epoch",
+        "sequence",
+        "change_id",
+        "epoch_start",
+        "source",
+        "operations"
+      ],
+      "properties": {
+        "schema": { "const": "mdstream.content/0.4-draft.1" },
+        "maturity": { "const": "draft" },
+        "epoch": { "$ref": "#/$defs/decimal" },
+        "sequence": { "$ref": "#/$defs/decimal" },
+        "change_id": { "$ref": "#/$defs/opaque" },
+        "epoch_start": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["predecessor"],
+              "properties": {
+                "predecessor": {
+                  "oneOf": [
+                    { "type": "null" },
+                    { "$ref": "#/$defs/coordinate" }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expected_cursor", "suffix"],
+          "properties": {
+            "expected_cursor": { "$ref": "#/$defs/decimal" },
+            "suffix": { "type": "string" }
+          }
+        },
+        "operations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/projectionOp" }
+        }
+      }
+    },
+    "traceInputEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "chunk", "change_end"],
+          "properties": {
+            "kind": { "const": "append" },
+            "chunk": { "type": "string" },
+            "change_end": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "change_end"],
+          "properties": {
+            "kind": { "const": "finish" },
+            "change_end": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          }
+        }
+      ]
+    },
+    "protocolTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "schedule", "input_events", "changes"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "schedule": { "$ref": "#/$defs/identifier" },
+        "setup_changes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "default": 0
+        },
+        "input_events": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/traceInputEvent" },
+          "contains": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": { "kind": { "const": "finish" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "changes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/changeSet" }
+        }
+      }
+    },
+    "normalizedSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "maturity",
+        "epoch",
+        "lifecycle",
+        "source",
+        "roots",
+        "nodes",
+        "resources",
+        "next_node_id",
+        "next_resource_id"
+      ],
+      "properties": {
+        "schema": { "const": "mdstream.content/0.4-draft.1" },
+        "maturity": { "const": "draft" },
+        "epoch": { "$ref": "#/$defs/decimal" },
+        "lifecycle": { "enum": ["open", "finalized"] },
+        "source": { "type": "string" },
+        "roots": { "$ref": "#/$defs/childList" },
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/contentNode" } },
+        "resources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/semanticResource" }
+        },
+        "next_node_id": { "$ref": "#/$defs/decimal" },
+        "next_resource_id": { "$ref": "#/$defs/decimal" }
+      }
+    },
+    "legacyBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "raw"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "raw": { "type": "string" }
+      }
+    },
+    "upstreamAst": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["golden_path", "normalization"],
+      "properties": {
+        "golden_path": { "type": "string", "minLength": 1 },
+        "normalization": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "supplemental_indexes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "normalized_snapshot": { "$ref": "#/$defs/normalizedSnapshot" },
+        "legacy_framing": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/legacyBlock" }
+        },
+        "pending_projection": { "type": "string" },
+        "upstream_ast": { "$ref": "#/$defs/upstreamAst" },
+        "upstream_predicates": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        }
+      },
+      "anyOf": [
+        { "required": ["normalized_snapshot"] },
+        { "required": ["legacy_framing"] },
+        { "required": ["pending_projection"] },
+        { "required": ["upstream_ast"] },
+        { "required": ["upstream_predicates"] }
+      ]
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "trace", "after_change"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "trace": { "$ref": "#/$defs/identifier" },
+        "after_change": { "type": "integer", "minimum": 0 },
+        "coordinate": { "$ref": "#/$defs/coordinate" },
+        "lifecycle": { "enum": ["open", "finalized"] },
+        "source": { "type": "string" },
+        "normalized_snapshot": { "$ref": "#/$defs/normalizedSnapshot" }
+      }
+    }
+  }
+}

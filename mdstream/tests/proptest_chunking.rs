@@ -1,6 +1,8 @@
 mod support;
 
 use mdstream::{FootnotesMode, Options, ReferenceDefinitionsMode};
+use mdstream_conformance::{ChunkSchedule, replay_protocol_trace, source_only_trace};
+use mdstream_protocol::Epoch;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseResult;
 
@@ -89,6 +91,32 @@ fn assert_chunking_invariant(
     Ok(())
 }
 
+fn assert_protocol_schedule_invariant(
+    markdown: &str,
+    seed: u64,
+    max_bytes: usize,
+) -> TestCaseResult {
+    let whole = ChunkSchedule::Whole.slices(markdown).unwrap();
+    let seeded = ChunkSchedule::Seeded {
+        label: "proptest.protocol".to_string(),
+        seed,
+        trial: 0,
+        max_bytes,
+    }
+    .slices(markdown)
+    .unwrap();
+    let whole = source_only_trace("whole", "whole", Epoch::new(1), whole).unwrap();
+    let seeded = source_only_trace("seeded", "seeded", Epoch::new(1), seeded).unwrap();
+    let expected = replay_protocol_trace(&whole)
+        .unwrap()
+        .normalized_final_snapshot();
+    let actual = replay_protocol_trace(&seeded)
+        .unwrap()
+        .normalized_final_snapshot();
+    prop_assert_eq!(actual, expected);
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 96,
@@ -118,5 +146,14 @@ proptest! {
         };
 
         assert_chunking_invariant(&markdown, opts, seed, max_bytes)?;
+    }
+
+    #[test]
+    fn generated_utf8_schedules_replay_to_one_normalized_protocol_snapshot(
+        markdown in markdownish_document(),
+        seed in any::<u64>(),
+        max_bytes in 1usize..32,
+    ) {
+        assert_protocol_schedule_invariant(&markdown, seed, max_bytes)?;
     }
 }

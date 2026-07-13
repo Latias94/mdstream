@@ -1,3 +1,6 @@
+// Upstream-derived pending-text cases pinned to Streamdown 2.5.0 / Remend
+// 1.3.0 at e5deed330aa4231751a106445d93d62e4716a22f. Canonical framing and
+// protocol behavior are covered by separate versioned conformance profiles.
 use mdstream::{TerminatorOptions, terminate_markdown};
 
 #[test]

@@ -1,3 +1,6 @@
+// Upstream-derived characterization for `remend.pending-repair/1.3.0`, pinned
+// to Streamdown commit e5deed330aa4231751a106445d93d62e4716a22f. These tests
+// claim only exact pending-text repair, never finalized Markdown semantics.
 use mdstream::{TerminatorOptions, terminate_markdown};
 
 fn remend(text: &str) -> String {

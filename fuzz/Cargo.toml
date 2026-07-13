@@ -11,6 +11,8 @@ cargo-fuzz = true
 arbitrary = { version = "1.4.2", features = ["derive"] }
 libfuzzer-sys = "0.4.13"
 mdstream = { path = "../mdstream" }
+mdstream-conformance = { path = "../mdstream-conformance" }
+mdstream-protocol = { path = "../mdstream-protocol" }
 
 [[bin]]
 name = "stream_chunking"
