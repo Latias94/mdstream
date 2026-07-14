@@ -23,8 +23,6 @@ pub enum ProtocolErrorCode {
     MissingResource,
     DuplicateNode,
     DuplicateResource,
-    ReusedNodeId,
-    ReusedResourceId,
     VersionMismatch,
     ResourceVersionMismatch,
     IllegalLifecycle,
@@ -68,8 +66,6 @@ pub enum ProtocolError {
     MissingResource(ResourceId),
     DuplicateNode(NodeId),
     DuplicateResource(ResourceId),
-    ReusedNodeId(NodeId),
-    ReusedResourceId(ResourceId),
     VersionMismatch(NodeId),
     ResourceVersionMismatch(ResourceId),
     IllegalLifecycle(String),
@@ -103,8 +99,6 @@ impl ProtocolError {
             Self::MissingResource(_) => ProtocolErrorCode::MissingResource,
             Self::DuplicateNode(_) => ProtocolErrorCode::DuplicateNode,
             Self::DuplicateResource(_) => ProtocolErrorCode::DuplicateResource,
-            Self::ReusedNodeId(_) => ProtocolErrorCode::ReusedNodeId,
-            Self::ReusedResourceId(_) => ProtocolErrorCode::ReusedResourceId,
             Self::VersionMismatch(_) => ProtocolErrorCode::VersionMismatch,
             Self::ResourceVersionMismatch(_) => ProtocolErrorCode::ResourceVersionMismatch,
             Self::IllegalLifecycle(_) => ProtocolErrorCode::IllegalLifecycle,
@@ -150,15 +144,6 @@ impl fmt::Display for ProtocolError {
             Self::DuplicateNode(id) => write!(formatter, "node {id} appears more than once"),
             Self::DuplicateResource(id) => {
                 write!(formatter, "resource {id} appears more than once")
-            }
-            Self::ReusedNodeId(id) => {
-                write!(formatter, "node {id} is below the allocation high-water")
-            }
-            Self::ReusedResourceId(id) => {
-                write!(
-                    formatter,
-                    "resource {id} is below the allocation high-water"
-                )
             }
             Self::VersionMismatch(id) => write!(formatter, "node {id} version does not match"),
             Self::ResourceVersionMismatch(id) => {

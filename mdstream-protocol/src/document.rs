@@ -25,8 +25,6 @@ pub struct Document {
     parents: BTreeMap<NodeId, ChildListOwner>,
     resources: BTreeMap<ResourceId, SemanticResource>,
     resource_users: BTreeMap<ResourceId, BTreeSet<NodeId>>,
-    next_node_id: NodeId,
-    next_resource_id: ResourceId,
     metadata_bytes: usize,
     structural_items: usize,
 }
@@ -49,8 +47,6 @@ impl Document {
             parents: BTreeMap::new(),
             resources: BTreeMap::new(),
             resource_users: BTreeMap::new(),
-            next_node_id: NodeId::new(0),
-            next_resource_id: ResourceId::new(0),
             metadata_bytes: 0,
             structural_items: 0,
         }
@@ -87,8 +83,6 @@ impl Document {
             parents,
             resources,
             resource_users,
-            next_node_id: snapshot.next_node_id(),
-            next_resource_id: snapshot.next_resource_id(),
             metadata_bytes: validation.metadata_bytes,
             structural_items: validation.structural_items,
         }
@@ -130,14 +124,6 @@ impl Document {
         self.resources.get(&id)
     }
 
-    pub const fn next_node_id(&self) -> NodeId {
-        self.next_node_id
-    }
-
-    pub const fn next_resource_id(&self) -> ResourceId {
-        self.next_resource_id
-    }
-
     pub const fn metadata_bytes(&self) -> usize {
         self.metadata_bytes
     }
@@ -160,8 +146,6 @@ impl Document {
             clone_child_list_owned(&self.roots),
             self.nodes.values().map(clone_node_owned).collect(),
             self.resources.values().cloned().collect(),
-            self.next_node_id,
-            self.next_resource_id,
         )
     }
 }
@@ -411,13 +395,6 @@ impl Reducer {
                 "same-epoch snapshot source cursor cannot move backwards".to_string(),
             ));
         }
-        if snapshot.next_node_id() < retained.next_node_id
-            || snapshot.next_resource_id() < retained.next_resource_id
-        {
-            return Err(ProtocolError::InvalidSnapshot(
-                "same-epoch snapshot allocation high-water cannot move backwards".to_string(),
-            ));
-        }
         if retained.lifecycle == DocumentLifecycle::Finalized
             && snapshot.lifecycle() != DocumentLifecycle::Finalized
         {
@@ -431,13 +408,6 @@ impl Reducer {
             .iter()
             .map(|node| (node.id, node))
             .collect::<BTreeMap<_, _>>();
-        for node in snapshot.nodes() {
-            if node.id < retained.next_node_id && !retained.nodes.contains_key(&node.id) {
-                return Err(ProtocolError::InvalidSnapshot(
-                    "same-epoch snapshot resurrects a retired node ID".to_string(),
-                ));
-            }
-        }
         for old in retained.nodes.values() {
             if old.stability == NodeStability::Stable {
                 if incoming_nodes
@@ -463,15 +433,6 @@ impl Reducer {
             .iter()
             .map(|resource| (resource.id, resource))
             .collect::<BTreeMap<_, _>>();
-        for resource in snapshot.resources() {
-            if resource.id < retained.next_resource_id
-                && !retained.resources.contains_key(&resource.id)
-            {
-                return Err(ProtocolError::InvalidSnapshot(
-                    "same-epoch snapshot resurrects a retired resource ID".to_string(),
-                ));
-            }
-        }
         for current in retained.resources.values() {
             let Some(replacement) = incoming_resources.get(&current.id) else {
                 continue;
@@ -739,8 +700,6 @@ fn snapshot_matches_document(snapshot: &Snapshot, document: &Document) -> bool {
         && snapshot.lifecycle() == document.lifecycle
         && snapshot.source() == document.source
         && snapshot.roots() == &document.roots
-        && snapshot.next_node_id() == document.next_node_id
-        && snapshot.next_resource_id() == document.next_resource_id
         && snapshot.nodes().len() == document.nodes.len()
         && snapshot
             .nodes()
@@ -781,8 +740,6 @@ struct StagedChange {
     resources: BTreeMap<ResourceId, Option<SemanticResource>>,
     structures: BTreeMap<ChildListOwner, StructureEdit>,
     parents: BTreeMap<NodeId, Option<ChildListOwner>>,
-    next_node_id: NodeId,
-    next_resource_id: ResourceId,
     metadata_bytes: usize,
     structural_items: usize,
     resulting_cursor: SourceCursor,
@@ -832,8 +789,6 @@ fn stage_document(
     let mut nodes = BTreeMap::<NodeId, Option<ContentNode>>::new();
     let mut resources = BTreeMap::<ResourceId, Option<SemanticResource>>::new();
     let mut structures = BTreeMap::<ChildListOwner, StructureEdit>::new();
-    let mut next_node_id = document.next_node_id;
-    let mut next_resource_id = document.next_resource_id;
     let mut finish = false;
     let mut staging_work_steps = 0usize;
     let mut child_ids_copied = 0usize;
@@ -858,19 +813,12 @@ fn stage_document(
                 if view_node(node.id, document, &nodes).is_some() {
                     return Err(ProtocolError::DuplicateNode(node.id).into());
                 }
-                if node.id < document.next_node_id {
-                    return Err(ProtocolError::ReusedNodeId(node.id).into());
-                }
                 if !node.children.children.is_empty() {
                     return Err(ProtocolError::InvalidChange(
                         "inserted nodes must attach children through SpliceChildren".to_string(),
                     )
                     .into());
                 }
-                let candidate = node.id.checked_add(1).ok_or_else(|| {
-                    ProtocolError::InvalidChange("node ID allocation overflow".to_string())
-                })?;
-                next_node_id = next_node_id.max(candidate);
                 nodes.insert(node.id, Some(node.clone()));
             }
             ProjectionOp::ReplaceNode {
@@ -1064,13 +1012,6 @@ fn stage_document(
                 if view_resource(resource.id, document, &resources).is_some() {
                     return Err(ProtocolError::DuplicateResource(resource.id).into());
                 }
-                if resource.id < document.next_resource_id {
-                    return Err(ProtocolError::ReusedResourceId(resource.id).into());
-                }
-                let candidate = resource.id.checked_add(1).ok_or_else(|| {
-                    ProtocolError::InvalidChange("resource ID allocation overflow".to_string())
-                })?;
-                next_resource_id = next_resource_id.max(candidate);
                 resources.insert(resource.id, Some(resource.clone()));
             }
             ProjectionOp::ReplaceResource {
@@ -1341,8 +1282,6 @@ fn stage_document(
         resources,
         structures,
         parents,
-        next_node_id,
-        next_resource_id,
         metadata_bytes,
         structural_items,
         resulting_cursor,
@@ -2403,8 +2342,6 @@ fn commit_document(document: &mut Document, change: &ChangeSet, staged: StagedCh
             }
         }
     }
-    document.next_node_id = staged.next_node_id;
-    document.next_resource_id = staged.next_resource_id;
     document.metadata_bytes = staged.metadata_bytes;
     document.structural_items = staged.structural_items;
     if staged.finish {
@@ -2458,11 +2395,6 @@ pub(crate) fn validate_snapshot(
         metadata_bytes = metadata_bytes
             .checked_add(node.validate_local(snapshot.source(), limits)?)
             .ok_or(ProtocolError::MetadataOverflow)?;
-        if node.id >= snapshot.next_node_id() {
-            return Err(ProtocolError::InvalidSnapshot(
-                "next_node_id does not preserve the allocation high-water".to_string(),
-            ));
-        }
         if snapshot.lifecycle() == DocumentLifecycle::Finalized
             && node.stability == NodeStability::Provisional
         {
@@ -2485,11 +2417,6 @@ pub(crate) fn validate_snapshot(
         metadata_bytes = metadata_bytes
             .checked_add(resource.validate_local(limits)?)
             .ok_or(ProtocolError::MetadataOverflow)?;
-        if resource.id >= snapshot.next_resource_id() {
-            return Err(ProtocolError::InvalidSnapshot(
-                "next_resource_id does not preserve the allocation high-water".to_string(),
-            ));
-        }
         resources.insert(resource.id, resource);
     }
     if metadata_bytes > limits.max_document_metadata_bytes {

@@ -620,7 +620,7 @@ fn protocol_schema_accepts_every_serde_operation_and_content_variant() {
     let range = SourceRange::new(SourceCursor::new(0), SourceCursor::new(0));
     for (index, content) in contents.into_iter().enumerate() {
         let node = ContentNode::leaf(
-            NodeId::new(u64::try_from(index).unwrap()),
+            NodeId::new(u128::try_from(index).unwrap()),
             NodeStability::Stable,
             range,
             content,
@@ -711,6 +711,49 @@ fn protocol_schema_accepts_every_serde_operation_and_content_variant() {
 }
 
 #[test]
+fn content_id_schema_and_wire_cover_the_full_u128_domain() {
+    let schema: serde_json::Value = serde_json::from_slice(
+        &fs::read(corpus_root().join("schemas/fixture.schema.json")).unwrap(),
+    )
+    .unwrap();
+    let definition = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "#/$defs/contentId",
+        "$defs": schema["$defs"].clone()
+    });
+    let validator = jsonschema::validator_for(&definition).unwrap();
+
+    for value in [
+        "0",
+        "18446744073709551616",
+        "340282366920938463463374607431768211455",
+    ] {
+        assert!(validator.is_valid(&serde_json::json!(value)), "{value}");
+    }
+    for value in [
+        "00",
+        "340282366920938463463374607431768211456",
+        "999999999999999999999999999999999999999",
+    ] {
+        assert!(!validator.is_valid(&serde_json::json!(value)), "{value}");
+    }
+
+    let node_id = NodeId::new(u128::MAX);
+    let resource_id = ResourceId::new(u128::MAX);
+    let maximum = serde_json::json!("340282366920938463463374607431768211455");
+    assert_eq!(serde_json::to_value(node_id).unwrap(), maximum);
+    assert_eq!(serde_json::to_value(resource_id).unwrap(), maximum);
+    assert_eq!(
+        serde_json::from_value::<NodeId>(maximum.clone()).unwrap(),
+        node_id
+    );
+    assert_eq!(
+        serde_json::from_value::<ResourceId>(maximum).unwrap(),
+        resource_id
+    );
+}
+
+#[test]
 fn large_snapshot_and_mixed_trace_report_snapshot_and_delta_work_separately() {
     const NODE_COUNT: usize = 10_000;
     const ROUNDS: usize = 10;
@@ -726,7 +769,7 @@ fn large_snapshot_and_mixed_trace_report_snapshot_and_delta_work_separately() {
     let nodes = (0..NODE_COUNT)
         .map(|index| {
             ContentNode::leaf(
-                NodeId::new(u64::try_from(index).unwrap()),
+                NodeId::new(u128::try_from(index).unwrap()),
                 NodeStability::Stable,
                 empty_range,
                 ContentKind::Paragraph {},
@@ -772,7 +815,7 @@ fn large_snapshot_and_mixed_trace_report_snapshot_and_delta_work_separately() {
     for round in 0..ROUNDS {
         let operations = (0..NODE_COUNT)
             .map(|index| {
-                let id = NodeId::new(u64::try_from(index).unwrap());
+                let id = NodeId::new(u128::try_from(index).unwrap());
                 let current = producer.document().unwrap().node(id).unwrap();
                 let content = if round % 2 == 0 {
                     ContentKind::Heading { level: 1 }

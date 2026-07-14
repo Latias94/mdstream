@@ -6,11 +6,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ChildList, ContentNode, Coordinate, DocumentLifecycle, NodeId, PayloadDigest, ProtocolError,
-    ProtocolLimits, ResourceId, SemanticResource, SnapshotDigest,
+    ChildList, ContentNode, Coordinate, DocumentLifecycle, PayloadDigest, ProtocolError,
+    ProtocolLimits, SemanticResource, SnapshotDigest,
 };
 
-pub const PROTOCOL_SCHEMA: &str = "mdstream.content/0.4-draft.1";
+pub const PROTOCOL_SCHEMA: &str = "mdstream.content/0.4-draft.2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -66,8 +66,6 @@ pub struct Snapshot {
     roots: ChildList,
     nodes: Vec<ContentNode>,
     resources: Vec<SemanticResource>,
-    next_node_id: NodeId,
-    next_resource_id: ResourceId,
 }
 
 impl Snapshot {
@@ -111,14 +109,6 @@ impl Snapshot {
         &self.resources
     }
 
-    pub const fn next_node_id(&self) -> NodeId {
-        self.next_node_id
-    }
-
-    pub const fn next_resource_id(&self) -> ResourceId {
-        self.next_resource_id
-    }
-
     /// Recomputes the digest over the canonical snapshot contents.
     pub fn derived_digest(&self) -> SnapshotDigest {
         derive_snapshot_digest(SnapshotDigestView {
@@ -131,12 +121,9 @@ impl Snapshot {
             roots: &self.roots,
             nodes: &self.nodes,
             resources: &self.resources,
-            next_node_id: self.next_node_id,
-            next_resource_id: self.next_resource_id,
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_canonical_parts(
         coordinate: Coordinate,
         last_payload_digest: PayloadDigest,
@@ -145,8 +132,6 @@ impl Snapshot {
         roots: ChildList,
         nodes: Vec<ContentNode>,
         resources: Vec<SemanticResource>,
-        next_node_id: NodeId,
-        next_resource_id: ResourceId,
     ) -> Self {
         let schema = SchemaVersion::current();
         let maturity = ProtocolMaturity::Draft;
@@ -160,8 +145,6 @@ impl Snapshot {
             roots: &roots,
             nodes: &nodes,
             resources: &resources,
-            next_node_id,
-            next_resource_id,
         });
         Self {
             schema,
@@ -174,8 +157,6 @@ impl Snapshot {
             roots,
             nodes,
             resources,
-            next_node_id,
-            next_resource_id,
         }
     }
 }
@@ -191,8 +172,6 @@ struct SnapshotDigestView<'a> {
     roots: &'a ChildList,
     nodes: &'a [ContentNode],
     resources: &'a [SemanticResource],
-    next_node_id: NodeId,
-    next_resource_id: ResourceId,
 }
 
 fn derive_snapshot_digest(view: SnapshotDigestView<'_>) -> SnapshotDigest {

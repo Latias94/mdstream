@@ -64,9 +64,88 @@ macro_rules! decimal_id {
 decimal_id!(Epoch);
 decimal_id!(Sequence);
 decimal_id!(SourceCursor);
-decimal_id!(NodeId);
-decimal_id!(ResourceId);
 decimal_id!(RequestGeneration);
+
+macro_rules! content_id {
+    ($name:ident, $domain:literal) => {
+        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(u128);
+
+        impl $name {
+            pub const fn new(value: u128) -> Self {
+                Self(value)
+            }
+
+            pub const fn get(self) -> u128 {
+                self.0
+            }
+
+            /// Derives a deterministic identity from a compiler-owned origin.
+            ///
+            /// The 128-bit truncation is domain-separated by identity kind.
+            /// Producers must reject the vanishingly unlikely case where two
+            /// distinct origins derive the same identity.
+            pub fn digest(origin: &[u8]) -> Self {
+                let mut digest = Sha256::new();
+                digest.update($domain.as_bytes());
+                digest.update([0]);
+                digest.update(origin);
+                let digest = digest.finalize();
+                let mut value = [0_u8; 16];
+                value.copy_from_slice(&digest[..16]);
+                Self(u128::from_be_bytes(value))
+            }
+        }
+
+        impl From<u64> for $name {
+            fn from(value: u64) -> Self {
+                Self(u128::from(value))
+            }
+        }
+
+        impl From<u128> for $name {
+            fn from(value: u128) -> Self {
+                Self(value)
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = DecimalIdError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                parse_decimal_u128(value).map(Self)
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_str(&self.0.to_string())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                value.parse().map_err(de::Error::custom)
+            }
+        }
+    };
+}
+
+content_id!(NodeId, "mdstream.node-id/v1");
+content_id!(ResourceId, "mdstream.resource-id/v1");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecimalIdError {
@@ -82,7 +161,7 @@ impl fmt::Display for DecimalIdError {
             Self::Empty => "decimal identifier cannot be empty",
             Self::InvalidSyntax => "decimal identifier must contain ASCII digits only",
             Self::LeadingZero => "decimal identifier cannot contain a leading zero",
-            Self::Overflow => "decimal identifier exceeds u64",
+            Self::Overflow => "decimal identifier exceeds its supported integer width",
         };
         formatter.write_str(message)
     }
@@ -91,6 +170,16 @@ impl fmt::Display for DecimalIdError {
 impl std::error::Error for DecimalIdError {}
 
 fn parse_decimal(value: &str) -> Result<u64, DecimalIdError> {
+    validate_decimal_syntax(value)?;
+    value.parse().map_err(|_| DecimalIdError::Overflow)
+}
+
+fn parse_decimal_u128(value: &str) -> Result<u128, DecimalIdError> {
+    validate_decimal_syntax(value)?;
+    value.parse().map_err(|_| DecimalIdError::Overflow)
+}
+
+fn validate_decimal_syntax(value: &str) -> Result<(), DecimalIdError> {
     if value.is_empty() {
         return Err(DecimalIdError::Empty);
     }
@@ -100,7 +189,7 @@ fn parse_decimal(value: &str) -> Result<u64, DecimalIdError> {
     if value.len() > 1 && value.starts_with('0') {
         return Err(DecimalIdError::LeadingZero);
     }
-    value.parse().map_err(|_| DecimalIdError::Overflow)
+    Ok(())
 }
 
 macro_rules! opaque_id {

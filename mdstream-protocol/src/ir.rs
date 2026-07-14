@@ -272,7 +272,7 @@ impl ChildList {
 
 fn extend_structure_version(base: &StructureVersion, children: &[NodeId]) -> StructureVersion {
     let mut version = base.clone();
-    let mut input = Vec::with_capacity(version.as_str().len() + 1 + std::mem::size_of::<u64>());
+    let mut input = Vec::with_capacity(version.as_str().len() + 1 + std::mem::size_of::<u128>());
     for child in children {
         input.clear();
         input.extend_from_slice(version.as_str().as_bytes());

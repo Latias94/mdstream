@@ -266,6 +266,13 @@
         }
       ]
     },
+    "contentId": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,38})$",
+      "not": {
+        "pattern": "^(?:[4-9][0-9]{38}|3[5-9][0-9]{37}|34[1-9][0-9]{36}|340[3-9][0-9]{35}|34029[0-9]{34}|34028[3-9][0-9]{33}|340282[4-9][0-9]{32}|3402823[7-9][0-9]{31}|34028236[7-9][0-9]{30}|3402823669[3-9][0-9]{28}|34028236692[1-9][0-9]{27}|3402823669209[4-9][0-9]{25}|340282366920939[0-9]{24}|340282366920938[5-9][0-9]{23}|3402823669209384[7-9][0-9]{22}|34028236692093846[4-9][0-9]{21}|340282366920938463[5-9][0-9]{20}|3402823669209384634[7-9][0-9]{19}|34028236692093846346[4-9][0-9]{18}|340282366920938463463[4-9][0-9]{17}|3402823669209384634633[8-9][0-9]{16}|34028236692093846346337[5-9][0-9]{15}|340282366920938463463374[7-9][0-9]{14}|3402823669209384634633746[1-9][0-9]{13}|34028236692093846346337460[8-9][0-9]{12}|340282366920938463463374607[5-9][0-9]{11}|3402823669209384634633746074[4-9][0-9]{10}|34028236692093846346337460743[2-9][0-9]{9}|340282366920938463463374607431[8-9][0-9]{8}|3402823669209384634633746074317[7-9][0-9]{7}|340282366920938463463374607431769[0-9]{6}|340282366920938463463374607431768[3-9][0-9]{5}|3402823669209384634633746074317682[2-9][0-9]{4}|34028236692093846346337460743176821[2-9][0-9]{3}|340282366920938463463374607431768211[5-9][0-9]{2}|3402823669209384634633746074317682114[6-9][0-9]|34028236692093846346337460743176821145[6-9])$"
+      }
+    },
     "opaque": {
       "type": "string",
       "minLength": 1,
@@ -472,7 +479,7 @@
       "additionalProperties": false,
       "required": ["id", "version"],
       "properties": {
-        "id": { "$ref": "#/$defs/decimal" },
+        "id": { "$ref": "#/$defs/contentId" },
         "version": { "$ref": "#/$defs/opaque" }
       }
     },
@@ -526,7 +533,7 @@
       "additionalProperties": false,
       "required": ["id", "version", "content"],
       "properties": {
-        "id": { "$ref": "#/$defs/decimal" },
+        "id": { "$ref": "#/$defs/contentId" },
         "version": { "$ref": "#/$defs/opaque" },
         "content": { "$ref": "#/$defs/semanticResourceKind" }
       }
@@ -540,7 +547,7 @@
         "children": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/decimal" }
+          "items": { "$ref": "#/$defs/contentId" }
         }
       }
     },
@@ -797,7 +804,7 @@
       "additionalProperties": false,
       "required": ["id", "version", "stability", "source", "body", "children", "content"],
       "properties": {
-        "id": { "$ref": "#/$defs/decimal" },
+        "id": { "$ref": "#/$defs/contentId" },
         "version": { "$ref": "#/$defs/opaque" },
         "stability": { "enum": ["provisional", "stable"] },
         "source": { "$ref": "#/$defs/sourceRange" },
@@ -820,7 +827,7 @@
           "required": ["kind", "node_id"],
           "properties": {
             "kind": { "const": "node" },
-            "node_id": { "$ref": "#/$defs/decimal" }
+            "node_id": { "$ref": "#/$defs/contentId" }
           }
         }
       ]
@@ -842,7 +849,7 @@
           "required": ["kind", "node_id", "expected_version", "projection"],
           "properties": {
             "kind": { "const": "replace_node" },
-            "node_id": { "$ref": "#/$defs/decimal" },
+            "node_id": { "$ref": "#/$defs/contentId" },
             "expected_version": { "$ref": "#/$defs/opaque" },
             "projection": { "$ref": "#/$defs/nodeProjection" }
           }
@@ -853,7 +860,7 @@
           "required": ["kind", "node_id", "expected_version", "new_version"],
           "properties": {
             "kind": { "const": "stabilize_node" },
-            "node_id": { "$ref": "#/$defs/decimal" },
+            "node_id": { "$ref": "#/$defs/contentId" },
             "expected_version": { "$ref": "#/$defs/opaque" },
             "new_version": { "$ref": "#/$defs/opaque" }
           }
@@ -864,7 +871,7 @@
           "required": ["kind", "node_id", "expected_version"],
           "properties": {
             "kind": { "const": "remove_node" },
-            "node_id": { "$ref": "#/$defs/decimal" },
+            "node_id": { "$ref": "#/$defs/contentId" },
             "expected_version": { "$ref": "#/$defs/opaque" }
           }
         },
@@ -888,7 +895,7 @@
             "delete_count": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
             "insert": {
               "type": "array",
-              "items": { "$ref": "#/$defs/decimal" }
+              "items": { "$ref": "#/$defs/contentId" }
             },
             "new_version": { "$ref": "#/$defs/opaque" }
           }
@@ -908,7 +915,7 @@
           "required": ["kind", "resource_id", "expected_version", "resource"],
           "properties": {
             "kind": { "const": "replace_resource" },
-            "resource_id": { "$ref": "#/$defs/decimal" },
+            "resource_id": { "$ref": "#/$defs/contentId" },
             "expected_version": { "$ref": "#/$defs/opaque" },
             "resource": { "$ref": "#/$defs/semanticResource" }
           }
@@ -919,7 +926,7 @@
           "required": ["kind", "resource_id", "expected_version"],
           "properties": {
             "kind": { "const": "remove_resource" },
-            "resource_id": { "$ref": "#/$defs/decimal" },
+            "resource_id": { "$ref": "#/$defs/contentId" },
             "expected_version": { "$ref": "#/$defs/opaque" }
           }
         },
@@ -945,7 +952,7 @@
         "operations"
       ],
       "properties": {
-        "schema": { "const": "mdstream.content/0.4-draft.1" },
+        "schema": { "const": "mdstream.content/0.4-draft.2" },
         "maturity": { "const": "draft" },
         "epoch": { "$ref": "#/$defs/decimal" },
         "sequence": { "$ref": "#/$defs/decimal" },
@@ -1070,12 +1077,10 @@
         "source",
         "roots",
         "nodes",
-        "resources",
-        "next_node_id",
-        "next_resource_id"
+        "resources"
       ],
       "properties": {
-        "schema": { "const": "mdstream.content/0.4-draft.1" },
+        "schema": { "const": "mdstream.content/0.4-draft.2" },
         "maturity": { "const": "draft" },
         "epoch": { "$ref": "#/$defs/decimal" },
         "lifecycle": { "enum": ["open", "finalized"] },
@@ -1085,9 +1090,7 @@
         "resources": {
           "type": "array",
           "items": { "$ref": "#/$defs/semanticResource" }
-        },
-        "next_node_id": { "$ref": "#/$defs/decimal" },
-        "next_resource_id": { "$ref": "#/$defs/decimal" }
+        }
       }
     },
     "legacyBlock": {

@@ -17,7 +17,12 @@ fn range(start: u64, end: u64) -> SourceRange {
 }
 
 fn leaf(id: u64, stability: NodeStability, span: (u64, u64), content: ContentKind) -> ContentNode {
-    ContentNode::leaf(NodeId::new(id), stability, range(span.0, span.1), content)
+    ContentNode::leaf(
+        NodeId::new(u128::from(id)),
+        stability,
+        range(span.0, span.1),
+        content,
+    )
 }
 
 fn container(
@@ -28,7 +33,7 @@ fn container(
     content: ContentKind,
 ) -> ContentNode {
     ContentNode::new(
-        NodeId::new(id),
+        NodeId::new(u128::from(id)),
         stability,
         range(span.0, span.1),
         range(span.0, span.1),
@@ -220,7 +225,6 @@ fn bootstrap_owns_one_source_and_explicit_root_order() {
         document.roots().children.as_slice(),
         &[NodeId::new(4), NodeId::new(9)]
     );
-    assert_eq!(document.next_node_id(), NodeId::new(10));
     assert!(impact.roots_changed);
     assert_eq!(impact.changed_nodes, vec![NodeId::new(4), NodeId::new(9)]);
 }
@@ -1089,7 +1093,6 @@ fn table_sequence_and_stable_width_hold_across_changes_and_recovery() {
         ))
         .unwrap(),
     );
-    future["next_node_id"] = serde_json::json!("6");
     let future = snapshot_from_value(future);
     let mut standalone = Reducer::new();
     standalone.recover_snapshot(future.clone()).unwrap();
@@ -1761,7 +1764,6 @@ fn snapshot_progression_is_monotonic_and_rejections_are_atomic() {
     rollback["source"] = serde_json::json!("");
     rollback["roots"] = serde_json::to_value(ChildList::empty()).unwrap();
     rollback["nodes"] = serde_json::json!([]);
-    rollback["next_node_id"] = serde_json::json!("0");
     let forged = snapshot_from_value(rollback);
     assert!(matches!(
         reducer.recover_snapshot(forged),
@@ -2173,9 +2175,6 @@ fn snapshot_semantics_reject_utf8_overlap_cycle_and_resource_corruption() {
     let mut missing_resource = resource_base.clone();
     missing_resource["resources"] = serde_json::json!([]);
 
-    let mut resource_high_water = resource_base.clone();
-    resource_high_water["next_resource_id"] = serde_json::json!("0");
-
     let mut duplicate_resource = resource_base.clone();
     duplicate_resource["resources"]
         .as_array_mut()
@@ -2205,7 +2204,6 @@ fn snapshot_semantics_reject_utf8_overlap_cycle_and_resource_corruption() {
     for corrupted in [
         corrupted_resource,
         missing_resource,
-        resource_high_water,
         duplicate_resource,
         wrong_resource_kind,
     ] {
@@ -2451,7 +2449,7 @@ fn structure_splice_reorders_roots_without_changing_node_versions() {
 }
 
 #[test]
-fn child_splice_builds_single_owner_tree_and_remove_never_reuses_ids() {
+fn child_splice_builds_single_owner_tree_and_identity_can_reappear() {
     let parent = leaf(
         0,
         NodeStability::Stable,
@@ -2517,21 +2515,137 @@ fn child_splice_builds_single_owner_tree_and_remove_never_reuses_ids() {
             ],
         ))
         .unwrap();
-    assert_eq!(reducer.document().unwrap().next_node_id(), NodeId::new(2));
-
     operations.clear();
+    let roots = reducer.document().unwrap().roots().clone();
     let reuse = next_change(
         &reducer,
         2,
         "reuse",
         "",
-        vec![ProjectionOp::InsertNode {
-            node: leaf(1, NodeStability::Stable, (0, 0), ContentKind::Paragraph {}),
-        }],
+        vec![
+            ProjectionOp::InsertNode {
+                node: leaf(1, NodeStability::Stable, (0, 0), ContentKind::Paragraph {}),
+            },
+            append_splice(ChildListOwner::Document, &roots, vec![NodeId::new(1)]),
+        ],
     );
+    assert!(matches!(
+        reducer.apply(reuse).unwrap(),
+        ApplyOutcome::Applied { .. }
+    ));
     assert_eq!(
-        reducer.apply(reuse),
-        Err(ProtocolError::ReusedNodeId(NodeId::new(1)))
+        reducer.document().unwrap().roots().children.as_slice(),
+        &[NodeId::new(1)]
+    );
+}
+
+#[test]
+fn deterministic_ids_apply_independently_of_numeric_discovery_order() {
+    let mut reducer = Reducer::new();
+    reducer
+        .apply(rooted_start(
+            1,
+            "ab",
+            vec![leaf(
+                100,
+                NodeStability::Provisional,
+                (0, 1),
+                ContentKind::Paragraph {},
+            )],
+        ))
+        .unwrap();
+    let roots = reducer.document().unwrap().roots().clone();
+    let lower = leaf(
+        1,
+        NodeStability::Provisional,
+        (1, 2),
+        ContentKind::Paragraph {},
+    );
+    let change = next_change(
+        &reducer,
+        1,
+        "deterministic:lower",
+        "",
+        vec![
+            ProjectionOp::InsertNode {
+                node: lower.clone(),
+            },
+            append_splice(ChildListOwner::Document, &roots, vec![lower.id]),
+        ],
+    );
+
+    assert!(matches!(
+        reducer.apply(change).unwrap(),
+        ApplyOutcome::Applied { .. }
+    ));
+    assert_eq!(
+        reducer.document().unwrap().roots().children.as_slice(),
+        &[NodeId::new(100), NodeId::new(1)]
+    );
+}
+
+#[test]
+fn removed_resource_identity_can_reappear() {
+    let resource = SemanticResource::new(
+        ResourceId::new(7),
+        SemanticResourceKind::Link {
+            destination: "https://example.test/resource".to_string(),
+            title: None,
+        },
+    );
+    let mut reducer = Reducer::new();
+    reducer
+        .apply(
+            start(
+                1,
+                "",
+                vec![ProjectionOp::InsertResource {
+                    resource: resource.clone(),
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        reducer.apply(next_change(
+            &reducer,
+            1,
+            "resource:duplicate-live",
+            "",
+            vec![ProjectionOp::InsertResource {
+                resource: resource.clone(),
+            }],
+        )),
+        Err(ProtocolError::DuplicateResource(resource.id))
+    );
+    reducer
+        .apply(next_change(
+            &reducer,
+            1,
+            "resource:remove",
+            "",
+            vec![ProjectionOp::RemoveResource {
+                resource_id: resource.id,
+                expected_version: resource.version.clone(),
+            }],
+        ))
+        .unwrap();
+    assert!(reducer.document().unwrap().resource(resource.id).is_none());
+
+    reducer
+        .apply(next_change(
+            &reducer,
+            2,
+            "resource:reappear",
+            "",
+            vec![ProjectionOp::InsertResource {
+                resource: resource.clone(),
+            }],
+        ))
+        .unwrap();
+    assert_eq!(
+        reducer.document().unwrap().resource(resource.id),
+        Some(&resource)
     );
 }
 
@@ -3122,7 +3236,9 @@ fn resource_replacement_bulk_rebinds_fanout_beyond_the_operation_limit() {
             },
         )
     };
-    let first_ids = (1..=user_count / 2).map(NodeId::new).collect::<Vec<_>>();
+    let first_ids = (1..=user_count / 2)
+        .map(|id| NodeId::new(u128::from(id)))
+        .collect::<Vec<_>>();
     let mut first = vec![
         ProjectionOp::InsertResource {
             resource: resource.clone(),
@@ -3156,7 +3272,7 @@ fn resource_replacement_bulk_rebinds_fanout_beyond_the_operation_limit() {
     let mut reducer = Reducer::new();
     reducer.apply(start(1, "", first).unwrap()).unwrap();
     let second_ids = (user_count / 2 + 1..=user_count)
-        .map(NodeId::new)
+        .map(|id| NodeId::new(u128::from(id)))
         .collect::<Vec<_>>();
     let mut second = (user_count / 2 + 1..=user_count)
         .map(make_reference)
@@ -3217,7 +3333,7 @@ fn resource_replacement_bulk_rebinds_fanout_beyond_the_operation_limit() {
             reducer
                 .document()
                 .unwrap()
-                .node(NodeId::new(id))
+                .node(NodeId::new(u128::from(id)))
                 .unwrap()
                 .content
                 .resource_ref()
@@ -3724,12 +3840,12 @@ fn deep_and_wide_snapshot_validation_is_linear_and_depth_bounded() {
     for id in 0..depth - 1 {
         operations.push(splice(
             ChildListOwner::Node {
-                node_id: NodeId::new(id),
+                node_id: NodeId::new(u128::from(id)),
             },
             &ChildList::empty(),
             0,
             0,
-            vec![NodeId::new(id + 1)],
+            vec![NodeId::new(u128::from(id + 1))],
         ));
     }
     operations.push(splice(
@@ -3782,7 +3898,7 @@ fn deep_and_wide_snapshot_validation_is_linear_and_depth_bounded() {
         &parent.children,
         0,
         0,
-        (1..=width).map(NodeId::new).collect(),
+        (1..=width).map(|id| NodeId::new(u128::from(id))).collect(),
     ));
     wide.push(splice(
         ChildListOwner::Document,
@@ -3931,7 +4047,7 @@ fn streaming_root_and_child_appends_have_linear_reducer_and_wire_work() {
                     ProjectionOp::InsertNode {
                         node: leaf(id, NodeStability::Stable, (0, 0), ContentKind::Paragraph {}),
                     },
-                    append_splice(owner, current, vec![NodeId::new(id)]),
+                    append_splice(owner, current, vec![NodeId::new(u128::from(id))]),
                 ],
             );
             encoded_bytes = encoded_bytes.saturating_add(
@@ -3979,7 +4095,11 @@ fn indexed_local_replacements_do_not_rescan_the_whole_root_list() {
 
     for sequence in 1..=100 {
         let id = sequence - 1;
-        let current = reducer.document().unwrap().node(NodeId::new(id)).unwrap();
+        let current = reducer
+            .document()
+            .unwrap()
+            .node(NodeId::new(u128::from(id)))
+            .unwrap();
         let replacement = container(
             id,
             NodeStability::Stable,
@@ -3994,7 +4114,7 @@ fn indexed_local_replacements_do_not_rescan_the_whole_root_list() {
                 &format!("replace:{sequence}"),
                 "",
                 vec![ProjectionOp::ReplaceNode {
-                    node_id: NodeId::new(id),
+                    node_id: NodeId::new(u128::from(id)),
                     expected_version: current.version.clone(),
                     projection: replacement.projection(),
                 }],
@@ -4045,7 +4165,7 @@ fn local_projection_replace_wire_and_copy_work_ignore_large_child_lists() {
             0,
             0,
             (1..=child_count)
-                .map(|id| NodeId::new(u64::try_from(id).unwrap()))
+                .map(|id| NodeId::new(u128::try_from(id).unwrap()))
                 .collect(),
         ));
         operations.push(splice(

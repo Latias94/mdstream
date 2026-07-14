@@ -2,8 +2,8 @@ use std::fmt;
 
 use mdstream_protocol::{
     ApplyOutcome, ChangeId, ChangeSet, ChildList, ContentNode, Coordinate, DocumentLifecycle,
-    Epoch, NodeId, ProjectionOp, ProtocolError, ProtocolMaturity, Reducer, ResourceId,
-    SchemaVersion, SemanticResource, Sequence, Snapshot, SourceCursor, SourceDelta,
+    Epoch, ProjectionOp, ProtocolError, ProtocolMaturity, Reducer, SchemaVersion, SemanticResource,
+    Sequence, Snapshot, SourceCursor, SourceDelta,
 };
 use serde::{Deserialize, Serialize};
 
@@ -160,8 +160,6 @@ pub struct NormalizedSnapshot {
     pub roots: ChildList,
     pub nodes: Vec<ContentNode>,
     pub resources: Vec<SemanticResource>,
-    pub next_node_id: NodeId,
-    pub next_resource_id: ResourceId,
 }
 
 impl From<&Snapshot> for NormalizedSnapshot {
@@ -175,8 +173,6 @@ impl From<&Snapshot> for NormalizedSnapshot {
             roots: snapshot.roots().clone(),
             nodes: snapshot.nodes().to_vec(),
             resources: snapshot.resources().to_vec(),
-            next_node_id: snapshot.next_node_id(),
-            next_resource_id: snapshot.next_resource_id(),
         }
     }
 }

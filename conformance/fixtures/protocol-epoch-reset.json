@@ -8,7 +8,7 @@
     "extensions": []
   },
   "profile": {
-    "id": "mdstream.protocol/0.4-draft.1",
+    "id": "mdstream.protocol/0.4-draft.2",
     "claim_scope": ["protocol_replay"],
     "pipeline": []
   },
@@ -36,7 +36,7 @@
       ],
       "changes": [
         {
-          "schema": "mdstream.content/0.4-draft.1",
+          "schema": "mdstream.content/0.4-draft.2",
           "maturity": "draft",
           "epoch": "1",
           "sequence": "0",
@@ -46,7 +46,7 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.1",
+          "schema": "mdstream.content/0.4-draft.2",
           "maturity": "draft",
           "epoch": "1",
           "sequence": "1",
@@ -56,7 +56,7 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.1",
+          "schema": "mdstream.content/0.4-draft.2",
           "maturity": "draft",
           "epoch": "2",
           "sequence": "0",
@@ -73,7 +73,7 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.1",
+          "schema": "mdstream.content/0.4-draft.2",
           "maturity": "draft",
           "epoch": "2",
           "sequence": "1",
@@ -83,7 +83,7 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.1",
+          "schema": "mdstream.content/0.4-draft.2",
           "maturity": "draft",
           "epoch": "2",
           "sequence": "2",
@@ -97,7 +97,7 @@
   ],
   "expected": {
     "normalized_snapshot": {
-      "schema": "mdstream.content/0.4-draft.1",
+      "schema": "mdstream.content/0.4-draft.2",
       "maturity": "draft",
       "epoch": "2",
       "lifecycle": "finalized",
@@ -107,9 +107,7 @@
         "children": []
       },
       "nodes": [],
-      "resources": [],
-      "next_node_id": "0",
-      "next_resource_id": "0"
+      "resources": []
     }
   },
   "required_checkpoints": [

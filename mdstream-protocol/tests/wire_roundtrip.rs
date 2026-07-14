@@ -20,7 +20,7 @@ fn empty_range() -> SourceRange {
 
 fn leaf(id: u64, content: ContentKind) -> ContentNode {
     ContentNode::leaf(
-        NodeId::new(id),
+        NodeId::new(u128::from(id)),
         NodeStability::Stable,
         empty_range(),
         content,
@@ -29,7 +29,7 @@ fn leaf(id: u64, content: ContentKind) -> ContentNode {
 
 fn resource_ref(id: u64) -> ResourceRef {
     ResourceRef {
-        id: ResourceId::new(id),
+        id: ResourceId::new(u128::from(id)),
         version: ResourceVersion::new("resource:v1").unwrap(),
     }
 }
@@ -70,8 +70,8 @@ fn refresh_snapshot_digest(value: &mut serde_json::Value) {
 fn js_unsafe_identifiers_are_canonical_decimal_strings() {
     let value = serde_json::to_value((
         Epoch::new(u64::MAX),
-        NodeId::new(u64::MAX),
-        ResourceId::new(u64::MAX),
+        NodeId::new(u128::MAX),
+        ResourceId::new(u128::MAX),
         Sequence::new(u64::MAX),
         SourceCursor::new(u64::MAX),
         RequestGeneration::new(u64::MAX),
@@ -82,8 +82,8 @@ fn js_unsafe_identifiers_are_canonical_decimal_strings() {
         value,
         serde_json::json!([
             "18446744073709551615",
-            "18446744073709551615",
-            "18446744073709551615",
+            "340282366920938463463374607431768211455",
+            "340282366920938463463374607431768211455",
             "18446744073709551615",
             "18446744073709551615",
             "18446744073709551615"
@@ -110,6 +110,51 @@ fn decimal_identifiers_reject_noncanonical_numbers_and_negative_values() {
         serde_json::from_value::<Epoch>(serde_json::json!("9007199254740993")).unwrap(),
         Epoch::new(9_007_199_254_740_993)
     );
+    assert_eq!(
+        serde_json::from_value::<NodeId>(serde_json::json!(
+            "340282366920938463463374607431768211455"
+        ))
+        .unwrap(),
+        NodeId::new(u128::MAX)
+    );
+    assert!(
+        serde_json::from_value::<NodeId>(serde_json::json!(
+            "340282366920938463463374607431768211456"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn content_identity_digests_are_deterministic_and_domain_separated() {
+    assert_eq!(
+        NodeId::digest(b"same-origin"),
+        NodeId::digest(b"same-origin")
+    );
+    assert_ne!(
+        NodeId::digest(b"same-origin"),
+        NodeId::digest(b"other-origin")
+    );
+    assert_eq!(
+        NodeId::digest(b"same-origin"),
+        NodeId::new(185_015_054_040_705_306_738_278_650_658_756_056_429)
+    );
+    assert_eq!(
+        ResourceId::digest(b"same-origin"),
+        ResourceId::new(17_632_683_105_392_084_874_583_875_252_655_318_195)
+    );
+    assert_ne!(
+        NodeId::digest(b"same-origin").get(),
+        ResourceId::digest(b"same-origin").get()
+    );
+}
+
+#[test]
+fn structure_versions_include_all_content_identity_bits() {
+    let low = ChildList::new(vec![NodeId::new(1)]);
+    let high = ChildList::new(vec![NodeId::new((1_u128 << 64) | 1)]);
+
+    assert_ne!(low.version, high.version);
 }
 
 #[test]
@@ -126,7 +171,7 @@ fn opaque_identifiers_validate_length_character_set_and_string_type() {
 fn envelope_has_explicit_draft_schema_and_precise_operation_tags() {
     let change = rooted_change(leaf(0, ContentKind::Paragraph {}));
     let value = serde_json::to_value(&change).unwrap();
-    assert_eq!(value["schema"], "mdstream.content/0.4-draft.1");
+    assert_eq!(value["schema"], "mdstream.content/0.4-draft.2");
     assert_eq!(value["maturity"], "draft");
     assert_eq!(value["epoch"], "9");
     assert_eq!(value["sequence"], "0");
@@ -375,8 +420,6 @@ fn all_operation_and_nested_enum_tags_are_stable() {
         ("missing_resource", ProtocolErrorCode::MissingResource),
         ("duplicate_node", ProtocolErrorCode::DuplicateNode),
         ("duplicate_resource", ProtocolErrorCode::DuplicateResource),
-        ("reused_node_id", ProtocolErrorCode::ReusedNodeId),
-        ("reused_resource_id", ProtocolErrorCode::ReusedResourceId),
         ("version_mismatch", ProtocolErrorCode::VersionMismatch),
         (
             "resource_version_mismatch",
@@ -1107,10 +1150,9 @@ fn snapshot_decoder_rejects_structural_and_version_matrix() {
     refresh_snapshot_digest(&mut duplicate);
     cases.push(duplicate);
 
-    let mut high_water = base.clone();
-    high_water["next_node_id"] = serde_json::json!("0");
-    refresh_snapshot_digest(&mut high_water);
-    cases.push(high_water);
+    let mut legacy_allocation_state = base.clone();
+    legacy_allocation_state["next_node_id"] = serde_json::json!("1");
+    cases.push(legacy_allocation_state);
 
     let mut provisional_final = base.clone();
     provisional_final["lifecycle"] = serde_json::json!("finalized");
