@@ -1341,6 +1341,40 @@ fn sequence_distinguishes_retry_stale_fork_gap_and_recovery_absorption() {
 }
 
 #[test]
+fn producer_apply_rolls_back_noncanonical_routing_state() {
+    let mut reducer = Reducer::new();
+    reducer.apply(start(1, "a", vec![]).unwrap()).unwrap();
+    let before = reducer.document().unwrap().snapshot();
+    let metrics = reducer.metrics();
+    let gap = ChangeSet::new(
+        Epoch::new(1),
+        Sequence::new(2),
+        change_id("producer:gap"),
+        SourceDelta::append(SourceCursor::new(1), "b"),
+        vec![],
+    )
+    .unwrap();
+
+    assert!(matches!(
+        reducer.apply_producer(gap).unwrap(),
+        ApplyOutcome::RecoveryRequired {
+            reason: RecoveryReason::SequenceGap { .. },
+            ..
+        }
+    ));
+    assert_eq!(reducer.status(), ReducerStatus::Ready);
+    assert_eq!(reducer.document().unwrap().snapshot(), before);
+    assert_eq!(reducer.metrics(), metrics);
+
+    let next = next_change(&reducer, 1, "producer:next", "b", vec![]);
+    assert!(matches!(
+        reducer.apply_producer(next).unwrap(),
+        ApplyOutcome::Applied { .. }
+    ));
+    assert_eq!(reducer.document().unwrap().source(), "ab");
+}
+
+#[test]
 fn routing_classification_precedes_projection_validation() {
     fn forged_change(sequence: u64, id: &str, cursor: u64) -> ChangeSet {
         let valid = ChangeSet::new(

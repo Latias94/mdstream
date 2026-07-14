@@ -15,12 +15,12 @@ categories = ["text-processing", "parsing"]
 exclude = ["repo-ref/**"]
 
 [dependencies]
+mdstream-protocol = { path = "../mdstream-protocol", version = "0.4.0" }
 pulldown-cmark = { version = "0.13.4", optional = true }
 
 [dev-dependencies]
 criterion = "0.7.0"
 mdstream-conformance = { path = "../mdstream-conformance" }
-mdstream-protocol = { path = "../mdstream-protocol", version = "0.4.0" }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
 [features]

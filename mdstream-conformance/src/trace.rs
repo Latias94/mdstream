@@ -26,13 +26,16 @@ pub struct ProtocolTrace {
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum TraceInputEvent {
     Append { chunk: String, change_end: usize },
+    Reset { change_end: usize },
     Finish { change_end: usize },
 }
 
 impl TraceInputEvent {
     pub const fn change_end(&self) -> usize {
         match self {
-            Self::Append { change_end, .. } | Self::Finish { change_end } => *change_end,
+            Self::Append { change_end, .. }
+            | Self::Reset { change_end }
+            | Self::Finish { change_end } => *change_end,
         }
     }
 }

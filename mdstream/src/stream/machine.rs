@@ -1,4 +1,4 @@
-use super::MdStream;
+use super::LegacyFramer;
 use super::boundary_detector::{BoundaryDetector, is_table_delimiter};
 use super::engine::AppendCtx;
 use super::footnotes::is_footnote_definition_start;
@@ -13,7 +13,7 @@ use crate::syntax::facts::{
 };
 use crate::types::{Block, BlockStatus};
 
-impl MdStream {
+impl LegacyFramer {
     pub(super) fn start_mode_for_line(&self, line: &str) -> BlockMode {
         if let Some(idx) = self.boundaries.start_index(line) {
             return BlockMode::CustomBoundary {

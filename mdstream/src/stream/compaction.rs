@@ -1,7 +1,7 @@
-use super::MdStream;
+use super::LegacyFramer;
 use crate::options::FootnotesMode;
 
-impl MdStream {
+impl LegacyFramer {
     pub(super) fn maybe_compact_buffer(&mut self) {
         let Some(max) = self.opts.max_buffer_bytes else {
             return;
@@ -47,10 +47,6 @@ impl MdStream {
         }
 
         self.pending_display.clear();
-        self.last_finalized_buffer_len = self
-            .last_finalized_buffer_len
-            .saturating_sub(compacted_from);
-
         // Best-effort sanity: avoid holding obviously wrong indices if something went off.
         debug_assert!(
             old_line_count == 0

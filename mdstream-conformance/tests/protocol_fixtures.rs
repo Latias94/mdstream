@@ -99,23 +99,39 @@ fn reset_trace() -> ProtocolTrace {
         Epoch::new(2),
         change_id("reset:new:start"),
         Some(predecessor),
-        SourceDelta::append(SourceCursor::new(0), "new"),
+        SourceDelta::unchanged(SourceCursor::new(0)),
         vec![],
     )
     .unwrap();
+    let appended = next(2, 1, 0, "reset:new:1", "new");
     ProtocolTrace {
         id: "reset".to_string(),
         schedule: "whole".to_string(),
         setup_changes: 2,
         input_events: vec![
+            TraceInputEvent::Reset { change_end: 3 },
             TraceInputEvent::Append {
                 chunk: "new".to_string(),
-                change_end: 3,
+                change_end: 4,
             },
-            TraceInputEvent::Finish { change_end: 4 },
+            TraceInputEvent::Finish { change_end: 5 },
         ],
-        changes: vec![first, second, reset, finish(2, 1, 3, "reset:new:finish")],
+        changes: vec![
+            first,
+            second,
+            reset,
+            appended,
+            finish(2, 2, 3, "reset:new:finish"),
+        ],
     }
+}
+
+fn checked_in_reset_fixture() -> mdstream_conformance::Fixture {
+    load_fixture_dir(corpus_root().join("fixtures"))
+        .unwrap()
+        .into_iter()
+        .find(|fixture| fixture.id == "protocol.epoch-reset")
+        .unwrap()
 }
 
 #[test]
@@ -224,6 +240,48 @@ fn reset_trace_separates_epochs_and_rejects_delayed_prior_epoch_changes() {
 }
 
 #[test]
+fn reset_fixture_rejects_nonempty_source_inexact_predecessor_and_multiple_changes() {
+    let fixture = checked_in_reset_fixture();
+    let reset_index = fixture.traces[0].setup_changes;
+    let reset = &fixture.traces[0].changes[reset_index];
+    let predecessor = reset.epoch_start().unwrap().predecessor.clone();
+
+    let mut nonempty_source = fixture.clone();
+    nonempty_source.traces[0].changes[reset_index] = ChangeSet::start_epoch(
+        Epoch::new(2),
+        change_id("reset:nonempty-source"),
+        predecessor.clone(),
+        SourceDelta::append(SourceCursor::new(0), "unexpected"),
+        vec![],
+    )
+    .unwrap();
+    let error = nonempty_source.validate().unwrap_err().to_string();
+    assert!(error.contains("reset epoch start must be empty"), "{error}");
+
+    let mut inexact_predecessor = fixture.clone();
+    inexact_predecessor.traces[0].changes[reset_index] = ChangeSet::start_epoch(
+        Epoch::new(2),
+        change_id("reset:inexact-predecessor"),
+        None,
+        SourceDelta::unchanged(SourceCursor::new(0)),
+        vec![],
+    )
+    .unwrap();
+    let error = inexact_predecessor.validate().unwrap_err().to_string();
+    assert!(error.contains("predecessor"), "{error}");
+
+    let mut multiple_changes = fixture;
+    multiple_changes.traces[0].input_events[0] = TraceInputEvent::Reset {
+        change_end: reset_index + 2,
+    };
+    let error = multiple_changes.validate().unwrap_err().to_string();
+    assert!(
+        error.contains("reset must emit exactly one change"),
+        "{error}"
+    );
+}
+
+#[test]
 fn compatibility_profiles_are_narrow_and_pinned_to_upstream_versions() {
     let fixtures = load_fixture_dir(corpus_root().join("fixtures")).unwrap();
     let profiles = fixtures
@@ -270,11 +328,7 @@ fn fixture_contract_cannot_skip_claimed_protocol_schedules_or_goldens() {
     append_owns_finish.traces[0].input_events[1] = TraceInputEvent::Finish { change_end: 2 };
     assert!(append_owns_finish.validate().is_err());
 
-    let mut setup_owns_reset = load_fixture_dir(corpus_root().join("fixtures"))
-        .unwrap()
-        .into_iter()
-        .find(|fixture| fixture.id == "protocol.epoch-reset")
-        .unwrap();
+    let mut setup_owns_reset = checked_in_reset_fixture();
     setup_owns_reset.traces[0].setup_changes = 3;
     assert!(setup_owns_reset.validate().is_err());
 

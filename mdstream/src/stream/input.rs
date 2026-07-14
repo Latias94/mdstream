@@ -1,4 +1,52 @@
-use std::borrow::Cow;
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct NewlineNormalizer {
+    pending_cr: bool,
+}
+
+impl NewlineNormalizer {
+    pub(crate) fn append(self, chunk: &str) -> (Self, String) {
+        if chunk.is_empty() {
+            return (self, String::new());
+        }
+
+        let mut next = self;
+        let mut output = String::with_capacity(chunk.len() + usize::from(self.pending_cr));
+        let mut chars = chunk.chars().peekable();
+
+        if next.pending_cr {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            output.push('\n');
+            next.pending_cr = false;
+        }
+
+        while let Some(character) = chars.next() {
+            if character != '\r' {
+                output.push(character);
+                continue;
+            }
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+                output.push('\n');
+            } else if chars.peek().is_none() {
+                next.pending_cr = true;
+            } else {
+                output.push('\n');
+            }
+        }
+
+        (next, output)
+    }
+
+    pub(crate) fn finish(self) -> (Self, String) {
+        if self.pending_cr {
+            (Self::default(), "\n".to_string())
+        } else {
+            (self, String::new())
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct Line {
@@ -49,7 +97,7 @@ impl Line {
 pub(super) struct LineBuffer {
     text: String,
     lines: Vec<Line>,
-    pending_cr: bool,
+    retained_base: usize,
 }
 
 impl Default for LineBuffer {
@@ -63,7 +111,7 @@ impl LineBuffer {
         Self {
             text: String::new(),
             lines: vec![Line::empty()],
-            pending_cr: false,
+            retained_base: 0,
         }
     }
 
@@ -75,16 +123,16 @@ impl LineBuffer {
         self.text.len()
     }
 
+    pub(super) fn retained_base(&self) -> usize {
+        self.retained_base
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.text.is_empty()
     }
 
     pub(super) fn line_count(&self) -> usize {
         self.lines.len()
-    }
-
-    pub(super) fn has_pending_cr(&self) -> bool {
-        self.pending_cr
     }
 
     pub(super) fn line(&self, line_index: usize) -> Option<&Line> {
@@ -105,44 +153,6 @@ impl LineBuffer {
 
     pub(super) fn line_has_newline(&self, line_index: usize) -> bool {
         self.line(line_index).is_some_and(Line::has_newline)
-    }
-
-    pub(super) fn normalize_newlines_cow<'a>(&mut self, chunk: &'a str) -> Cow<'a, str> {
-        if !chunk.contains('\r') && !self.pending_cr {
-            return Cow::Borrowed(chunk);
-        }
-
-        let mut out = String::with_capacity(chunk.len() + 1);
-        let mut chars = chunk.chars().peekable();
-
-        if self.pending_cr {
-            // Previous chunk ended with '\r' (possibly CRLF across boundary).
-            if chars.peek() == Some(&'\n') {
-                chars.next();
-            }
-            out.push('\n');
-            self.pending_cr = false;
-        }
-
-        while let Some(c) = chars.next() {
-            if c != '\r' {
-                out.push(c);
-                continue;
-            }
-            if chars.peek() == Some(&'\n') {
-                chars.next();
-                out.push('\n');
-                continue;
-            }
-            if chars.peek().is_none() {
-                // Defer decision: this may be a CRLF pair split across chunks.
-                self.pending_cr = true;
-                continue;
-            }
-            out.push('\n');
-        }
-
-        Cow::Owned(out)
     }
 
     pub(super) fn append_normalized(&mut self, chunk: &str) {
@@ -176,14 +186,6 @@ impl LineBuffer {
         }
     }
 
-    pub(super) fn flush_pending_cr_at_eof(&mut self) {
-        if !self.pending_cr {
-            return;
-        }
-        self.append_normalized("\n");
-        self.pending_cr = false;
-    }
-
     pub(super) fn compact_from(&mut self, mut keep_from: usize) -> usize {
         if keep_from == 0 || keep_from > self.text.len() {
             return 0;
@@ -198,6 +200,7 @@ impl LineBuffer {
         } else {
             self.text = self.text[keep_from..].to_string();
         }
+        self.retained_base = self.retained_base.saturating_add(keep_from);
 
         self.rebuild_lines_from_buffer();
         keep_from
@@ -207,7 +210,7 @@ impl LineBuffer {
         self.text.clear();
         self.lines.clear();
         self.lines.push(Line::empty());
-        self.pending_cr = false;
+        self.retained_base = 0;
     }
 
     fn rebuild_lines_from_buffer(&mut self) {

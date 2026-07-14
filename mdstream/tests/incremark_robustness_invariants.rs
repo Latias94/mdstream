@@ -85,6 +85,33 @@ fn finalize_is_idempotent_without_new_input() {
 }
 
 #[test]
+fn append_after_finalize_is_terminal_and_does_not_reenter_the_line_machine() {
+    let mut stream = MdStream::new(Options::default());
+    let _ = stream.append("# Hello");
+    let finalized = stream.finalize();
+    assert_eq!(finalized.committed.len(), 1);
+    let before = stream.buffer().to_string();
+
+    let update = stream.append("\n");
+
+    assert!(update.is_empty());
+    assert_eq!(stream.buffer(), before);
+}
+
+#[test]
+fn empty_append_does_not_resolve_a_pending_carriage_return() {
+    let mut stream = MdStream::new(Options::default());
+    assert!(stream.append("\r").is_empty());
+    let before = stream.buffer().to_string();
+
+    assert!(stream.append("").is_empty());
+    assert_eq!(stream.buffer(), before);
+
+    let _ = stream.append("\n");
+    assert_eq!(stream.buffer(), "\n");
+}
+
+#[test]
 fn footnote_detection_mid_stream_triggers_reset_and_single_pending_block() {
     let mut s = MdStream::new(Options::default());
 

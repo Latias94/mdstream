@@ -270,6 +270,37 @@ impl Reducer {
         }
     }
 
+    /// Applies a producer-authored change without retaining recovery routing
+    /// state for a non-canonical outcome.
+    ///
+    /// Producers use this to validate their own changes against the canonical
+    /// reducer without cloning the retained document. State-changing
+    /// [`ApplyOutcome::Applied`] and [`ApplyOutcome::Recovered`] results commit
+    /// normally. Every other outcome, and every error, preserves the reducer's
+    /// prior routing state and metrics; the retained document is already
+    /// transactional under [`Self::apply`].
+    pub fn apply_producer(&mut self, change: ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
+        let control = self.control.clone();
+        let metrics = self.metrics;
+        match self.apply(change) {
+            Ok(outcome @ (ApplyOutcome::Applied { .. } | ApplyOutcome::Recovered { .. })) => {
+                Ok(outcome)
+            }
+            Ok(outcome @ ApplyOutcome::Idempotent)
+            | Ok(outcome @ ApplyOutcome::Stale { .. })
+            | Ok(outcome @ ApplyOutcome::RecoveryRequired { .. }) => {
+                self.control = control;
+                self.metrics = metrics;
+                Ok(outcome)
+            }
+            Err(error) => {
+                self.control = control;
+                self.metrics = metrics;
+                Err(error)
+            }
+        }
+    }
+
     /// Installs a fully validated snapshot during bootstrap or recovery.
     ///
     /// Ready reducers reject snapshot replacement so callers cannot bypass the

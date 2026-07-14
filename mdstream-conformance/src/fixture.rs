@@ -131,6 +131,7 @@ impl Fixture {
             }
             let mut change_end = trace.setup_changes;
             let mut append_chunks = Vec::new();
+            let mut saw_reset = false;
             let mut saw_finish = false;
             for (event_index, event) in trace.input_events.iter().enumerate() {
                 let next_end = event.change_end();
@@ -177,6 +178,23 @@ impl Fixture {
                             append_chunks.push(chunk.as_str());
                         }
                     }
+                    TraceInputEvent::Reset { .. } => {
+                        if saw_finish
+                            || saw_reset
+                            || !append_chunks.is_empty()
+                            || (trace.setup_changes > 0 && event_index != 0)
+                        {
+                            return Err(FixtureError::InvalidField {
+                                field: "traces.input_events",
+                                message: format!(
+                                    "trace `{}` reset must be the unique first target event",
+                                    trace.id
+                                ),
+                            });
+                        }
+                        validate_reset_span(trace, change_end, next_end)?;
+                        saw_reset = true;
+                    }
                     TraceInputEvent::Finish { .. } => {
                         if saw_finish || event_index + 1 != trace.input_events.len() {
                             return Err(FixtureError::InvalidField {
@@ -215,6 +233,12 @@ impl Fixture {
                         "trace `{}` events do not account for every change through finish",
                         trace.id
                     ),
+                });
+            }
+            if trace.setup_changes > 0 && !saw_reset {
+                return Err(FixtureError::InvalidField {
+                    field: "traces.input_events",
+                    message: format!("trace `{}` setup changes require a reset event", trace.id),
                 });
             }
             if !scheduled_chunks.iter().copied().eq(append_chunks) {
@@ -421,6 +445,58 @@ fn validate_setup_boundary(trace: &ProtocolTrace) -> Result<(), FixtureError> {
                 "trace `{}` target must start from the exact setup predecessor",
                 trace.id
             ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_reset_span(
+    trace: &ProtocolTrace,
+    change_start: usize,
+    change_end: usize,
+) -> Result<(), FixtureError> {
+    let changes = &trace.changes[change_start..change_end];
+    if changes.len() != 1 {
+        return Err(FixtureError::InvalidField {
+            field: "traces.input_events",
+            message: format!("trace `{}` reset must emit exactly one change", trace.id),
+        });
+    }
+    let reset = &changes[0];
+    let Some(epoch_start) = reset.epoch_start() else {
+        return Err(FixtureError::InvalidField {
+            field: "traces.input_events",
+            message: format!("trace `{}` reset must emit an epoch start", trace.id),
+        });
+    };
+    if !reset.source().suffix.is_empty() || !reset.operations().is_empty() {
+        return Err(FixtureError::InvalidField {
+            field: "traces.input_events",
+            message: format!("trace `{}` reset epoch start must be empty", trace.id),
+        });
+    }
+
+    let expected_predecessor = if change_start == 0 {
+        None
+    } else {
+        let prefix = ProtocolTrace {
+            id: format!("{}:before-reset", trace.id),
+            schedule: trace.schedule.clone(),
+            setup_changes: 0,
+            input_events: Vec::new(),
+            changes: trace.changes[..change_start].to_vec(),
+        };
+        let report =
+            replay_protocol_trace(&prefix).map_err(|error| FixtureError::InvalidField {
+                field: "traces.input_events",
+                message: format!("trace `{}` has an invalid reset prefix: {error}", trace.id),
+            })?;
+        Some(report.final_snapshot.coordinate().clone())
+    };
+    if epoch_start.predecessor != expected_predecessor {
+        return Err(FixtureError::InvalidField {
+            field: "traces.input_events",
+            message: format!("trace `{}` reset predecessor is not exact", trace.id),
         });
     }
     Ok(())

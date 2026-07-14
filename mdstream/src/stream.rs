@@ -10,20 +10,22 @@ mod machine;
 mod mode;
 
 pub use self::builder::MdStreamBuilder;
+pub(crate) use self::input::NewlineNormalizer;
 
 use self::block_machine::BlockMachine;
 use self::input::LineBuffer;
 use self::mode::BlockMode;
 
 use crate::boundary::BoundaryPlugin;
+use crate::engine::StreamEngine;
 use crate::extensions::{BoundaryRegistry, PendingTransformers};
 use crate::options::{FootnotesMode, Options};
 use crate::pending::{PendingDisplayPipeline, render_pending_display};
 use crate::semantics::DocumentSemantics;
 use crate::transform::PendingTransformer;
-use crate::types::{Block, BlockId, BlockKind, BlockStatus, PendingBlockRef};
+use crate::types::{Block, BlockId, BlockKind, BlockStatus, PendingBlockRef, Update, UpdateRef};
 
-pub struct MdStream {
+pub(crate) struct LegacyFramer {
     opts: Options,
     input: LineBuffer,
 
@@ -34,7 +36,6 @@ pub struct MdStream {
     pending_transformers: PendingTransformers,
     boundaries: BoundaryRegistry,
     semantics: DocumentSemantics,
-    last_finalized_buffer_len: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,10 +45,11 @@ struct PendingInfo {
     raw_start: usize,
 }
 
-impl std::fmt::Debug for MdStream {
+impl std::fmt::Debug for LegacyFramer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MdStream")
+        f.debug_struct("LegacyFramer")
             .field("buffer_len", &self.input.len())
+            .field("retained_base", &self.input.retained_base())
             .field("lines_len", &self.input.line_count())
             .field("committed_len", &self.committed.len())
             .field("processed_line", &self.block_machine.processed_line)
@@ -61,12 +63,11 @@ impl std::fmt::Debug for MdStream {
             .field("pending_transformers", &self.pending_transformers)
             .field("boundaries", &self.boundaries)
             .field("semantics", &self.semantics)
-            .field("last_finalized_buffer_len", &self.last_finalized_buffer_len)
             .finish()
     }
 }
 
-impl MdStream {
+impl LegacyFramer {
     pub fn new(opts: Options) -> Self {
         let mut opts = opts;
         // Keep the window in one place: Options and TerminatorOptions should agree.
@@ -80,20 +81,7 @@ impl MdStream {
             pending_transformers: PendingTransformers::default(),
             boundaries: BoundaryRegistry::default(),
             semantics: DocumentSemantics::default(),
-            last_finalized_buffer_len: 0,
         }
-    }
-
-    pub fn builder(opts: Options) -> MdStreamBuilder {
-        MdStreamBuilder::new(opts)
-    }
-
-    /// Construct a stream with Streamdown-compatible defaults for incomplete links/images.
-    ///
-    /// This keeps the built-in terminator for emphasis/inline code/etc, but delegates incomplete
-    /// link/image handling to the built-in pending transformers.
-    pub fn streamdown_defaults() -> Self {
-        MdStreamBuilder::streamdown_defaults().build()
     }
 
     pub fn push_pending_transformer<T>(&mut self, transformer: T)
@@ -104,14 +92,6 @@ impl MdStream {
         self.pending_display.clear();
     }
 
-    pub fn with_pending_transformer<T>(mut self, transformer: T) -> Self
-    where
-        T: PendingTransformer + 'static,
-    {
-        self.push_pending_transformer(transformer);
-        self
-    }
-
     pub fn push_boundary_plugin<T>(&mut self, plugin: T)
     where
         T: BoundaryPlugin + 'static,
@@ -120,16 +100,12 @@ impl MdStream {
         self.pending_display.clear();
     }
 
-    pub fn with_boundary_plugin<T>(mut self, plugin: T) -> Self
-    where
-        T: BoundaryPlugin + 'static,
-    {
-        self.push_boundary_plugin(plugin);
-        self
-    }
-
     pub fn buffer(&self) -> &str {
         self.input.as_str()
+    }
+
+    pub(crate) fn retained_source_base(&self) -> usize {
+        self.input.retained_base()
     }
 
     pub fn snapshot_blocks(&mut self) -> Vec<Block> {
@@ -197,17 +173,6 @@ impl MdStream {
             &self.opts.terminator,
             self.pending_transformers.as_mut_slice(),
         );
-    }
-
-    fn current_pending_ref_readonly(&self) -> Option<PendingBlockRef<'_>> {
-        let info = self.current_pending_info()?;
-        let raw = &self.input.as_str()[info.raw_start..];
-        Some(PendingBlockRef {
-            id: info.id,
-            kind: info.kind,
-            raw,
-            display: self.pending_display.display(),
-        })
     }
 
     fn current_code_fence_mode(&self) -> Option<(char, usize)> {
@@ -313,7 +278,127 @@ impl MdStream {
         self.pending_transformers.reset_all();
         self.boundaries.reset_all();
         self.semantics.reset();
-        self.last_finalized_buffer_len = 0;
+    }
+}
+
+impl Default for LegacyFramer {
+    fn default() -> Self {
+        Self::new(Options::default())
+    }
+}
+
+/// Temporary 0.3 compatibility facade over the canonical [`StreamEngine`].
+///
+/// New integrations should consume `StreamEngine` change sets directly. This
+/// facade remains only until the remaining Rust and Tokio consumers migrate.
+pub struct MdStream {
+    engine: StreamEngine,
+    borrowed_update: Update,
+}
+
+impl std::fmt::Debug for MdStream {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MdStream")
+            .field("engine", &self.engine)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MdStream {
+    pub fn new(options: Options) -> Self {
+        Self {
+            engine: StreamEngine::new_legacy(options),
+            borrowed_update: Update::empty(),
+        }
+    }
+
+    pub fn builder(options: Options) -> MdStreamBuilder {
+        MdStreamBuilder::new(options)
+    }
+
+    pub fn streamdown_defaults() -> Self {
+        MdStreamBuilder::streamdown_defaults().build()
+    }
+
+    pub fn append(&mut self, chunk: &str) -> Update {
+        self.engine.append_legacy(chunk)
+    }
+
+    pub fn append_ref(&mut self, chunk: &str) -> UpdateRef<'_> {
+        self.borrowed_update = self.engine.append_legacy(chunk);
+        self.borrowed_update_ref()
+    }
+
+    pub fn finalize(&mut self) -> Update {
+        self.engine.finish_legacy()
+    }
+
+    pub fn finalize_ref(&mut self) -> UpdateRef<'_> {
+        self.borrowed_update = self.engine.finish_legacy();
+        self.borrowed_update_ref()
+    }
+
+    pub fn reset(&mut self) {
+        self.engine.reset_legacy();
+        self.borrowed_update = Update::empty();
+    }
+
+    pub fn push_pending_transformer<T>(&mut self, transformer: T)
+    where
+        T: PendingTransformer + 'static,
+    {
+        self.engine.push_pending_transformer_legacy(transformer);
+    }
+
+    pub fn with_pending_transformer<T>(mut self, transformer: T) -> Self
+    where
+        T: PendingTransformer + 'static,
+    {
+        self.push_pending_transformer(transformer);
+        self
+    }
+
+    pub fn push_boundary_plugin<T>(&mut self, plugin: T)
+    where
+        T: BoundaryPlugin + 'static,
+    {
+        self.engine.push_boundary_plugin_legacy(plugin);
+    }
+
+    pub fn with_boundary_plugin<T>(mut self, plugin: T) -> Self
+    where
+        T: BoundaryPlugin + 'static,
+    {
+        self.push_boundary_plugin(plugin);
+        self
+    }
+
+    pub fn buffer(&self) -> &str {
+        self.engine.legacy_buffer()
+    }
+
+    pub fn snapshot_blocks(&mut self) -> Vec<Block> {
+        self.engine.legacy_snapshot_blocks()
+    }
+
+    fn borrowed_update_ref(&self) -> UpdateRef<'_> {
+        let pending = self
+            .borrowed_update
+            .pending
+            .as_ref()
+            .map(|block| PendingBlockRef {
+                id: block.id,
+                kind: block.kind,
+                raw: block.raw.as_str(),
+                display: block.display.as_deref(),
+            });
+        UpdateRef {
+            committed: self.borrowed_update.committed.as_slice(),
+            pending,
+            reset: self.borrowed_update.reset,
+            invalidated: self.borrowed_update.invalidated.clone(),
+        }
     }
 }
 

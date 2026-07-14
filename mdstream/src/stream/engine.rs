@@ -1,7 +1,7 @@
-use super::MdStream;
+use super::LegacyFramer;
 use super::mode::BlockMode;
 use crate::options::FootnotesMode;
-use crate::types::{Block, BlockId, BlockKind, BlockStatus, Update, UpdateRef};
+use crate::types::{Block, BlockId, BlockKind, BlockStatus, Update};
 
 pub(super) struct AppendCtx<'a> {
     committed_out: Option<&'a mut Vec<Block>>,
@@ -29,11 +29,11 @@ impl<'a> AppendCtx<'a> {
     }
 }
 
-impl MdStream {
-    pub fn append(&mut self, chunk: &str) -> Update {
+impl LegacyFramer {
+    pub(crate) fn append_normalized(&mut self, suffix: &str) -> Update {
         let mut update = Update::empty();
         let mut ctx = AppendCtx::new(Some(&mut update.committed));
-        self.append_core(chunk, &mut ctx);
+        self.append_core(suffix, &mut ctx);
         update.reset = ctx.reset;
         update.invalidated = ctx.invalidated;
         self.ensure_current_pending_display();
@@ -41,46 +41,29 @@ impl MdStream {
         update
     }
 
-    pub fn append_ref(&mut self, chunk: &str) -> UpdateRef<'_> {
-        let committed_start = self.committed.len();
-        let mut ctx = AppendCtx::new(None);
-        self.append_core(chunk, &mut ctx);
-        let committed_start = if ctx.reset { 0 } else { committed_start };
-        self.ensure_current_pending_display();
-        let pending = self.current_pending_ref_readonly();
-        let committed = &self.committed[committed_start..];
-        UpdateRef {
-            committed,
-            pending,
-            reset: ctx.reset,
-            invalidated: ctx.invalidated,
-        }
-    }
-
-    fn append_core(&mut self, chunk: &str, ctx: &mut AppendCtx<'_>) {
-        if chunk.is_empty() && !self.input.has_pending_cr() {
+    fn append_core(&mut self, suffix: &str, ctx: &mut AppendCtx<'_>) {
+        if suffix.is_empty() {
             return;
         }
 
         let footnotes_before = self.semantics.footnotes_detected();
-        let chunk = self.input.normalize_newlines_cow(chunk);
 
         // Best-effort incremental update for code-fence pending display.
         let code_fence = self.current_code_fence_mode();
         let pending_display_kept = self
             .pending_display
-            .try_incremental_code_fence_append(chunk.as_ref(), code_fence);
+            .try_incremental_code_fence_append(suffix, code_fence);
         if !pending_display_kept {
             self.pending_display.clear();
         }
 
-        self.semantics.observe_chunk_for_footnotes(chunk.as_ref());
+        self.semantics.observe_chunk_for_footnotes(suffix);
 
         let enter_single_block_footnotes = !footnotes_before
             && self.semantics.footnotes_detected()
             && self.opts.footnotes == FootnotesMode::SingleBlock;
 
-        self.input.append_normalized(chunk.as_ref());
+        self.input.append_normalized(suffix);
 
         if enter_single_block_footnotes {
             self.reset_for_single_block_footnotes(ctx);
@@ -116,17 +99,12 @@ impl MdStream {
             .reset_for_single_block(self.input.line_count());
     }
 
-    pub fn finalize(&mut self) -> Update {
-        if !self.input.has_pending_cr() && self.input.len() == self.last_finalized_buffer_len {
-            return Update::empty();
-        }
-
+    pub(crate) fn finish(&mut self, eof_suffix: &str) -> Update {
         let mut update = Update::empty();
         let mut ctx = AppendCtx::new(Some(&mut update.committed));
 
-        if self.input.has_pending_cr() {
-            // Treat a trailing '\r' at EOF as a newline.
-            self.input.flush_pending_cr_at_eof();
+        if !eof_suffix.is_empty() {
+            self.append_core(eof_suffix, &mut ctx);
         }
 
         if self.opts.footnotes == FootnotesMode::SingleBlock && self.semantics.footnotes_detected()
@@ -134,6 +112,7 @@ impl MdStream {
             if !self.input.is_empty() {
                 if self.input.as_str().trim().is_empty() {
                     update.pending = None;
+                    update.invalidated = ctx.invalidated;
                     return update;
                 }
                 let block = Block {
@@ -147,7 +126,6 @@ impl MdStream {
             }
             update.pending = None;
             self.maybe_compact_buffer();
-            self.last_finalized_buffer_len = self.input.len();
             update.invalidated = ctx.invalidated;
             return update;
         }
@@ -168,6 +146,7 @@ impl MdStream {
                 let raw = self.input.as_str()[start_off..end_off].to_string();
                 if raw.trim().is_empty() {
                     update.pending = None;
+                    update.invalidated = ctx.invalidated;
                     return update;
                 }
                 let block = Block {
@@ -183,20 +162,7 @@ impl MdStream {
         }
         update.pending = None;
         self.maybe_compact_buffer();
-        self.last_finalized_buffer_len = self.input.len();
         update.invalidated = ctx.invalidated;
         update
-    }
-
-    pub fn finalize_ref(&mut self) -> UpdateRef<'_> {
-        let committed_start = self.committed.len();
-        let update = self.finalize();
-        let committed_start = if update.reset { 0 } else { committed_start };
-        UpdateRef {
-            committed: &self.committed[committed_start..],
-            pending: None,
-            reset: update.reset,
-            invalidated: update.invalidated,
-        }
     }
 }

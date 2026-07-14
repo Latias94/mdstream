@@ -1,5 +1,6 @@
 pub mod analyze;
 pub mod boundary;
+pub mod engine;
 mod extensions;
 pub mod options;
 mod pending;
@@ -16,6 +17,7 @@ pub mod adapters;
 
 pub use analyze::*;
 pub use boundary::*;
+pub use engine::*;
 pub use options::*;
 pub use pending::{TerminatorOptions, terminate_markdown};
 pub use state::*;
