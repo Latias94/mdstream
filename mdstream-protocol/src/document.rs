@@ -19,6 +19,7 @@ pub struct Document {
     last_payload_digest: PayloadDigest,
     lifecycle: DocumentLifecycle,
     source: String,
+    projection_cursor: SourceCursor,
     roots: ChildList,
     nodes: BTreeMap<NodeId, ContentNode>,
     provisional_nodes: BTreeSet<NodeId>,
@@ -41,6 +42,7 @@ impl Document {
             last_payload_digest: digest,
             lifecycle: DocumentLifecycle::Open,
             source: String::new(),
+            projection_cursor: SourceCursor::new(0),
             roots: ChildList::empty(),
             nodes: BTreeMap::new(),
             provisional_nodes: BTreeSet::new(),
@@ -77,6 +79,7 @@ impl Document {
             last_payload_digest: snapshot.last_payload_digest().clone(),
             lifecycle: snapshot.lifecycle(),
             source: snapshot.source().to_string(),
+            projection_cursor: snapshot.projection_cursor(),
             roots: clone_child_list_owned(snapshot.roots()),
             nodes,
             provisional_nodes,
@@ -98,6 +101,25 @@ impl Document {
 
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// Returns the exclusive source frontier represented by the canonical projection.
+    pub const fn projection_cursor(&self) -> SourceCursor {
+        self.projection_cursor
+    }
+
+    /// Returns the canonical source range not yet represented by the projection.
+    pub const fn pending_source_range(&self) -> crate::SourceRange {
+        crate::SourceRange::new(self.projection_cursor, self.coordinate.source_cursor)
+    }
+
+    /// Returns the canonical source suffix not yet represented by the projection.
+    pub fn pending_source(&self) -> &str {
+        let start = usize::try_from(self.projection_cursor.get())
+            .expect("canonical projection cursors fit the source address space");
+        self.source
+            .get(start..)
+            .expect("canonical projection cursors are UTF-8 boundaries")
     }
 
     pub fn roots(&self) -> &ChildList {
@@ -138,15 +160,16 @@ impl Document {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot::from_canonical_parts(
-            self.coordinate.clone(),
-            self.last_payload_digest.clone(),
-            self.lifecycle,
-            self.source.clone(),
-            clone_child_list_owned(&self.roots),
-            self.nodes.values().map(clone_node_owned).collect(),
-            self.resources.values().cloned().collect(),
-        )
+        Snapshot::from_canonical_parts(crate::wire::CanonicalSnapshotParts {
+            coordinate: self.coordinate.clone(),
+            last_payload_digest: self.last_payload_digest.clone(),
+            lifecycle: self.lifecycle,
+            source: self.source.clone(),
+            projection_cursor: self.projection_cursor,
+            roots: clone_child_list_owned(&self.roots),
+            nodes: self.nodes.values().map(clone_node_owned).collect(),
+            resources: self.resources.values().cloned().collect(),
+        })
     }
 }
 
@@ -242,6 +265,10 @@ impl Reducer {
     ///
     /// Invalid changes never partially mutate the retained document.
     pub fn apply(&mut self, change: ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
+        self.apply_ref(&change)
+    }
+
+    fn apply_ref(&mut self, change: &ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
         if matches!(self.control, Control::NeedsSnapshot { .. }) && change.epoch_start().is_none() {
             return Err(ProtocolError::NeedsSnapshot);
         }
@@ -264,9 +291,18 @@ impl Reducer {
     /// prior routing state and metrics; the retained document is already
     /// transactional under [`Self::apply`].
     pub fn apply_producer(&mut self, change: ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
+        self.apply_producer_ref(&change)
+    }
+
+    /// Borrowed producer apply that leaves the authored change available for
+    /// transport after canonical validation.
+    pub fn apply_producer_ref(
+        &mut self,
+        change: &ChangeSet,
+    ) -> Result<ApplyOutcome, ProtocolError> {
         let control = self.control.clone();
         let metrics = self.metrics;
-        match self.apply(change) {
+        match self.apply_ref(change) {
             Ok(outcome @ (ApplyOutcome::Applied { .. } | ApplyOutcome::Recovered { .. })) => {
                 Ok(outcome)
             }
@@ -395,6 +431,11 @@ impl Reducer {
                 "same-epoch snapshot source cursor cannot move backwards".to_string(),
             ));
         }
+        if snapshot.projection_cursor() < retained.projection_cursor {
+            return Err(ProtocolError::InvalidSnapshot(
+                "same-epoch snapshot projection cursor cannot move backwards".to_string(),
+            ));
+        }
         if retained.lifecycle == DocumentLifecycle::Finalized
             && snapshot.lifecycle() != DocumentLifecycle::Finalized
         {
@@ -446,7 +487,7 @@ impl Reducer {
         Ok(SnapshotProgression::Advanced)
     }
 
-    fn apply_initial_epoch(&mut self, change: ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
+    fn apply_initial_epoch(&mut self, change: &ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
         let Some(epoch_start) = change.epoch_start() else {
             return Err(ProtocolError::InvalidEpochStart {
                 current: None,
@@ -463,7 +504,7 @@ impl Reducer {
         self.install_epoch(change, false)
     }
 
-    fn apply_ready(&mut self, change: ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
+    fn apply_ready(&mut self, change: &ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
         let document = self
             .document
             .as_ref()
@@ -479,7 +520,7 @@ impl Reducer {
         }
         if change.epoch() > current.epoch {
             if change.epoch_start().is_some() {
-                self.validate_ready_predecessor(&change, &current)?;
+                self.validate_ready_predecessor(change, &current)?;
                 change.validate_complete(self.limits)?;
                 return self.install_epoch(change, true);
             }
@@ -533,7 +574,7 @@ impl Reducer {
         }
         change.validate_complete(self.limits)?;
 
-        let staged = stage_document(document, &change, self.limits);
+        let staged = stage_document(document, change, self.limits);
         match staged {
             Ok(staged) => self.commit_ready(change, staged),
             Err(StageFailure::Divergence(reason)) => Ok(self.enter_recovery(reason)),
@@ -558,7 +599,7 @@ impl Reducer {
         Ok(())
     }
 
-    fn apply_recovery_epoch(&mut self, change: ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
+    fn apply_recovery_epoch(&mut self, change: &ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
         let Control::NeedsSnapshot {
             last_good,
             last_digest,
@@ -608,13 +649,13 @@ impl Reducer {
 
     fn install_epoch(
         &mut self,
-        change: ChangeSet,
+        change: &ChangeSet,
         recovered: bool,
     ) -> Result<ApplyOutcome, ProtocolError> {
         let digest = change.payload_digest();
         let blank = Document::blank(change.epoch(), change.change_id().clone(), digest);
         let staged =
-            stage_document(&blank, &change, self.limits).map_err(|failure| match failure {
+            stage_document(&blank, change, self.limits).map_err(|failure| match failure {
                 StageFailure::Divergence(_) => ProtocolError::InvalidChange(
                     "EpochStart diverged from its empty document".to_string(),
                 ),
@@ -623,7 +664,7 @@ impl Reducer {
         let staged_impact = staged.impact.clone();
         let stats = staged.stats;
         let mut replacement = blank;
-        commit_document(&mut replacement, &change, staged);
+        commit_document(&mut replacement, change, staged);
         let impact = if recovered || self.document.is_some() {
             replacement_impact(self.document.as_ref(), &replacement, true)
         } else {
@@ -642,7 +683,7 @@ impl Reducer {
 
     fn commit_ready(
         &mut self,
-        change: ChangeSet,
+        change: &ChangeSet,
         staged: StagedChange,
     ) -> Result<ApplyOutcome, ProtocolError> {
         let impact = staged.impact.clone();
@@ -652,7 +693,7 @@ impl Reducer {
             .document
             .as_mut()
             .expect("ready reducer has a document");
-        commit_document(document, &change, staged);
+        commit_document(document, change, staged);
         let coordinate = document.coordinate.clone();
         self.control = Control::Ready;
         self.record_apply(operation_count, stats);
@@ -699,6 +740,7 @@ fn snapshot_matches_document(snapshot: &Snapshot, document: &Document) -> bool {
         && snapshot.last_payload_digest() == &document.last_payload_digest
         && snapshot.lifecycle() == document.lifecycle
         && snapshot.source() == document.source
+        && snapshot.projection_cursor() == document.projection_cursor
         && snapshot.roots() == &document.roots
         && snapshot.nodes().len() == document.nodes.len()
         && snapshot
@@ -743,6 +785,7 @@ struct StagedChange {
     metadata_bytes: usize,
     structural_items: usize,
     resulting_cursor: SourceCursor,
+    projection_cursor: SourceCursor,
     finish: bool,
     impact: ChangeImpact,
     stats: ValidationStats,
@@ -789,6 +832,7 @@ fn stage_document(
     let mut nodes = BTreeMap::<NodeId, Option<ContentNode>>::new();
     let mut resources = BTreeMap::<ResourceId, Option<SemanticResource>>::new();
     let mut structures = BTreeMap::<ChildListOwner, StructureEdit>::new();
+    let mut projection_cursor = document.projection_cursor;
     let mut finish = false;
     let mut staging_work_steps = 0usize;
     let mut child_ids_copied = 0usize;
@@ -809,11 +853,41 @@ fn stage_document(
 
     for operation in change.operations() {
         match operation {
+            ProjectionOp::AdvanceProjection {
+                expected_cursor,
+                new_cursor,
+            } => {
+                if *expected_cursor != document.projection_cursor {
+                    return Err(StageFailure::Divergence(
+                        RecoveryReason::ProjectionDivergence,
+                    ));
+                }
+                if *new_cursor <= *expected_cursor {
+                    return Err(ProtocolError::InvalidChange(
+                        "projection cursor advances must move strictly forward".to_string(),
+                    )
+                    .into());
+                }
+                if *new_cursor > resulting_cursor {
+                    return Err(ProtocolError::InvalidChange(
+                        "projection cursor cannot exceed the resulting source cursor".to_string(),
+                    )
+                    .into());
+                }
+                crate::SourceRange::new(*new_cursor, *new_cursor)
+                    .validate_parts(&document.source, &change.source().suffix)
+                    .map_err(|_| {
+                        ProtocolError::InvalidChange(
+                            "projection cursor must be a canonical UTF-8 boundary".to_string(),
+                        )
+                    })?;
+                projection_cursor = *new_cursor;
+            }
             ProjectionOp::InsertNode { node } => {
                 if view_node(node.id, document, &nodes).is_some() {
                     return Err(ProtocolError::DuplicateNode(node.id).into());
                 }
-                if !node.children.children.is_empty() {
+                if !node.children.is_empty() {
                     return Err(ProtocolError::InvalidChange(
                         "inserted nodes must attach children through SpliceChildren".to_string(),
                     )
@@ -926,7 +1000,7 @@ fn stage_document(
                 let current = view_child_list(*owner, document, &nodes).ok_or_else(|| {
                     ProtocolError::InvalidChange("missing child-list owner".into())
                 })?;
-                if &current.version != expected_version {
+                if current.version() != expected_version {
                     return Err(StageFailure::Divergence(
                         RecoveryReason::StructureDivergence,
                     ));
@@ -942,14 +1016,13 @@ fn stage_document(
                 let end = start.checked_add(delete_count).ok_or_else(|| {
                     ProtocolError::InvalidChange("splice range overflow".to_string())
                 })?;
-                if start > current.children.len() || end > current.children.len() {
+                if start > current.len() || end > current.len() {
                     return Err(ProtocolError::InvalidChange(
                         "splice range exceeds the current child list".to_string(),
                     )
                     .into());
                 }
                 let resulting_count = current
-                    .children
                     .len()
                     .checked_sub(delete_count)
                     .and_then(|count| count.checked_add(insert.len()))
@@ -970,7 +1043,7 @@ fn stage_document(
                     )
                     .into());
                 }
-                let edit = if start == current.children.len() && delete_count == 0 {
+                let edit = if start == current.len() && delete_count == 0 {
                     let derived = current.version_after_append(insert);
                     if &derived != new_version {
                         return Err(ProtocolError::InvalidChange(
@@ -986,9 +1059,9 @@ fn stage_document(
                     }
                 } else {
                     child_ids_copied = child_ids_copied
-                        .saturating_add(current.children.len())
+                        .saturating_add(current.len())
                         .saturating_add(insert.len());
-                    let mut children = current.children.as_ref().clone();
+                    let mut children = current.as_slice().to_vec();
                     children.splice(start..end, insert.iter().copied());
                     let replacement = ChildList::new(children);
                     if &replacement == current {
@@ -997,7 +1070,7 @@ fn stage_document(
                         )
                         .into());
                     }
-                    if &replacement.version != new_version {
+                    if replacement.version() != new_version {
                         return Err(ProtocolError::InvalidChange(
                             "splice new_version does not match the resulting child list"
                                 .to_string(),
@@ -1127,6 +1200,7 @@ fn stage_document(
                 .ok_or(ProtocolError::MetadataOverflow)?;
         }
         if let Some(node) = replacement {
+            validate_change_projection_coverage(node, projection_cursor)?;
             let bytes = if document.nodes.contains_key(id) {
                 node.projection().validate_local_parts(
                     node.id,
@@ -1267,15 +1341,25 @@ fn stage_document(
     relationship_steps = relationship_steps
         .saturating_add(validate_resource_references(document, &nodes, &resources)?);
 
-    if finish && provisional_node_count != 0 {
-        return Err(ProtocolError::IllegalLifecycle(
-            "finalized documents cannot contain provisional nodes".to_string(),
-        )
-        .into());
+    if finish {
+        if projection_cursor != resulting_cursor {
+            return Err(ProtocolError::IllegalLifecycle(
+                "finalized documents require projection coverage through the source cursor"
+                    .to_string(),
+            )
+            .into());
+        }
+        if provisional_node_count != 0 {
+            return Err(ProtocolError::IllegalLifecycle(
+                "finalized documents cannot contain provisional nodes".to_string(),
+            )
+            .into());
+        }
     }
 
     let mut impact = staged_impact(document, &nodes, &resources, &structures, &parents);
     impact.source_changed = !change.source().suffix.is_empty();
+    impact.projection_changed = projection_cursor != document.projection_cursor;
     impact.lifecycle_changed = finish;
     Ok(StagedChange {
         nodes,
@@ -1285,6 +1369,7 @@ fn stage_document(
         metadata_bytes,
         structural_items,
         resulting_cursor,
+        projection_cursor,
         finish,
         impact,
         stats: ValidationStats {
@@ -1365,13 +1450,13 @@ fn collect_final_subtree_seeds(
         let owner = ChildListOwner::Node { node_id: id };
         match structures.get(&owner) {
             Some(StructureEdit::Append { insert, .. }) => {
-                pending.extend(node.children.children.iter().copied());
+                pending.extend(node.children.iter().copied());
                 pending.extend(insert.iter().copied());
             }
             Some(StructureEdit::Replace(replacement)) => {
-                pending.extend(replacement.children.iter().copied());
+                pending.extend(replacement.iter().copied());
             }
-            None => pending.extend(node.children.children.iter().copied()),
+            None => pending.extend(node.children.iter().copied()),
         }
     }
     Ok(steps)
@@ -1381,6 +1466,7 @@ fn validate_direct_targets(operations: &[ProjectionOp]) -> Result<(), StageFailu
     let mut nodes = BTreeSet::new();
     let mut resources = BTreeSet::new();
     let mut structures = BTreeSet::new();
+    let mut projection_advance = false;
     let mut finish = false;
     for operation in operations {
         if let Some(target) = operation.node_target() {
@@ -1401,6 +1487,15 @@ fn validate_direct_targets(operations: &[ProjectionOp]) -> Result<(), StageFailu
                 .into());
             }
         }
+        if matches!(operation, ProjectionOp::AdvanceProjection { .. }) {
+            if projection_advance {
+                return Err(ProtocolError::InvalidChange(
+                    "projection cursor may advance at most once per change".to_string(),
+                )
+                .into());
+            }
+            projection_advance = true;
+        }
         if matches!(operation, ProjectionOp::FinishDocument) {
             if finish {
                 return Err(ProtocolError::InvalidChange(
@@ -1410,6 +1505,20 @@ fn validate_direct_targets(operations: &[ProjectionOp]) -> Result<(), StageFailu
             }
             finish = true;
         }
+    }
+    Ok(())
+}
+
+fn validate_change_projection_coverage(
+    node: &ContentNode,
+    projection_cursor: SourceCursor,
+) -> Result<(), StageFailure> {
+    if node.source.end > projection_cursor || node.body.end > projection_cursor {
+        return Err(ProtocolError::InvalidChange(format!(
+            "node {} source and body ranges must end at or before projection cursor {}",
+            node.id, projection_cursor
+        ))
+        .into());
     }
     Ok(())
 }
@@ -1455,13 +1564,13 @@ fn collect_subtree(
         result.push(id);
         match structures.get(&ChildListOwner::Node { node_id: id }) {
             Some(StructureEdit::Append { insert, .. }) => {
-                pending.extend(node.children.children.iter().copied());
+                pending.extend(node.children.iter().copied());
                 pending.extend(insert.iter().copied());
             }
             Some(StructureEdit::Replace(replacement)) => {
-                pending.extend(replacement.children.iter().copied());
+                pending.extend(replacement.iter().copied());
             }
-            None => pending.extend(node.children.children.iter().copied()),
+            None => pending.extend(node.children.iter().copied()),
         }
     }
     Ok(result)
@@ -1555,8 +1664,7 @@ fn stage_parent_index(
                 }
             }
             (None, Some(next))
-                if !next.children.children.is_empty()
-                    || requires_sequence_completeness(&next.content) =>
+                if !next.children.is_empty() || requires_sequence_completeness(&next.content) =>
             {
                 let owner = ChildListOwner::Node { node_id: *id };
                 changed_owners.insert(owner);
@@ -1592,9 +1700,9 @@ fn stage_parent_index(
                         }),
                 };
                 let old_ids = old
-                    .map(|list| list.children.iter().copied().collect::<BTreeSet<_>>())
+                    .map(|list| list.iter().copied().collect::<BTreeSet<_>>())
                     .unwrap_or_default();
-                let new_ids = new.children.iter().copied().collect::<BTreeSet<_>>();
+                let new_ids = new.iter().copied().collect::<BTreeSet<_>>();
                 for child in old_ids.difference(&new_ids) {
                     detached.insert(*child, *owner);
                 }
@@ -1715,13 +1823,9 @@ fn validate_child_list_view(
     };
     match structures.get(&owner) {
         Some(StructureEdit::Append { insert, .. }) => {
-            let resulting_count = current
-                .children
-                .len()
-                .checked_add(insert.len())
-                .ok_or_else(|| {
-                    ProtocolError::InvalidChange("child-list size overflow".to_string())
-                })?;
+            let resulting_count = current.len().checked_add(insert.len()).ok_or_else(|| {
+                ProtocolError::InvalidChange("child-list size overflow".to_string())
+            })?;
             if resulting_count > limits.max_children_per_list {
                 return Err(ProtocolError::ValueTooLarge {
                     field: "child_list.children",
@@ -1739,7 +1843,7 @@ fn validate_child_list_view(
             if force_full {
                 validate_child_slice(
                     owner,
-                    &current.children,
+                    current.as_slice(),
                     Some(insert),
                     None,
                     owner_range,
@@ -1751,12 +1855,12 @@ fn validate_child_list_view(
                 )
             } else {
                 let previous = current
-                    .children
+                    .as_slice()
                     .last()
                     .and_then(|id| view_node(*id, document, staged))
                     .map(|node| node.source.end);
                 let last_kind = current
-                    .children
+                    .as_slice()
                     .last()
                     .and_then(|id| view_node(*id, document, staged))
                     .map(|node| &node.content);
@@ -1769,7 +1873,7 @@ fn validate_child_list_view(
                     document,
                     staged,
                     parent_changes,
-                    current.children.len(),
+                    current.len(),
                     last_kind,
                 )
             }
@@ -1778,7 +1882,7 @@ fn validate_child_list_view(
             replacement.validate_local(limits)?;
             validate_child_slice(
                 owner,
-                &replacement.children,
+                replacement.as_slice(),
                 None,
                 None,
                 owner_range,
@@ -1793,7 +1897,7 @@ fn validate_child_list_view(
             current.validate_local(limits)?;
             validate_child_slice(
                 owner,
-                &current.children,
+                current.as_slice(),
                 None,
                 None,
                 owner_range,
@@ -1988,12 +2092,11 @@ fn final_child_count(
     match structures.get(&ChildListOwner::Node { node_id: id }) {
         Some(StructureEdit::Append { insert, .. }) => node
             .children
-            .children
             .len()
             .checked_add(insert.len())
             .ok_or_else(|| ProtocolError::InvalidChange("child-list size overflow".to_string())),
-        Some(StructureEdit::Replace(replacement)) => Ok(replacement.children.len()),
-        None => Ok(node.children.children.len()),
+        Some(StructureEdit::Replace(replacement)) => Ok(replacement.len()),
+        None => Ok(node.children.len()),
     }
 }
 
@@ -2210,6 +2313,7 @@ fn staged_impact(
             .filter_map(|(id, value)| value.is_none().then_some(*id))
             .collect(),
         source_changed: false,
+        projection_changed: false,
         lifecycle_changed: false,
         roots_changed: structures.contains_key(&ChildListOwner::Document),
         full_replace: false,
@@ -2255,6 +2359,9 @@ fn replacement_impact(old: Option<&Document>, new: &Document, full_replace: bool
         changed_resources: changed_resources.into_iter().collect(),
         removed_resources,
         source_changed: old.map_or(!new.source.is_empty(), |old| old.source != new.source),
+        projection_changed: old.map_or(new.projection_cursor != SourceCursor::new(0), |old| {
+            old.projection_cursor != new.projection_cursor
+        }),
         lifecycle_changed: old.is_some_and(|old| old.lifecycle != new.lifecycle),
         roots_changed: old.is_none_or(|old| {
             old.coordinate.epoch != new.coordinate.epoch || old.roots != new.roots
@@ -2315,8 +2422,7 @@ fn commit_document(document: &mut Document, change: &ChangeSet, staged: StagedCh
                 insert,
                 new_version,
             } => {
-                std::sync::Arc::make_mut(&mut list.children).extend(insert);
-                list.version = new_version;
+                list.append_validated(insert, new_version);
             }
             StructureEdit::Replace(replacement) => *list = replacement,
         }
@@ -2344,6 +2450,7 @@ fn commit_document(document: &mut Document, change: &ChangeSet, staged: StagedCh
     }
     document.metadata_bytes = staged.metadata_bytes;
     document.structural_items = staged.structural_items;
+    document.projection_cursor = staged.projection_cursor;
     if staged.finish {
         document.lifecycle = DocumentLifecycle::Finalized;
     }
@@ -2380,6 +2487,25 @@ pub(crate) fn validate_snapshot(
             "source cursor does not match source length".to_string(),
         ));
     }
+    if snapshot.projection_cursor() > snapshot.coordinate().source_cursor {
+        return Err(ProtocolError::InvalidSnapshot(
+            "projection cursor cannot exceed the source cursor".to_string(),
+        ));
+    }
+    crate::SourceRange::new(snapshot.projection_cursor(), snapshot.projection_cursor())
+        .validate(snapshot.source())
+        .map_err(|_| {
+            ProtocolError::InvalidSnapshot(
+                "projection cursor must be a canonical UTF-8 boundary".to_string(),
+            )
+        })?;
+    if snapshot.lifecycle() == DocumentLifecycle::Finalized
+        && snapshot.projection_cursor() != snapshot.coordinate().source_cursor
+    {
+        return Err(ProtocolError::InvalidSnapshot(
+            "finalized snapshots require projection coverage through the source cursor".to_string(),
+        ));
+    }
     snapshot.roots().validate_local(limits)?;
 
     let mut metadata_bytes = 0usize;
@@ -2392,6 +2518,14 @@ pub(crate) fn validate_snapshot(
             ));
         }
         previous_node = Some(node.id);
+        if node.source.end > snapshot.projection_cursor()
+            || node.body.end > snapshot.projection_cursor()
+        {
+            return Err(ProtocolError::InvalidSnapshot(format!(
+                "node {} source and body ranges exceed the projection cursor",
+                node.id
+            )));
+        }
         metadata_bytes = metadata_bytes
             .checked_add(node.validate_local(snapshot.source(), limits)?)
             .ok_or(ProtocolError::MetadataOverflow)?;
@@ -2433,7 +2567,7 @@ pub(crate) fn validate_snapshot(
         snapshot.roots(),
         &nodes,
         &mut parents,
-        crate::SourceRange::new(SourceCursor::new(0), snapshot.coordinate().source_cursor),
+        crate::SourceRange::new(SourceCursor::new(0), snapshot.projection_cursor()),
         limits,
     )?;
     for node in nodes.values() {
@@ -2499,18 +2633,18 @@ fn preflight_snapshot_shape(
             actual: snapshot.resources().len(),
         });
     }
-    if snapshot.roots().children.len() > limits.max_children_per_list {
+    if snapshot.roots().len() > limits.max_children_per_list {
         return Err(ProtocolError::ValueTooLarge {
             field: "snapshot.roots",
             limit: limits.max_children_per_list,
-            actual: snapshot.roots().children.len(),
+            actual: snapshot.roots().len(),
         });
     }
 
-    let mut attachments = snapshot.roots().children.len();
+    let mut attachments = snapshot.roots().len();
     let mut structural_items = attachments;
     for node in snapshot.nodes() {
-        let child_count = node.children.children.len();
+        let child_count = node.children.len();
         if child_count > limits.max_children_per_list {
             return Err(ProtocolError::ValueTooLarge {
                 field: "snapshot.node.children",
@@ -2575,7 +2709,7 @@ fn validate_snapshot_child_list(
     let mut previous = None;
     let mut sequence = ChildSequenceValidator::new(owner_content);
     let mut steps = 1usize;
-    for child_id in list.children.iter() {
+    for child_id in list.iter() {
         let child = nodes
             .get(child_id)
             .ok_or(ProtocolError::MissingNode(*child_id))?;
@@ -2670,7 +2804,7 @@ fn validate_snapshot_depths(
                 &mut state,
                 &node.content,
                 node.stability,
-                node.children.children.len(),
+                node.children.len(),
             )
             .map_err(|error| match error {
                 ProtocolError::InvalidChange(message) => ProtocolError::InvalidSnapshot(message),
@@ -2719,14 +2853,14 @@ fn build_parent_index(
     nodes: &BTreeMap<NodeId, ContentNode>,
 ) -> Result<BTreeMap<NodeId, ChildListOwner>, ProtocolError> {
     let mut parents = BTreeMap::new();
-    for child in roots.children.iter() {
+    for child in roots.iter() {
         if parents.insert(*child, ChildListOwner::Document).is_some() {
             return Err(ProtocolError::DuplicateNode(*child));
         }
     }
     for node in nodes.values() {
         let owner = ChildListOwner::Node { node_id: node.id };
-        for child in node.children.children.iter() {
+        for child in node.children.iter() {
             if parents.insert(*child, owner).is_some() {
                 return Err(ProtocolError::DuplicateNode(*child));
             }

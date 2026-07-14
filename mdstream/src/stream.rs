@@ -17,7 +17,6 @@ use self::input::LineBuffer;
 use self::mode::BlockMode;
 
 use crate::boundary::BoundaryPlugin;
-use crate::engine::StreamEngine;
 use crate::extensions::{BoundaryRegistry, PendingTransformers};
 use crate::options::{FootnotesMode, Options};
 use crate::pending::{PendingDisplayPipeline, render_pending_display};
@@ -102,10 +101,6 @@ impl LegacyFramer {
 
     pub fn buffer(&self) -> &str {
         self.input.as_str()
-    }
-
-    pub(crate) fn retained_source_base(&self) -> usize {
-        self.input.retained_base()
     }
 
     pub fn snapshot_blocks(&mut self) -> Vec<Block> {
@@ -287,12 +282,15 @@ impl Default for LegacyFramer {
     }
 }
 
-/// Temporary 0.3 compatibility facade over the canonical [`StreamEngine`].
+/// Temporary 0.3 compatibility facade over the legacy block framer.
 ///
-/// New integrations should consume `StreamEngine` change sets directly. This
-/// facade remains only until the remaining Rust and Tokio consumers migrate.
+/// New integrations should consume [`crate::StreamEngine`] change sets
+/// directly. This facade intentionally performs only newline normalization and
+/// legacy block framing until the remaining Rust and Tokio consumers migrate.
 pub struct MdStream {
-    engine: StreamEngine,
+    normalizer: NewlineNormalizer,
+    framer: LegacyFramer,
+    finalized: bool,
     borrowed_update: Update,
 }
 
@@ -300,7 +298,9 @@ impl std::fmt::Debug for MdStream {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("MdStream")
-            .field("engine", &self.engine)
+            .field("normalizer", &self.normalizer)
+            .field("framer", &self.framer)
+            .field("finalized", &self.finalized)
             .finish_non_exhaustive()
     }
 }
@@ -308,7 +308,9 @@ impl std::fmt::Debug for MdStream {
 impl MdStream {
     pub fn new(options: Options) -> Self {
         Self {
-            engine: StreamEngine::new_legacy(options),
+            normalizer: NewlineNormalizer::default(),
+            framer: LegacyFramer::new(options),
+            finalized: false,
             borrowed_update: Update::empty(),
         }
     }
@@ -322,25 +324,27 @@ impl MdStream {
     }
 
     pub fn append(&mut self, chunk: &str) -> Update {
-        self.engine.append_legacy(chunk)
+        self.append_legacy(chunk)
     }
 
     pub fn append_ref(&mut self, chunk: &str) -> UpdateRef<'_> {
-        self.borrowed_update = self.engine.append_legacy(chunk);
+        self.borrowed_update = self.append_legacy(chunk);
         self.borrowed_update_ref()
     }
 
     pub fn finalize(&mut self) -> Update {
-        self.engine.finish_legacy()
+        self.finish_legacy()
     }
 
     pub fn finalize_ref(&mut self) -> UpdateRef<'_> {
-        self.borrowed_update = self.engine.finish_legacy();
+        self.borrowed_update = self.finish_legacy();
         self.borrowed_update_ref()
     }
 
     pub fn reset(&mut self) {
-        self.engine.reset_legacy();
+        self.normalizer = NewlineNormalizer::default();
+        self.framer.reset();
+        self.finalized = false;
         self.borrowed_update = Update::empty();
     }
 
@@ -348,7 +352,7 @@ impl MdStream {
     where
         T: PendingTransformer + 'static,
     {
-        self.engine.push_pending_transformer_legacy(transformer);
+        self.framer.push_pending_transformer(transformer);
     }
 
     pub fn with_pending_transformer<T>(mut self, transformer: T) -> Self
@@ -363,7 +367,7 @@ impl MdStream {
     where
         T: BoundaryPlugin + 'static,
     {
-        self.engine.push_boundary_plugin_legacy(plugin);
+        self.framer.push_boundary_plugin(plugin);
     }
 
     pub fn with_boundary_plugin<T>(mut self, plugin: T) -> Self
@@ -375,11 +379,34 @@ impl MdStream {
     }
 
     pub fn buffer(&self) -> &str {
-        self.engine.legacy_buffer()
+        self.framer.buffer()
     }
 
     pub fn snapshot_blocks(&mut self) -> Vec<Block> {
-        self.engine.legacy_snapshot_blocks()
+        self.framer.snapshot_blocks()
+    }
+
+    fn append_legacy(&mut self, chunk: &str) -> Update {
+        if self.finalized {
+            return Update::empty();
+        }
+        let (normalizer, suffix) = self.normalizer.append(chunk);
+        self.normalizer = normalizer;
+        if suffix.is_empty() {
+            Update::empty()
+        } else {
+            self.framer.append_normalized(&suffix)
+        }
+    }
+
+    fn finish_legacy(&mut self) -> Update {
+        if self.finalized {
+            return Update::empty();
+        }
+        let (normalizer, suffix) = self.normalizer.finish();
+        self.normalizer = normalizer;
+        self.finalized = true;
+        self.framer.finish(&suffix)
     }
 
     fn borrowed_update_ref(&self) -> UpdateRef<'_> {

@@ -1,4 +1,4 @@
-use mdstream::{EngineOutput, Options, StreamEngine};
+use mdstream::{EngineOutput, StreamEngine};
 use mdstream_conformance::{
     ChunkSchedule, NormalizedSnapshot, ProtocolTrace, TraceInputEvent, assert_trace_laws,
 };
@@ -18,7 +18,7 @@ fn apply_output(reducer: &mut Reducer, output: EngineOutput) -> usize {
 }
 
 fn replay(source: &str, schedule: ChunkSchedule) -> NormalizedSnapshot {
-    let mut engine = StreamEngine::new(Options::default());
+    let mut engine = StreamEngine::new();
     let mut reducer = Reducer::new();
     for chunk in schedule.slices(source).unwrap() {
         apply_output(&mut reducer, engine.append(chunk).unwrap());
@@ -49,7 +49,7 @@ fn every_utf8_schedule_replays_through_the_canonical_reducer() {
 #[test]
 fn one_byte_appends_emit_only_linear_normalized_source_suffixes() {
     let source = "x".repeat(4096);
-    let mut engine = StreamEngine::new(Options::default());
+    let mut engine = StreamEngine::new();
     let mut reducer = Reducer::new();
     let mut emitted_source_bytes = 0usize;
 
@@ -74,7 +74,7 @@ fn extend_trace(changes: &mut Vec<ChangeSet>, output: EngineOutput) -> usize {
 
 #[test]
 fn engine_generated_trace_satisfies_conformance_laws() {
-    let mut engine = StreamEngine::new(Options::default());
+    let mut engine = StreamEngine::new();
     let mut changes = Vec::new();
     let mut input_events = Vec::new();
 
@@ -100,7 +100,7 @@ fn engine_generated_trace_satisfies_conformance_laws() {
 
 #[test]
 fn engine_reset_trace_satisfies_epoch_isolation_laws() {
-    let mut engine = StreamEngine::new(Options::default());
+    let mut engine = StreamEngine::new();
     let mut changes = Vec::new();
     extend_trace(&mut changes, engine.append("old").unwrap());
     let setup_changes = changes.len();

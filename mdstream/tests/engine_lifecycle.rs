@@ -1,4 +1,4 @@
-use mdstream::{EngineError, EngineOutput, Options, StreamEngine};
+use mdstream::{EngineError, EngineOutput, StreamEngine};
 use mdstream_protocol::{
     ApplyOutcome, DocumentLifecycle, ProjectionOp, Reducer, Sequence, SourceCursor,
 };
@@ -27,7 +27,7 @@ fn assert_engine_matches_reducer(engine: &StreamEngine, reducer: &Reducer) {
 
 #[test]
 fn finish_is_terminal_idempotent_and_append_after_finish_is_typed() {
-    let mut engine = StreamEngine::new(Options::default());
+    let mut engine = StreamEngine::new();
     let mut reducer = Reducer::new();
 
     let appended = engine.append("# Hello").unwrap();
@@ -65,7 +65,7 @@ fn finish_is_terminal_idempotent_and_append_after_finish_is_typed() {
 
 #[test]
 fn finishing_an_empty_document_starts_and_finalizes_one_epoch() {
-    let mut engine = StreamEngine::new(Options::default());
+    let mut engine = StreamEngine::new();
     let mut reducer = Reducer::new();
 
     let output = engine.finish().unwrap();
@@ -82,29 +82,53 @@ fn finishing_an_empty_document_starts_and_finalizes_one_epoch() {
 }
 
 #[test]
-fn provisional_frame_identity_survives_growth_and_finalization() {
-    let mut engine = StreamEngine::new(Options::default());
+fn provisional_content_identity_survives_growth_and_finalization() {
+    let mut engine = StreamEngine::new();
     engine.append("a").unwrap();
-    let first = engine.snapshot().unwrap().nodes()[0].clone();
+    let first_snapshot = engine.snapshot().unwrap();
+    let root_id = first_snapshot.roots().as_slice()[0];
+    let first = first_snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.id == root_id)
+        .unwrap()
+        .clone();
     assert_eq!(
         first.stability,
         mdstream_protocol::NodeStability::Provisional
     );
 
     engine.append("b").unwrap();
-    let grown = engine.snapshot().unwrap().nodes()[0].clone();
+    let grown_snapshot = engine.snapshot().unwrap();
+    let grown = grown_snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.id == root_id)
+        .unwrap()
+        .clone();
     assert_eq!(grown.id, first.id);
     assert_ne!(grown.version, first.version);
 
     let finish = engine.finish().unwrap();
-    assert!(matches!(
-        finish.changes()[0].operations(),
-        [
-            ProjectionOp::StabilizeNode { .. },
-            ProjectionOp::FinishDocument
-        ]
-    ));
-    let stable = engine.snapshot().unwrap().nodes()[0].clone();
+    let operations = finish.changes()[0].operations();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, ProjectionOp::FinishDocument))
+            .count(),
+        1
+    );
+    assert!(operations.iter().any(|operation| matches!(
+        operation,
+        ProjectionOp::StabilizeNode { node_id, .. } if *node_id == root_id
+    )));
+    let stable_snapshot = engine.snapshot().unwrap();
+    let stable = stable_snapshot
+        .nodes()
+        .iter()
+        .find(|node| node.id == root_id)
+        .unwrap()
+        .clone();
     assert_eq!(stable.id, first.id);
     assert_ne!(stable.version, grown.version);
     assert_eq!(stable.stability, mdstream_protocol::NodeStability::Stable);
@@ -112,7 +136,7 @@ fn provisional_frame_identity_survives_growth_and_finalization() {
 
 #[test]
 fn reset_from_open_and_finalized_states_emits_empty_linked_epoch_starts() {
-    let mut engine = StreamEngine::new(Options::default());
+    let mut engine = StreamEngine::new();
     let mut reducer = Reducer::new();
 
     apply_output(&mut reducer, &engine.append("old").unwrap());
@@ -157,7 +181,7 @@ fn assert_linked_empty_reset(output: &EngineOutput, predecessor: &mdstream_proto
 
 #[test]
 fn empty_append_preserves_pending_cr_and_finish_resolves_trailing_cr() {
-    let mut split = StreamEngine::new(Options::default());
+    let mut split = StreamEngine::new();
     let mut split_reducer = Reducer::new();
     apply_output(&mut split_reducer, &split.append("A\r").unwrap());
     let before_empty = split.coordinate().cloned();
@@ -166,7 +190,7 @@ fn empty_append_preserves_pending_cr_and_finish_resolves_trailing_cr() {
     apply_output(&mut split_reducer, &split.append("\nB").unwrap());
     apply_output(&mut split_reducer, &split.finish().unwrap());
 
-    let mut whole = StreamEngine::new(Options::default());
+    let mut whole = StreamEngine::new();
     let mut whole_reducer = Reducer::new();
     apply_output(&mut whole_reducer, &whole.append("A\r\nB").unwrap());
     apply_output(&mut whole_reducer, &whole.finish().unwrap());
@@ -177,25 +201,26 @@ fn empty_append_preserves_pending_cr_and_finish_resolves_trailing_cr() {
         whole_reducer.document().unwrap().source()
     );
 
-    let mut trailing = StreamEngine::new(Options::default());
+    let mut trailing = StreamEngine::new();
     let mut trailing_reducer = Reducer::new();
     apply_output(&mut trailing_reducer, &trailing.append("A\r").unwrap());
     let finish = trailing.finish().unwrap();
     assert_eq!(finish.changes()[0].source().suffix, "\n");
-    assert!(matches!(
-        finish.changes()[0].operations(),
-        [
-            ProjectionOp::ReplaceNode { .. },
-            ProjectionOp::FinishDocument
-        ]
-    ));
+    assert_eq!(
+        finish.changes()[0]
+            .operations()
+            .iter()
+            .filter(|operation| matches!(operation, ProjectionOp::FinishDocument))
+            .count(),
+        1
+    );
     apply_output(&mut trailing_reducer, &finish);
     assert_eq!(trailing_reducer.document().unwrap().source(), "A\n");
 }
 
 #[test]
 fn producer_snapshot_matches_an_independent_reducer_after_every_transition() {
-    let mut engine = StreamEngine::new(Options::default());
+    let mut engine = StreamEngine::new();
     let mut reducer = Reducer::new();
 
     for chunk in ["A\r", "", "\n", "B"] {

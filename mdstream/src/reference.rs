@@ -1,5 +1,3 @@
-#[cfg(feature = "pulldown")]
-use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 
 use crate::options::ReferenceDefinitionsMode;
@@ -66,60 +64,6 @@ impl ReferenceIndex {
     }
 }
 
-#[derive(Debug, Default)]
-#[cfg(feature = "pulldown")]
-pub(crate) struct ReferenceDefinitions {
-    definitions: BTreeMap<String, String>,
-    prelude_text: String,
-    dirty: bool,
-}
-
-#[cfg(feature = "pulldown")]
-impl ReferenceDefinitions {
-    pub(crate) fn clear(&mut self) {
-        self.definitions.clear();
-        self.prelude_text.clear();
-        self.dirty = false;
-    }
-
-    pub(crate) fn observe_text(&mut self, raw: &str) {
-        for line in raw.split('\n') {
-            let Some((label, def_line)) = extract_reference_definition_line(line) else {
-                continue;
-            };
-            match self.definitions.entry(label) {
-                std::collections::btree_map::Entry::Vacant(v) => {
-                    v.insert(def_line);
-                    self.dirty = true;
-                }
-                std::collections::btree_map::Entry::Occupied(mut o) => {
-                    if o.get() != &def_line {
-                        o.insert(def_line);
-                        self.dirty = true;
-                    }
-                }
-            }
-        }
-    }
-
-    pub(crate) fn refresh(&mut self) {
-        if !self.dirty {
-            return;
-        }
-        self.prelude_text = self
-            .definitions
-            .values()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.dirty = false;
-    }
-
-    pub(crate) fn prelude_text(&self) -> &str {
-        &self.prelude_text
-    }
-}
-
 pub(crate) fn normalize_reference_label(label: &str) -> Option<String> {
     let trimmed = label.trim();
     if trimmed.is_empty() {
@@ -170,12 +114,6 @@ pub(crate) fn extract_reference_definition_label(line: &str) -> Option<String> {
         return None;
     }
     normalize_reference_label(label)
-}
-
-#[cfg(feature = "pulldown")]
-pub(crate) fn extract_reference_definition_line(line: &str) -> Option<(String, String)> {
-    let label = extract_reference_definition_label(line)?;
-    Some((label, line.trim_end().to_string()))
 }
 
 fn extract_reference_usages(text: &str) -> HashSet<String> {

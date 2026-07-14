@@ -14,7 +14,7 @@ use crate::{
 use mdstream_protocol::ProjectionOp;
 
 /// Current draft schema for checked-in conformance fixtures.
-pub const FIXTURE_SCHEMA: &str = "mdstream.conformance/0.4-draft.1";
+pub const FIXTURE_SCHEMA: &str = "mdstream.conformance/0.4-draft.2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

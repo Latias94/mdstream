@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
 use mdstream_protocol::{
-    BlockQuoteKind, ChangeId, ChangeSet, ChildList, ChildListOwner, CitationProtocol, ContentKind,
-    ContentNode, DocumentLifecycle, Epoch, LinkStyle, NodeId, NodeStability, NodeVersion,
-    ProjectionOp, ProtocolError, ProtocolErrorCode, ProtocolLimits, ProtocolMaturity,
-    RecoveryReason, Reducer, RequestGeneration, ResourceId, ResourceRef, ResourceVersion,
-    SemanticResource, SemanticResourceKind, SemanticText, Sequence, Snapshot, SourceCursor,
-    SourceDelta, SourceRange, StructureVersion, TableAlignment, decode_change_json,
-    decode_snapshot_json, encode_change_json, encode_snapshot_json,
+    BlockQuoteKind, ChangeId, ChangeSet, ChildList, ChildListOwner, CitationProtocol,
+    CodeBlockSyntax, CodeFenceMarker, ContentKind, ContentNode, DocumentLifecycle, Epoch,
+    LinkStyle, NodeId, NodeStability, NodeVersion, ProjectionOp, ProtocolError, ProtocolErrorCode,
+    ProtocolLimits, ProtocolMaturity, RecoveryReason, Reducer, RequestGeneration, ResourceId,
+    ResourceRef, ResourceVersion, SemanticResource, SemanticResourceKind, SemanticText, Sequence,
+    Snapshot, SourceCursor, SourceDelta, SourceRange, StructureVersion, TableAlignment,
+    decode_change_json, decode_snapshot_json, encode_change_json, encode_snapshot_json,
 };
 
 fn change_id(value: &str) -> ChangeId {
@@ -38,11 +38,11 @@ fn splice_roots(current: &ChildList, ids: Vec<NodeId>) -> ProjectionOp {
     let replacement = ChildList::new(ids.clone());
     ProjectionOp::SpliceChildren {
         owner: ChildListOwner::Document,
-        expected_version: current.version.clone(),
+        expected_version: current.version().clone(),
         start: 0,
-        delete_count: u32::try_from(current.children.len()).unwrap(),
+        delete_count: u32::try_from(current.len()).unwrap(),
         insert: ids,
-        new_version: replacement.version,
+        new_version: replacement.version().clone(),
     }
 }
 
@@ -154,7 +154,7 @@ fn structure_versions_include_all_content_identity_bits() {
     let low = ChildList::new(vec![NodeId::new(1)]);
     let high = ChildList::new(vec![NodeId::new((1_u128 << 64) | 1)]);
 
-    assert_ne!(low.version, high.version);
+    assert_ne!(low.version(), high.version());
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn opaque_identifiers_validate_length_character_set_and_string_type() {
 fn envelope_has_explicit_draft_schema_and_precise_operation_tags() {
     let change = rooted_change(leaf(0, ContentKind::Paragraph {}));
     let value = serde_json::to_value(&change).unwrap();
-    assert_eq!(value["schema"], "mdstream.content/0.4-draft.2");
+    assert_eq!(value["schema"], "mdstream.content/0.4-draft.5");
     assert_eq!(value["maturity"], "draft");
     assert_eq!(value["epoch"], "9");
     assert_eq!(value["sequence"], "0");
@@ -193,6 +193,13 @@ fn all_operation_and_nested_enum_tags_are_stable() {
         },
     );
     let operation_tags = vec![
+        (
+            "advance_projection",
+            ProjectionOp::AdvanceProjection {
+                expected_cursor: SourceCursor::new(1),
+                new_cursor: SourceCursor::new(2),
+            },
+        ),
         (
             "insert_node",
             ProjectionOp::InsertNode { node: node.clone() },
@@ -363,6 +370,10 @@ fn all_operation_and_nested_enum_tags_are_stable() {
             },
         ),
         ("source_divergence", RecoveryReason::SourceDivergence),
+        (
+            "projection_divergence",
+            RecoveryReason::ProjectionDivergence,
+        ),
         ("version_divergence", RecoveryReason::VersionDivergence),
         ("structure_divergence", RecoveryReason::StructureDivergence),
         ("resource_divergence", RecoveryReason::ResourceDivergence),
@@ -485,10 +496,11 @@ fn every_content_ir_variant_has_an_exact_stable_tag() {
         (
             "code_block",
             ContentKind::CodeBlock {
-                fenced: true,
-                language: Some("rust".to_string()),
-                meta: Some("linenos".to_string()),
-                mermaid: false,
+                syntax: CodeBlockSyntax::Fenced {
+                    marker: CodeFenceMarker::Backtick,
+                    length: 3,
+                },
+                info: Some("rust linenos".to_string()),
                 text: SemanticText::Source {},
             },
         ),
@@ -527,7 +539,9 @@ fn every_content_ir_variant_has_an_exact_stable_tag() {
             "html",
             ContentKind::Html {
                 block: true,
-                opaque: true,
+                text: SemanticText::Normalized {
+                    value: "<div>content</div>".to_string(),
+                },
             },
         ),
         (
@@ -603,12 +617,16 @@ fn semantic_text_roundtrips_entity_escape_and_code_whitespace_normalization() {
             },
         },
         ContentKind::CodeBlock {
-            fenced: false,
-            language: None,
-            meta: None,
-            mermaid: false,
+            syntax: CodeBlockSyntax::Indented,
+            info: None,
             text: SemanticText::Normalized {
                 value: "line one\nline two\n".to_string(),
+            },
+        },
+        ContentKind::Html {
+            block: true,
+            text: SemanticText::Normalized {
+                value: "<div>&amp;</div>".to_string(),
             },
         },
     ];
@@ -618,6 +636,154 @@ fn semantic_text_roundtrips_entity_escape_and_code_whitespace_normalization() {
         let bytes = serde_json::to_vec(&node).unwrap();
         assert_eq!(serde_json::from_slice::<ContentNode>(&bytes).unwrap(), node);
     }
+}
+
+#[test]
+fn code_block_syntax_roundtrips_and_language_is_derived_from_info() {
+    let fixtures = [
+        (
+            ContentKind::CodeBlock {
+                syntax: CodeBlockSyntax::Indented,
+                info: None,
+                text: SemanticText::Source {},
+            },
+            serde_json::json!({"kind": "indented"}),
+        ),
+        (
+            ContentKind::CodeBlock {
+                syntax: CodeBlockSyntax::Fenced {
+                    marker: CodeFenceMarker::Backtick,
+                    length: 3,
+                },
+                info: Some("rust linenos".to_string()),
+                text: SemanticText::Source {},
+            },
+            serde_json::json!({"kind": "fenced", "marker": "backtick", "length": 3}),
+        ),
+        (
+            ContentKind::CodeBlock {
+                syntax: CodeBlockSyntax::Fenced {
+                    marker: CodeFenceMarker::Tilde,
+                    length: 5,
+                },
+                info: Some("MeRmAiD theme=neutral`".to_string()),
+                text: SemanticText::Normalized {
+                    value: "graph TD; A-->B".to_string(),
+                },
+            },
+            serde_json::json!({"kind": "fenced", "marker": "tilde", "length": 5}),
+        ),
+    ];
+
+    for (id, (content, expected_syntax)) in fixtures.into_iter().enumerate() {
+        let node = leaf(u64::try_from(id).unwrap(), content.clone());
+        let value = serde_json::to_value(&node).unwrap();
+        assert_eq!(value["content"]["syntax"], expected_syntax);
+        assert!(value["content"].get("language").is_none());
+        assert_eq!(serde_json::from_value::<ContentNode>(value).unwrap(), node);
+    }
+
+    let mermaid = ContentKind::CodeBlock {
+        syntax: CodeBlockSyntax::Fenced {
+            marker: CodeFenceMarker::Tilde,
+            length: 3,
+        },
+        info: Some("MERMAID".to_string()),
+        text: SemanticText::Source {},
+    };
+    assert!(mermaid.is_mermaid_code_block());
+
+    let rust = ContentKind::CodeBlock {
+        syntax: CodeBlockSyntax::Fenced {
+            marker: CodeFenceMarker::Backtick,
+            length: 3,
+        },
+        info: Some("rust".to_string()),
+        text: SemanticText::Source {},
+    };
+    assert!(!rust.is_mermaid_code_block());
+    assert_eq!(rust.code_language(), Some("rust"));
+    assert!(!ContentKind::Paragraph {}.is_mermaid_code_block());
+    assert_eq!(ContentKind::Paragraph {}.code_language(), None);
+}
+
+#[test]
+fn code_block_validation_rejects_incoherent_syntax_and_info() {
+    fn assert_invalid(content: ContentKind) {
+        let change = rooted_change(leaf(99, content));
+        assert!(matches!(
+            encode_change_json(&change, usize::MAX, ProtocolLimits::default()),
+            Err(ProtocolError::InvalidChange(_))
+        ));
+    }
+
+    assert_invalid(ContentKind::CodeBlock {
+        syntax: CodeBlockSyntax::Fenced {
+            marker: CodeFenceMarker::Tilde,
+            length: 2,
+        },
+        info: None,
+        text: SemanticText::Source {},
+    });
+    assert_invalid(ContentKind::CodeBlock {
+        syntax: CodeBlockSyntax::Indented,
+        info: Some("rust".to_string()),
+        text: SemanticText::Source {},
+    });
+    assert_invalid(ContentKind::CodeBlock {
+        syntax: CodeBlockSyntax::Fenced {
+            marker: CodeFenceMarker::Tilde,
+            length: 3,
+        },
+        info: Some("   ".to_string()),
+        text: SemanticText::Source {},
+    });
+    assert_invalid(ContentKind::CodeBlock {
+        syntax: CodeBlockSyntax::Fenced {
+            marker: CodeFenceMarker::Backtick,
+            length: 3,
+        },
+        info: Some("rust `linenos`".to_string()),
+        text: SemanticText::Source {},
+    });
+}
+
+#[test]
+fn legacy_html_and_code_block_shapes_fail_closed() {
+    let html = leaf(
+        0,
+        ContentKind::Html {
+            block: true,
+            text: SemanticText::Source {},
+        },
+    );
+    let mut legacy_html = serde_json::to_value(html).unwrap();
+    legacy_html["content"]
+        .as_object_mut()
+        .unwrap()
+        .remove("text");
+    legacy_html["content"]["opaque"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<ContentNode>(legacy_html).is_err());
+
+    let code = leaf(
+        1,
+        ContentKind::CodeBlock {
+            syntax: CodeBlockSyntax::Fenced {
+                marker: CodeFenceMarker::Backtick,
+                length: 3,
+            },
+            info: Some("rust".to_string()),
+            text: SemanticText::Source {},
+        },
+    );
+    let mut legacy_code = serde_json::to_value(code).unwrap();
+    let content = legacy_code["content"].as_object_mut().unwrap();
+    content.remove("syntax");
+    content.remove("info");
+    content.insert("fenced".to_string(), serde_json::json!(true));
+    content.insert("meta".to_string(), serde_json::json!(null));
+    content.insert("mermaid".to_string(), serde_json::json!(false));
+    assert!(serde_json::from_value::<ContentNode>(legacy_code).is_err());
 }
 
 #[test]
@@ -1080,15 +1246,25 @@ fn snapshot_wire_has_one_source_body_roundtrips_and_resumes() {
                 vec![
                     ProjectionOp::InsertNode { node },
                     splice_roots(&ChildList::empty(), vec![NodeId::new(0)]),
+                    ProjectionOp::AdvanceProjection {
+                        expected_cursor: SourceCursor::new(0),
+                        new_cursor: SourceCursor::new(source.len() as u64),
+                    },
                 ],
             )
             .unwrap(),
         )
         .unwrap();
     let snapshot = producer.document().unwrap().snapshot();
+    assert_eq!(
+        snapshot.projection_cursor(),
+        SourceCursor::new(source.len() as u64)
+    );
     let limits = ProtocolLimits::default();
     let bytes = encode_snapshot_json(&snapshot, usize::MAX, limits).unwrap();
     assert_eq!(String::from_utf8_lossy(&bytes).matches(source).count(), 1);
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["projection_cursor"], source.len().to_string());
     let decoded = decode_snapshot_json(&bytes, bytes.len(), limits).unwrap();
     assert_eq!(decoded, snapshot);
 
@@ -1104,6 +1280,110 @@ fn snapshot_wire_has_one_source_body_roundtrips_and_resumes() {
     .unwrap();
     consumer.apply(next).unwrap();
     assert_eq!(consumer.document().unwrap().source(), format!("{source}!"));
+}
+
+#[test]
+fn pending_snapshot_roundtrips_recovers_and_continues_source() {
+    let mut producer = Reducer::new();
+    producer
+        .apply(
+            ChangeSet::start_epoch(
+                Epoch::new(1),
+                change_id("epoch:pending"),
+                None,
+                SourceDelta::append(SourceCursor::new(0), "abc"),
+                vec![],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let snapshot = producer.document().unwrap().snapshot();
+    assert_eq!(snapshot.projection_cursor(), SourceCursor::new(0));
+    assert_eq!(
+        snapshot.pending_source_range().unwrap(),
+        SourceRange::new(SourceCursor::new(0), SourceCursor::new(3))
+    );
+    assert_eq!(snapshot.pending_source().unwrap(), "abc");
+
+    let limits = ProtocolLimits::default();
+    let bytes = encode_snapshot_json(&snapshot, usize::MAX, limits).unwrap();
+    let decoded = decode_snapshot_json(&bytes, bytes.len(), limits).unwrap();
+    assert_eq!(decoded.pending_source().unwrap(), "abc");
+
+    let mut consumer = Reducer::new();
+    consumer.recover_snapshot(decoded).unwrap();
+    consumer
+        .apply(
+            ChangeSet::new(
+                Epoch::new(1),
+                Sequence::new(1),
+                change_id("pending:append"),
+                SourceDelta::append(SourceCursor::new(3), "d"),
+                vec![],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(consumer.document().unwrap().pending_source(), "abcd");
+}
+
+#[test]
+fn unchecked_snapshot_pending_accessors_validate_every_cursor_invariant() {
+    let mut producer = Reducer::new();
+    producer
+        .apply(
+            ChangeSet::start_epoch(
+                Epoch::new(1),
+                change_id("epoch:utf8-pending"),
+                None,
+                SourceDelta::append(SourceCursor::new(0), "é"),
+                vec![],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let value = serde_json::to_value(producer.document().unwrap().snapshot()).unwrap();
+    let valid: Snapshot = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        valid.pending_source_range().unwrap(),
+        SourceRange::new(SourceCursor::new(0), SourceCursor::new(2))
+    );
+    assert_eq!(valid.pending_source().unwrap(), "é");
+
+    let mut reversed = value.clone();
+    reversed["projection_cursor"] = serde_json::json!("3");
+
+    let mut coordinate_out_of_bounds = value.clone();
+    coordinate_out_of_bounds["coordinate"]["source_cursor"] = serde_json::json!("3");
+
+    let mut non_boundary = value.clone();
+    non_boundary["projection_cursor"] = serde_json::json!("1");
+
+    let mut coordinate_mismatch = value;
+    coordinate_mismatch["coordinate"]["source_cursor"] = serde_json::json!("0");
+
+    for (label, value) in [
+        ("reversed", reversed),
+        ("coordinate-out-of-bounds", coordinate_out_of_bounds),
+        ("non-boundary", non_boundary),
+        ("coordinate-mismatch", coordinate_mismatch),
+    ] {
+        let unchecked: Snapshot = serde_json::from_value(value).unwrap();
+        assert!(
+            matches!(
+                unchecked.pending_source(),
+                Err(ProtocolError::InvalidSnapshot(_))
+            ),
+            "{label} pending source must fail"
+        );
+        assert!(
+            matches!(
+                unchecked.pending_source_range(),
+                Err(ProtocolError::InvalidSnapshot(_))
+            ),
+            "{label} pending range must fail"
+        );
+    }
 }
 
 #[test]

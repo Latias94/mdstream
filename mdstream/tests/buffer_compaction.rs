@@ -33,11 +33,7 @@ fn max_buffer_bytes_compacts_committed_prefix() {
 #[test]
 fn stream_engine_keeps_absolute_source_and_ranges_after_scanner_compaction() {
     let max = 64usize;
-    let options = Options {
-        max_buffer_bytes: Some(max),
-        ..Options::default()
-    };
-    let mut engine = StreamEngine::new(options);
+    let mut engine = StreamEngine::new();
     let mut reducer = Reducer::new();
     let mut source = String::new();
 
@@ -66,7 +62,17 @@ fn stream_engine_keeps_absolute_source_and_ranges_after_scanner_compaction() {
         document.coordinate().source_cursor,
         SourceCursor::new(source.len() as u64)
     );
-    let frame = document.nodes().next().unwrap();
-    assert_eq!(frame.source.start, SourceCursor::new(0));
-    assert_eq!(frame.source.end, SourceCursor::new(source.len() as u64));
+    assert_eq!(document.roots().len(), 100);
+    let mut expected_start = 0_u64;
+    for (index, root_id) in document.roots().iter().copied().enumerate() {
+        let heading = document.node(root_id).unwrap();
+        let raw = format!("# H{index}");
+        let expected_end = expected_start + raw.len() as u64;
+        assert_eq!(heading.source.start, SourceCursor::new(expected_start));
+        assert_eq!(heading.source.end, SourceCursor::new(expected_end));
+        assert!(source.is_char_boundary(heading.source.start.get() as usize));
+        assert!(source.is_char_boundary(heading.source.end.get() as usize));
+        expected_start = expected_end + 2;
+    }
+    assert_eq!(expected_start, source.len() as u64);
 }

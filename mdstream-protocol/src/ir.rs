@@ -101,6 +101,23 @@ pub enum BlockQuoteKind {
     Caution,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeFenceMarker {
+    Backtick,
+    Tilde,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
+pub enum CodeBlockSyntax {
+    Indented,
+    Fenced {
+        marker: CodeFenceMarker,
+        length: u32,
+    },
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CitationProtocol {
     #[default]
@@ -205,8 +222,8 @@ impl SemanticResource {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChildList {
-    pub version: StructureVersion,
-    pub children: Arc<Vec<NodeId>>,
+    version: StructureVersion,
+    children: Arc<Vec<NodeId>>,
 }
 
 impl Clone for ChildList {
@@ -232,12 +249,40 @@ impl ChildList {
         Self::new(Vec::new())
     }
 
+    pub fn as_slice(&self) -> &[NodeId] {
+        self.children.as_slice()
+    }
+
+    pub const fn version(&self) -> &StructureVersion {
+        &self.version
+    }
+
+    pub fn len(&self) -> usize {
+        self.children.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.children.is_empty()
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &NodeId> {
+        self.children.iter()
+    }
+
+    pub fn get(&self, index: usize) -> Option<&NodeId> {
+        self.children.get(index)
+    }
+
+    pub fn version_for(children: impl IntoIterator<Item = NodeId>) -> StructureVersion {
+        extend_structure_version(StructureVersion::digest(&[]), children)
+    }
+
     pub fn derived_version(&self) -> StructureVersion {
-        extend_structure_version(&StructureVersion::digest(&[]), self.children.as_slice())
+        Self::version_for(self.iter().copied())
     }
 
     pub fn version_after_append(&self, children: &[NodeId]) -> StructureVersion {
-        extend_structure_version(&self.version, children)
+        extend_structure_version(self.version.clone(), children.iter().copied())
     }
 
     pub(crate) fn clone_shared(&self) -> Self {
@@ -245,6 +290,17 @@ impl ChildList {
             version: self.version.clone(),
             children: Arc::clone(&self.children),
         }
+    }
+
+    pub(crate) fn append_validated(
+        &mut self,
+        children: Vec<NodeId>,
+        new_version: StructureVersion,
+    ) {
+        Arc::get_mut(&mut self.children)
+            .expect("validated child-list appends own their storage")
+            .extend(children);
+        self.version = new_version;
     }
 
     pub(crate) fn validate_local(&self, limits: ProtocolLimits) -> Result<(), ProtocolError> {
@@ -270,8 +326,10 @@ impl ChildList {
     }
 }
 
-fn extend_structure_version(base: &StructureVersion, children: &[NodeId]) -> StructureVersion {
-    let mut version = base.clone();
+fn extend_structure_version(
+    mut version: StructureVersion,
+    children: impl IntoIterator<Item = NodeId>,
+) -> StructureVersion {
     let mut input = Vec::with_capacity(version.as_str().len() + 1 + std::mem::size_of::<u128>());
     for child in children {
         input.clear();
@@ -311,10 +369,8 @@ pub enum ContentKind {
         text: SemanticText,
     },
     CodeBlock {
-        fenced: bool,
-        language: Option<String>,
-        meta: Option<String>,
-        mermaid: bool,
+        syntax: CodeBlockSyntax,
+        info: Option<String>,
         text: SemanticText,
     },
     List {
@@ -340,7 +396,7 @@ pub enum ContentKind {
     },
     Html {
         block: bool,
-        opaque: bool,
+        text: SemanticText,
     },
     Math {
         display: bool,
@@ -406,6 +462,21 @@ where
 }
 
 impl ContentKind {
+    pub fn is_mermaid_code_block(&self) -> bool {
+        self.code_language()
+            .is_some_and(|language| language.eq_ignore_ascii_case("mermaid"))
+    }
+
+    pub fn code_language(&self) -> Option<&str> {
+        let Self::CodeBlock {
+            info: Some(info), ..
+        } = self
+        else {
+            return None;
+        };
+        info.split_whitespace().next()
+    }
+
     pub fn referenced_resource(&self) -> Option<ResourceId> {
         match self {
             Self::Link { target, .. }
@@ -643,7 +714,10 @@ impl ContentNode {
     }
 }
 
-fn validate_kind(content: &ContentKind, limits: ProtocolLimits) -> Result<usize, ProtocolError> {
+pub(crate) fn validate_kind(
+    content: &ContentKind,
+    limits: ProtocolLimits,
+) -> Result<usize, ProtocolError> {
     let mut tally = MetadataTally::new(limits);
     match content {
         ContentKind::Heading { level } if !(1..=6).contains(level) => {
@@ -674,18 +748,12 @@ fn validate_kind(content: &ContentKind, limits: ProtocolLimits) -> Result<usize,
         }
         ContentKind::Text { text }
         | ContentKind::InlineCode { text }
-        | ContentKind::Math { text, .. } => tally_semantic_text(&mut tally, text)?,
-        ContentKind::CodeBlock {
-            language,
-            meta,
-            text,
-            ..
-        } => {
-            if let Some(language) = language {
-                tally.add("code.language", language)?;
-            }
-            if let Some(meta) = meta {
-                tally.add("code.meta", meta)?;
+        | ContentKind::Math { text, .. }
+        | ContentKind::Html { text, .. } => tally_semantic_text(&mut tally, text)?,
+        ContentKind::CodeBlock { syntax, info, text } => {
+            validate_code_block_contract(*syntax, info.as_deref())?;
+            if let Some(info) = info {
+                tally.add("code.info", info)?;
             }
             tally_semantic_text(&mut tally, text)?;
         }
@@ -757,6 +825,41 @@ fn tally_semantic_text(
     Ok(())
 }
 
+fn validate_code_block_contract(
+    syntax: CodeBlockSyntax,
+    info: Option<&str>,
+) -> Result<(), ProtocolError> {
+    match syntax {
+        CodeBlockSyntax::Indented if info.is_some() => {
+            return Err(ProtocolError::InvalidChange(
+                "indented code blocks forbid info strings".to_string(),
+            ));
+        }
+        CodeBlockSyntax::Fenced { length, .. } if length < 3 => {
+            return Err(ProtocolError::InvalidChange(
+                "code fence length must be at least three".to_string(),
+            ));
+        }
+        CodeBlockSyntax::Fenced {
+            marker: CodeFenceMarker::Backtick,
+            ..
+        } if info.is_some_and(|info| info.contains('`')) => {
+            return Err(ProtocolError::InvalidChange(
+                "backtick code fence info strings cannot contain backticks".to_string(),
+            ));
+        }
+        _ => {}
+    }
+
+    if info.is_some_and(|info| info.split_whitespace().next().is_none()) {
+        Err(ProtocolError::InvalidChange(
+            "code info strings cannot be empty".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_link_contract(
     style: LinkStyle,
     has_target: bool,
@@ -808,6 +911,7 @@ fn may_have_children(content: &ContentKind) -> bool {
             | ContentKind::TableRow {}
             | ContentKind::TableCell { .. }
             | ContentKind::FootnoteDefinition { .. }
+            | ContentKind::CitationReference { .. }
             | ContentKind::Custom { opaque: false, .. }
     )
 }
@@ -828,6 +932,13 @@ pub(crate) fn validate_child_kind(
         ) => is_phrasing(child),
         Some(ContentKind::Link { .. }) => {
             is_phrasing(child) && !matches!(child, ContentKind::Link { .. })
+        }
+        Some(ContentKind::CitationReference { .. }) => {
+            is_phrasing(child)
+                && !matches!(
+                    child,
+                    ContentKind::Link { .. } | ContentKind::CitationReference { .. }
+                )
         }
         Some(ContentKind::List { .. }) => matches!(child, ContentKind::ListItem { .. }),
         Some(
@@ -1036,7 +1147,7 @@ fn is_phrasing(content: &ContentKind) -> bool {
             | ContentKind::Link { .. }
             | ContentKind::Image { .. }
             | ContentKind::InlineCode { .. }
-            | ContentKind::Math { display: false, .. }
+            | ContentKind::Math { .. }
             | ContentKind::FootnoteReference { .. }
             | ContentKind::CitationReference { .. }
             | ContentKind::SoftBreak {}

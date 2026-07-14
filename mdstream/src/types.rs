@@ -118,7 +118,7 @@ pub struct UpdateRef<'a> {
     pub invalidated: Vec<BlockId>,
 }
 
-impl<'a> UpdateRef<'a> {
+impl UpdateRef<'_> {
     pub fn is_empty(&self) -> bool {
         self.committed.is_empty()
             && self.pending.is_none()

@@ -12,10 +12,10 @@ use mdstream_conformance::{
 };
 use mdstream_protocol::{
     ApplyOutcome, BlockQuoteKind, ChangeId, ChangeSet, ChildList, ChildListOwner, CitationProtocol,
-    ContentKind, ContentNode, Epoch, LinkStyle, NodeId, NodeStability, NodeVersion, ProjectionOp,
-    ProtocolLimits, RecoveryReason, Reducer, ResourceId, ResourceRef, ResourceVersion,
-    SemanticResource, SemanticResourceKind, SemanticText, Sequence, SourceCursor, SourceDelta,
-    SourceRange, StructureVersion, TableAlignment,
+    CodeBlockSyntax, CodeFenceMarker, ContentKind, ContentNode, Epoch, LinkStyle, NodeId,
+    NodeStability, NodeVersion, ProjectionOp, ProtocolLimits, RecoveryReason, Reducer, ResourceId,
+    ResourceRef, ResourceVersion, SemanticResource, SemanticResourceKind, SemanticText, Sequence,
+    SourceCursor, SourceDelta, SourceRange, StructureVersion, TableAlignment,
 };
 
 fn corpus_root() -> PathBuf {
@@ -49,12 +49,20 @@ fn next(epoch: u64, sequence: u64, cursor: u64, id: &str, suffix: &str) -> Chang
 }
 
 fn finish(epoch: u64, sequence: u64, cursor: u64, id: &str) -> ChangeSet {
+    let mut operations = Vec::new();
+    if cursor != 0 {
+        operations.push(ProjectionOp::AdvanceProjection {
+            expected_cursor: SourceCursor::new(0),
+            new_cursor: SourceCursor::new(cursor),
+        });
+    }
+    operations.push(ProjectionOp::FinishDocument);
     ChangeSet::new(
         Epoch::new(epoch),
         Sequence::new(sequence),
         change_id(id),
         SourceDelta::unchanged(SourceCursor::new(cursor)),
-        vec![ProjectionOp::FinishDocument],
+        operations,
     )
     .unwrap()
 }
@@ -560,10 +568,24 @@ fn protocol_schema_accepts_every_serde_operation_and_content_variant() {
             },
         },
         ContentKind::CodeBlock {
-            fenced: true,
-            language: Some("rust".to_string()),
-            meta: None,
-            mermaid: false,
+            syntax: CodeBlockSyntax::Indented,
+            info: None,
+            text: SemanticText::Source {},
+        },
+        ContentKind::CodeBlock {
+            syntax: CodeBlockSyntax::Fenced {
+                marker: CodeFenceMarker::Backtick,
+                length: 3,
+            },
+            info: Some("rust".to_string()),
+            text: SemanticText::Source {},
+        },
+        ContentKind::CodeBlock {
+            syntax: CodeBlockSyntax::Fenced {
+                marker: CodeFenceMarker::Tilde,
+                length: 4,
+            },
+            info: Some("mermaid theme=neutral`".to_string()),
             text: SemanticText::Source {},
         },
         ContentKind::List {
@@ -587,7 +609,9 @@ fn protocol_schema_accepts_every_serde_operation_and_content_variant() {
         ContentKind::TableCell { column: 1 },
         ContentKind::Html {
             block: true,
-            opaque: true,
+            text: SemanticText::Normalized {
+                value: "<div>content</div>".to_string(),
+            },
         },
         ContentKind::Math {
             display: true,
@@ -656,6 +680,10 @@ fn protocol_schema_accepts_every_serde_operation_and_content_variant() {
         },
     );
     let operations = vec![
+        ProjectionOp::AdvanceProjection {
+            expected_cursor: SourceCursor::new(0),
+            new_cursor: SourceCursor::new(1),
+        },
         ProjectionOp::InsertNode { node: node.clone() },
         ProjectionOp::ReplaceNode {
             node_id: node.id,
@@ -707,6 +735,80 @@ fn protocol_schema_accepts_every_serde_operation_and_content_variant() {
             serde_json::from_value::<ProjectionOp>(value).unwrap(),
             operation
         );
+    }
+}
+
+#[test]
+fn code_and_html_schema_rejects_legacy_and_incoherent_shapes() {
+    let schema: serde_json::Value = serde_json::from_slice(
+        &fs::read(corpus_root().join("schemas/fixture.schema.json")).unwrap(),
+    )
+    .unwrap();
+    let definition = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "#/$defs/contentKind",
+        "$defs": schema["$defs"].clone()
+    });
+    let validator = jsonschema::validator_for(&definition).unwrap();
+
+    for valid in [
+        serde_json::json!({
+            "kind": "code_block",
+            "syntax": {"kind": "indented"},
+            "info": null,
+            "text": {"kind": "source"}
+        }),
+        serde_json::json!({
+            "kind": "code_block",
+            "syntax": {"kind": "fenced", "marker": "backtick", "length": 3},
+            "info": "rust linenos",
+            "text": {"kind": "source"}
+        }),
+        serde_json::json!({
+            "kind": "code_block",
+            "syntax": {"kind": "fenced", "marker": "tilde", "length": 4},
+            "info": "mermaid theme=neutral`",
+            "text": {"kind": "normalized", "value": "graph TD"}
+        }),
+        serde_json::json!({
+            "kind": "html",
+            "block": true,
+            "text": {"kind": "normalized", "value": "<div>content</div>"}
+        }),
+    ] {
+        assert!(validator.is_valid(&valid), "schema rejected {valid}");
+    }
+
+    for invalid in [
+        serde_json::json!({
+            "kind": "code_block",
+            "syntax": {"kind": "fenced", "marker": "tilde", "length": 2},
+            "info": null,
+            "text": {"kind": "source"}
+        }),
+        serde_json::json!({
+            "kind": "code_block",
+            "syntax": {"kind": "indented"},
+            "info": "rust",
+            "text": {"kind": "source"}
+        }),
+        serde_json::json!({
+            "kind": "code_block",
+            "syntax": {"kind": "fenced", "marker": "backtick", "length": 3},
+            "info": "rust `linenos`",
+            "text": {"kind": "source"}
+        }),
+        serde_json::json!({
+            "kind": "code_block",
+            "fenced": true,
+            "language": "rust",
+            "meta": null,
+            "mermaid": false,
+            "text": {"kind": "source"}
+        }),
+        serde_json::json!({"kind": "html", "block": true, "opaque": true}),
+    ] {
+        assert!(!validator.is_valid(&invalid), "schema accepted {invalid}");
     }
 }
 
@@ -784,11 +886,11 @@ fn large_snapshot_and_mixed_trace_report_snapshot_and_delta_work_separately() {
         .collect::<Vec<_>>();
     bootstrap_operations.push(ProjectionOp::SpliceChildren {
         owner: ChildListOwner::Document,
-        expected_version: ChildList::empty().version,
+        expected_version: ChildList::empty().version().clone(),
         start: 0,
         delete_count: 0,
         insert: roots,
-        new_version: root_list.version,
+        new_version: root_list.version().clone(),
     });
     let bootstrap = ChangeSet::start_epoch(
         Epoch::new(1),

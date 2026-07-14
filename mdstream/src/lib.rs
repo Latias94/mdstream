@@ -1,5 +1,6 @@
 pub mod analyze;
 pub mod boundary;
+mod compiler;
 pub mod engine;
 mod extensions;
 pub mod options;
@@ -11,9 +12,6 @@ pub mod stream;
 mod syntax;
 pub mod transform;
 pub mod types;
-
-#[cfg(feature = "pulldown")]
-pub mod adapters;
 
 pub use analyze::*;
 pub use boundary::*;

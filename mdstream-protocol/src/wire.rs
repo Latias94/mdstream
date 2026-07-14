@@ -10,7 +10,7 @@ use crate::{
     ProtocolLimits, SemanticResource, SnapshotDigest,
 };
 
-pub const PROTOCOL_SCHEMA: &str = "mdstream.content/0.4-draft.2";
+pub const PROTOCOL_SCHEMA: &str = "mdstream.content/0.4-draft.5";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -63,9 +63,21 @@ pub struct Snapshot {
     last_payload_digest: PayloadDigest,
     lifecycle: DocumentLifecycle,
     source: String,
+    projection_cursor: crate::SourceCursor,
     roots: ChildList,
     nodes: Vec<ContentNode>,
     resources: Vec<SemanticResource>,
+}
+
+pub(crate) struct CanonicalSnapshotParts {
+    pub coordinate: Coordinate,
+    pub last_payload_digest: PayloadDigest,
+    pub lifecycle: DocumentLifecycle,
+    pub source: String,
+    pub projection_cursor: crate::SourceCursor,
+    pub roots: ChildList,
+    pub nodes: Vec<ContentNode>,
+    pub resources: Vec<SemanticResource>,
 }
 
 impl Snapshot {
@@ -97,6 +109,30 @@ impl Snapshot {
         &self.source
     }
 
+    /// Returns the exclusive source frontier represented by the canonical projection.
+    pub const fn projection_cursor(&self) -> crate::SourceCursor {
+        self.projection_cursor
+    }
+
+    /// Returns the canonical source range not yet represented by the projection.
+    ///
+    /// Direct Serde deserialization does not validate a snapshot. This accessor
+    /// therefore verifies the source cursors before exposing them as a range.
+    pub fn pending_source_range(&self) -> Result<crate::SourceRange, ProtocolError> {
+        self.validated_pending_source_range()
+    }
+
+    /// Returns the canonical source suffix not yet represented by the projection.
+    pub fn pending_source(&self) -> Result<&str, ProtocolError> {
+        let range = self.validated_pending_source_range()?;
+        let start = usize::try_from(range.start.get()).map_err(|_| {
+            ProtocolError::InvalidSnapshot(
+                "projection cursor exceeds the source address space".to_string(),
+            )
+        })?;
+        Ok(&self.source[start..])
+    }
+
     pub fn roots(&self) -> &ChildList {
         &self.roots
     }
@@ -109,6 +145,28 @@ impl Snapshot {
         &self.resources
     }
 
+    fn validated_pending_source_range(&self) -> Result<crate::SourceRange, ProtocolError> {
+        let source_len = u64::try_from(self.source.len()).map_err(|_| {
+            ProtocolError::InvalidSnapshot(
+                "source length exceeds the protocol cursor address space".to_string(),
+            )
+        })?;
+        if self.coordinate.source_cursor.get() != source_len {
+            return Err(ProtocolError::InvalidSnapshot(
+                "source cursor does not match source length".to_string(),
+            ));
+        }
+
+        let range = crate::SourceRange::new(self.projection_cursor, self.coordinate.source_cursor);
+        range.validate(&self.source).map_err(|_| {
+            ProtocolError::InvalidSnapshot(
+                "pending source range must be ordered, bounded, and use canonical UTF-8 boundaries"
+                    .to_string(),
+            )
+        })?;
+        Ok(range)
+    }
+
     /// Recomputes the digest over the canonical snapshot contents.
     pub fn derived_digest(&self) -> SnapshotDigest {
         derive_snapshot_digest(SnapshotDigestView {
@@ -118,21 +176,24 @@ impl Snapshot {
             last_payload_digest: &self.last_payload_digest,
             lifecycle: self.lifecycle,
             source: &self.source,
+            projection_cursor: self.projection_cursor,
             roots: &self.roots,
             nodes: &self.nodes,
             resources: &self.resources,
         })
     }
 
-    pub(crate) fn from_canonical_parts(
-        coordinate: Coordinate,
-        last_payload_digest: PayloadDigest,
-        lifecycle: DocumentLifecycle,
-        source: String,
-        roots: ChildList,
-        nodes: Vec<ContentNode>,
-        resources: Vec<SemanticResource>,
-    ) -> Self {
+    pub(crate) fn from_canonical_parts(parts: CanonicalSnapshotParts) -> Self {
+        let CanonicalSnapshotParts {
+            coordinate,
+            last_payload_digest,
+            lifecycle,
+            source,
+            projection_cursor,
+            roots,
+            nodes,
+            resources,
+        } = parts;
         let schema = SchemaVersion::current();
         let maturity = ProtocolMaturity::Draft;
         let digest = derive_snapshot_digest(SnapshotDigestView {
@@ -142,6 +203,7 @@ impl Snapshot {
             last_payload_digest: &last_payload_digest,
             lifecycle,
             source: &source,
+            projection_cursor,
             roots: &roots,
             nodes: &nodes,
             resources: &resources,
@@ -154,6 +216,7 @@ impl Snapshot {
             last_payload_digest,
             lifecycle,
             source,
+            projection_cursor,
             roots,
             nodes,
             resources,
@@ -169,6 +232,7 @@ struct SnapshotDigestView<'a> {
     last_payload_digest: &'a PayloadDigest,
     lifecycle: DocumentLifecycle,
     source: &'a str,
+    projection_cursor: crate::SourceCursor,
     roots: &'a ChildList,
     nodes: &'a [ContentNode],
     resources: &'a [SemanticResource],

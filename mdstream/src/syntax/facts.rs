@@ -101,7 +101,7 @@ pub(crate) fn fence_start(line: &str) -> Option<(char, usize)> {
 
 pub(crate) fn fence_end(line: &str, fence_char: char, fence_len: usize) -> bool {
     let s = strip_up_to_three_leading_spaces(line);
-    let trimmed = s.trim_end();
+    let trimmed = s.trim_end_matches([' ', '\t']);
     trimmed.chars().all(|c| c == fence_char) && trimmed.chars().count() >= fence_len
 }
 
@@ -238,4 +238,15 @@ pub(crate) fn tail_window(text: &str, window_bytes: usize) -> (&str, usize) {
         s += 1;
     }
     (&text[s..], s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_fence_accepts_only_ascii_space_or_tab_after_the_marker() {
+        assert!(fence_end("   ``` \t", '`', 3));
+        assert!(!fence_end("```\u{a0}", '`', 3));
+    }
 }

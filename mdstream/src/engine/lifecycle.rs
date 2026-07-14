@@ -5,12 +5,15 @@ use mdstream_protocol::{
     SourceDelta,
 };
 
+use crate::compiler::CompilerError;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineError {
     Finished,
     EpochOverflow,
     SequenceOverflow,
     CursorOverflow,
+    Compiler(CompilerError),
     Protocol(ProtocolError),
     InternalInvariant(ProtocolError),
 }
@@ -22,6 +25,9 @@ impl fmt::Display for EngineError {
             Self::EpochOverflow => formatter.write_str("stream engine epoch overflowed"),
             Self::SequenceOverflow => formatter.write_str("stream engine sequence overflowed"),
             Self::CursorOverflow => formatter.write_str("stream engine source cursor overflowed"),
+            Self::Compiler(error) => {
+                write!(formatter, "stream content compilation failed: {error}")
+            }
             Self::Protocol(error) => write!(formatter, "stream input violates protocol: {error}"),
             Self::InternalInvariant(error) => {
                 write!(
@@ -35,14 +41,10 @@ impl fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
-pub(super) fn source_end(reducer: &Reducer, suffix: &str) -> Result<SourceCursor, EngineError> {
-    let start = reducer.document().map_or(SourceCursor::new(0), |document| {
-        document.coordinate().source_cursor
-    });
-    let suffix_len = u64::try_from(suffix.len()).map_err(|_| EngineError::CursorOverflow)?;
-    start
-        .checked_add(suffix_len)
-        .ok_or(EngineError::CursorOverflow)
+impl From<CompilerError> for EngineError {
+    fn from(error: CompilerError) -> Self {
+        Self::Compiler(error)
+    }
 }
 
 pub(super) fn append_change(

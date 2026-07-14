@@ -1,5 +1,5 @@
 {
-  "schema": "mdstream.conformance/0.4-draft.1",
+  "schema": "mdstream.conformance/0.4-draft.2",
   "id": "protocol.linear-source",
   "description": "Equivalent whole and character traces with different sequence histories.",
   "source": "abc",
@@ -8,7 +8,7 @@
     "extensions": []
   },
   "profile": {
-    "id": "mdstream.protocol/0.4-draft.2",
+    "id": "mdstream.protocol/0.4-draft.5",
     "claim_scope": ["protocol_replay"],
     "pipeline": []
   },
@@ -39,7 +39,7 @@
       ],
       "changes": [
         {
-          "schema": "mdstream.content/0.4-draft.2",
+          "schema": "mdstream.content/0.4-draft.5",
           "maturity": "draft",
           "epoch": "1",
           "sequence": "0",
@@ -49,14 +49,21 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.2",
+          "schema": "mdstream.content/0.4-draft.5",
           "maturity": "draft",
           "epoch": "1",
           "sequence": "1",
           "change_id": "whole:finish",
           "epoch_start": null,
           "source": { "expected_cursor": "3", "suffix": "" },
-          "operations": [{ "kind": "finish_document" }]
+          "operations": [
+            {
+              "kind": "advance_projection",
+              "expected_cursor": "0",
+              "new_cursor": "3"
+            },
+            { "kind": "finish_document" }
+          ]
         }
       ]
     },
@@ -72,7 +79,7 @@
       ],
       "changes": [
         {
-          "schema": "mdstream.content/0.4-draft.2",
+          "schema": "mdstream.content/0.4-draft.5",
           "maturity": "draft",
           "epoch": "1",
           "sequence": "0",
@@ -82,7 +89,7 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.2",
+          "schema": "mdstream.content/0.4-draft.5",
           "maturity": "draft",
           "epoch": "1",
           "sequence": "1",
@@ -92,7 +99,7 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.2",
+          "schema": "mdstream.content/0.4-draft.5",
           "maturity": "draft",
           "epoch": "1",
           "sequence": "2",
@@ -102,25 +109,33 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.2",
+          "schema": "mdstream.content/0.4-draft.5",
           "maturity": "draft",
           "epoch": "1",
           "sequence": "3",
           "change_id": "chars:finish",
           "epoch_start": null,
           "source": { "expected_cursor": "3", "suffix": "" },
-          "operations": [{ "kind": "finish_document" }]
+          "operations": [
+            {
+              "kind": "advance_projection",
+              "expected_cursor": "0",
+              "new_cursor": "3"
+            },
+            { "kind": "finish_document" }
+          ]
         }
       ]
     }
   ],
   "expected": {
     "normalized_snapshot": {
-      "schema": "mdstream.content/0.4-draft.2",
+      "schema": "mdstream.content/0.4-draft.5",
       "maturity": "draft",
       "epoch": "1",
       "lifecycle": "finalized",
       "source": "abc",
+      "projection_cursor": "3",
       "roots": {
         "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
         "children": []
@@ -130,6 +145,27 @@
     }
   },
   "required_checkpoints": [
+    {
+      "id": "characters.pending",
+      "trace": "characters",
+      "after_change": 0,
+      "lifecycle": "open",
+      "source": "a",
+      "normalized_snapshot": {
+        "schema": "mdstream.content/0.4-draft.5",
+        "maturity": "draft",
+        "epoch": "1",
+        "lifecycle": "open",
+        "source": "a",
+        "projection_cursor": "0",
+        "roots": {
+          "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+          "children": []
+        },
+        "nodes": [],
+        "resources": []
+      }
+    },
     {
       "id": "characters.finalized",
       "trace": "characters",

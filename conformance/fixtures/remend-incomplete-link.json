@@ -1,5 +1,5 @@
 {
-  "schema": "mdstream.conformance/0.4-draft.1",
+  "schema": "mdstream.conformance/0.4-draft.2",
   "id": "remend.incomplete-link",
   "description": "Pinned Remend pending-only projection for an incomplete link label.",
   "source": "Text with [incomplete link",

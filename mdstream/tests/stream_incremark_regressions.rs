@@ -22,6 +22,44 @@ fn newline_normalization_crlf_across_chunk_boundary() {
 }
 
 #[test]
+fn legacy_source_only_lifecycle_is_idempotent_and_resettable() {
+    let mut stream = MdStream::new(Options::default());
+
+    stream.append("a\r");
+    stream.append("\n\nb\r");
+    stream.finalize();
+    assert_eq!(stream.buffer(), "a\n\nb\n");
+
+    assert!(stream.finalize().is_empty());
+    assert!(stream.append("ignored").is_empty());
+    assert_eq!(stream.buffer(), "a\n\nb\n");
+
+    stream.reset();
+    assert_eq!(stream.buffer(), "");
+    let update = stream.append_ref("fresh");
+    assert_eq!(update.pending.expect("pending block").raw, "fresh");
+}
+
+#[test]
+fn legacy_source_only_bridge_accepts_more_than_the_canonical_operation_budget() {
+    const PARAGRAPHS: usize = 3_400;
+    let mut source = String::new();
+    for index in 0..PARAGRAPHS {
+        source.push_str(&format!("paragraph {index}\n\n"));
+    }
+
+    let mut stream = MdStream::new(Options::default());
+    let appended = stream.append(&source);
+    let finalized = stream.finalize();
+
+    assert_eq!(
+        appended.committed.len() + finalized.committed.len(),
+        PARAGRAPHS
+    );
+    assert!(finalized.pending.is_none());
+}
+
+#[test]
 fn chunking_invariance_for_block_splitting() {
     let markdown = r#"# H1
 

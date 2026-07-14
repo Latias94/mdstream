@@ -36,7 +36,7 @@ fn is_tag_name_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b':'
 }
 
-fn parse_tag_name(input: &str) -> Option<(&str, &str)> {
+pub(crate) fn parse_tag_name(input: &str) -> Option<(&str, &str)> {
     let bytes = input.as_bytes();
     if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
         return None;

@@ -33,6 +33,7 @@ pub enum RecoveryReason {
         received: Epoch,
     },
     SourceDivergence,
+    ProjectionDivergence,
     VersionDivergence,
     StructureDivergence,
     ResourceDivergence,
@@ -55,6 +56,7 @@ pub struct ChangeImpact {
     pub changed_resources: Vec<ResourceId>,
     pub removed_resources: Vec<ResourceId>,
     pub source_changed: bool,
+    pub projection_changed: bool,
     pub lifecycle_changed: bool,
     pub roots_changed: bool,
     pub full_replace: bool,
@@ -67,6 +69,7 @@ impl ChangeImpact {
             && self.changed_resources.is_empty()
             && self.removed_resources.is_empty()
             && !self.source_changed
+            && !self.projection_changed
             && !self.lifecycle_changed
             && !self.roots_changed
             && !self.full_replace

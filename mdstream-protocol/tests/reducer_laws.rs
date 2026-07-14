@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 
 use mdstream_protocol::{
     ApplyOutcome, ChangeId, ChangeImpact, ChangeSet, ChildList, ChildListOwner, CitationProtocol,
-    ContentKind, ContentNode, Epoch, LinkStyle, NodeId, NodeStability, NodeVersion, ProjectionOp,
-    ProtocolError, ProtocolLimits, RecoveryReason, Reducer, ReducerStatus, ResourceId,
-    SemanticResource, SemanticResourceKind, Sequence, Snapshot, SourceCursor, SourceDelta,
-    SourceRange, encode_change_json, encode_snapshot_json,
+    ContentKind, ContentNode, DocumentLifecycle, Epoch, LinkStyle, NodeId, NodeStability,
+    NodeVersion, ProjectionOp, ProtocolError, ProtocolLimits, RecoveryReason, Reducer,
+    ReducerStatus, ResourceId, SemanticResource, SemanticResourceKind, Sequence, Snapshot,
+    SourceCursor, SourceDelta, SourceRange, encode_change_json, encode_snapshot_json,
 };
 
 fn change_id(value: &str) -> ChangeId {
@@ -49,35 +49,54 @@ fn splice(
     delete_count: usize,
     insert: Vec<NodeId>,
 ) -> ProjectionOp {
-    let mut children = current.children.as_ref().clone();
+    let mut children = current.as_slice().to_vec();
     children.splice(start..start + delete_count, insert.iter().copied());
     let replacement = ChildList::new(children);
     ProjectionOp::SpliceChildren {
         owner,
-        expected_version: current.version.clone(),
+        expected_version: current.version().clone(),
         start: u32::try_from(start).unwrap(),
         delete_count: u32::try_from(delete_count).unwrap(),
         insert,
-        new_version: replacement.version,
+        new_version: replacement.version().clone(),
     }
 }
 
 fn append_splice(owner: ChildListOwner, current: &ChildList, insert: Vec<NodeId>) -> ProjectionOp {
     ProjectionOp::SpliceChildren {
         owner,
-        expected_version: current.version.clone(),
-        start: u32::try_from(current.children.len()).unwrap(),
+        expected_version: current.version().clone(),
+        start: u32::try_from(current.len()).unwrap(),
         delete_count: 0,
         new_version: current.version_after_append(&insert),
         insert,
     }
 }
 
+fn advance_projection(expected: u64, new: u64) -> ProjectionOp {
+    ProjectionOp::AdvanceProjection {
+        expected_cursor: SourceCursor::new(expected),
+        new_cursor: SourceCursor::new(new),
+    }
+}
+
 fn start(
     epoch: u64,
     source: &str,
-    operations: Vec<ProjectionOp>,
+    mut operations: Vec<ProjectionOp>,
 ) -> Result<ChangeSet, ProtocolError> {
+    let projects_nodes = operations.iter().any(|operation| {
+        matches!(
+            operation,
+            ProjectionOp::InsertNode { .. } | ProjectionOp::ReplaceNode { .. }
+        )
+    });
+    let advances_projection = operations
+        .iter()
+        .any(|operation| matches!(operation, ProjectionOp::AdvanceProjection { .. }));
+    if !source.is_empty() && projects_nodes && !advances_projection {
+        operations.push(advance_projection(0, source.len() as u64));
+    }
     ChangeSet::start_epoch(
         Epoch::new(epoch),
         change_id(&format!("epoch:{epoch}")),
@@ -100,6 +119,9 @@ fn rooted_start(epoch: u64, source: &str, nodes: Vec<ContentNode>) -> ChangeSet 
         0,
         roots,
     ));
+    if !source.is_empty() {
+        operations.push(advance_projection(0, source.len() as u64));
+    }
     start(epoch, source, operations).unwrap()
 }
 
@@ -173,9 +195,26 @@ fn next_change(
     sequence: u64,
     id: &str,
     suffix: &str,
-    operations: Vec<ProjectionOp>,
+    mut operations: Vec<ProjectionOp>,
 ) -> ChangeSet {
     let document = reducer.document().unwrap();
+    let projects_nodes = operations.iter().any(|operation| {
+        matches!(
+            operation,
+            ProjectionOp::InsertNode { .. } | ProjectionOp::ReplaceNode { .. }
+        )
+    });
+    let advances_projection = operations
+        .iter()
+        .any(|operation| matches!(operation, ProjectionOp::AdvanceProjection { .. }));
+    if !suffix.is_empty() && projects_nodes && !advances_projection {
+        operations.push(ProjectionOp::AdvanceProjection {
+            expected_cursor: document.projection_cursor(),
+            new_cursor: SourceCursor::new(
+                document.coordinate().source_cursor.get() + suffix.len() as u64,
+            ),
+        });
+    }
     ChangeSet::new(
         document.coordinate().epoch,
         Sequence::new(sequence),
@@ -222,11 +261,312 @@ fn bootstrap_owns_one_source_and_explicit_root_order() {
     assert_eq!(document.source(), "hello world");
     assert_eq!(document.coordinate().source_cursor, SourceCursor::new(11));
     assert_eq!(
-        document.roots().children.as_slice(),
+        document.roots().as_slice(),
         &[NodeId::new(4), NodeId::new(9)]
     );
     assert!(impact.roots_changed);
     assert_eq!(impact.changed_nodes, vec![NodeId::new(4), NodeId::new(9)]);
+}
+
+#[test]
+fn projection_coverage_advances_explicitly_and_source_only_changes_preserve_it() {
+    let mut reducer = Reducer::new();
+    let outcome = reducer.apply(start(1, "abc", vec![]).unwrap()).unwrap();
+    let document = reducer.document().unwrap();
+    assert_eq!(document.coordinate().source_cursor, SourceCursor::new(3));
+    assert_eq!(document.projection_cursor(), SourceCursor::new(0));
+    assert_eq!(document.pending_source(), "abc");
+    assert_eq!(document.pending_source_range(), range(0, 3));
+    assert!(!impact(outcome).projection_changed);
+
+    let outcome = reducer
+        .apply(next_change(&reducer, 1, "source-only", "def", vec![]))
+        .unwrap();
+    assert_eq!(
+        reducer.document().unwrap().projection_cursor(),
+        SourceCursor::new(0)
+    );
+    assert_eq!(reducer.document().unwrap().pending_source(), "abcdef");
+    let source_impact = impact(outcome);
+    assert!(source_impact.source_changed);
+    assert!(!source_impact.projection_changed);
+
+    let outcome = reducer
+        .apply(next_change(
+            &reducer,
+            2,
+            "projection:4",
+            "",
+            vec![advance_projection(0, 4)],
+        ))
+        .unwrap();
+    let document = reducer.document().unwrap();
+    assert_eq!(document.coordinate().source_cursor, SourceCursor::new(6));
+    assert_eq!(document.projection_cursor(), SourceCursor::new(4));
+    assert_eq!(document.pending_source(), "ef");
+    let snapshot = document.snapshot();
+    assert_eq!(snapshot.pending_source().unwrap(), "ef");
+    assert_eq!(snapshot.pending_source_range().unwrap(), range(4, 6));
+    let impact = impact(outcome);
+    assert!(!impact.source_changed);
+    assert!(impact.projection_changed);
+}
+
+#[test]
+fn projection_coverage_is_monotonic_bounded_and_compare_and_set() {
+    fn seeded() -> Reducer {
+        let mut reducer = Reducer::new();
+        reducer.apply(start(1, "abc", vec![]).unwrap()).unwrap();
+        reducer
+    }
+
+    let mut stale = seeded();
+    let before = stale.document().unwrap().clone();
+    let change = next_change(
+        &stale,
+        1,
+        "projection:stale",
+        "",
+        vec![advance_projection(1, 2)],
+    );
+    assert!(matches!(
+        stale.apply(change).unwrap(),
+        ApplyOutcome::RecoveryRequired {
+            reason: RecoveryReason::ProjectionDivergence,
+            ..
+        }
+    ));
+    assert_eq!(stale.document().unwrap(), &before);
+
+    for (id, operations) in [
+        ("projection:no-op", vec![advance_projection(0, 0)]),
+        ("projection:beyond-source", vec![advance_projection(0, 4)]),
+        (
+            "projection:duplicate",
+            vec![advance_projection(0, 1), advance_projection(1, 2)],
+        ),
+    ] {
+        let mut reducer = seeded();
+        let before = reducer.document().unwrap().clone();
+        assert!(matches!(
+            reducer.apply(next_change(&reducer, 1, id, "", operations)),
+            Err(ProtocolError::InvalidChange(_))
+        ));
+        assert_eq!(reducer.document().unwrap(), &before);
+    }
+
+    let mut backward = seeded();
+    backward
+        .apply(next_change(
+            &backward,
+            1,
+            "projection:2",
+            "",
+            vec![advance_projection(0, 2)],
+        ))
+        .unwrap();
+    let before = backward.document().unwrap().clone();
+    assert!(matches!(
+        backward.apply(next_change(
+            &backward,
+            2,
+            "projection:backward",
+            "",
+            vec![advance_projection(2, 1)],
+        )),
+        Err(ProtocolError::InvalidChange(_))
+    ));
+    assert_eq!(backward.document().unwrap(), &before);
+}
+
+#[test]
+fn projection_coverage_requires_utf8_boundaries_in_changes_and_snapshots() {
+    let mut initial = Reducer::new();
+    assert!(matches!(
+        initial.apply(start(1, "é", vec![advance_projection(0, 1)]).unwrap()),
+        Err(ProtocolError::InvalidChange(_))
+    ));
+    assert!(initial.document().is_none());
+
+    let mut appended = Reducer::new();
+    appended.apply(start(1, "a", vec![]).unwrap()).unwrap();
+    let before = appended.document().unwrap().clone();
+    assert!(matches!(
+        appended.apply(next_change(
+            &appended,
+            1,
+            "projection:utf8-suffix",
+            "é",
+            vec![advance_projection(0, 2)],
+        )),
+        Err(ProtocolError::InvalidChange(_))
+    ));
+    assert_eq!(appended.document().unwrap(), &before);
+
+    let mut producer = Reducer::new();
+    producer.apply(start(1, "é", vec![]).unwrap()).unwrap();
+    let mut invalid = serde_json::to_value(producer.document().unwrap().snapshot()).unwrap();
+    invalid["projection_cursor"] = serde_json::json!("1");
+    let invalid = snapshot_from_value(invalid);
+    let mut consumer = Reducer::new();
+    assert!(matches!(
+        consumer.recover_snapshot(invalid),
+        Err(ProtocolError::InvalidSnapshot(_))
+    ));
+    assert!(consumer.document().is_none());
+}
+
+#[test]
+fn node_ranges_and_finalization_cannot_exceed_projection_coverage() {
+    let node = leaf(0, NodeStability::Stable, (0, 3), ContentKind::Paragraph {});
+    let mut uncovered = Reducer::new();
+    let uncovered_roots = splice(
+        ChildListOwner::Document,
+        &ChildList::empty(),
+        0,
+        0,
+        vec![node.id],
+    );
+    assert!(matches!(
+        uncovered.apply(
+            ChangeSet::start_epoch(
+                Epoch::new(1),
+                change_id("uncovered"),
+                None,
+                SourceDelta::append(SourceCursor::new(0), "abc"),
+                vec![
+                    ProjectionOp::InsertNode { node: node.clone() },
+                    uncovered_roots,
+                ],
+            )
+            .unwrap()
+        ),
+        Err(ProtocolError::InvalidChange(_))
+    ));
+    assert!(uncovered.document().is_none());
+
+    let roots = splice(
+        ChildListOwner::Document,
+        &ChildList::empty(),
+        0,
+        0,
+        vec![node.id],
+    );
+    let mut covered = Reducer::new();
+    covered
+        .apply(
+            start(
+                1,
+                "abc",
+                vec![
+                    ProjectionOp::InsertNode { node },
+                    roots,
+                    advance_projection(0, 3),
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let mut uncovered_snapshot =
+        serde_json::to_value(covered.document().unwrap().snapshot()).unwrap();
+    uncovered_snapshot["projection_cursor"] = serde_json::json!("2");
+    let uncovered_snapshot = snapshot_from_value(uncovered_snapshot);
+    let mut snapshot_consumer = Reducer::new();
+    assert!(matches!(
+        snapshot_consumer.recover_snapshot(uncovered_snapshot),
+        Err(ProtocolError::InvalidSnapshot(_))
+    ));
+    covered
+        .apply(next_change(
+            &covered,
+            1,
+            "finish",
+            "",
+            vec![ProjectionOp::FinishDocument],
+        ))
+        .unwrap();
+    assert_eq!(
+        covered.document().unwrap().lifecycle(),
+        DocumentLifecycle::Finalized
+    );
+
+    let mut unfinished = Reducer::new();
+    unfinished.apply(start(1, "abc", vec![]).unwrap()).unwrap();
+    let before = unfinished.document().unwrap().clone();
+    assert!(matches!(
+        unfinished.apply(next_change(
+            &unfinished,
+            1,
+            "finish:uncovered",
+            "",
+            vec![ProjectionOp::FinishDocument],
+        )),
+        Err(ProtocolError::IllegalLifecycle(_))
+    ));
+    assert_eq!(unfinished.document().unwrap(), &before);
+}
+
+#[test]
+fn snapshot_projection_coverage_is_digest_bound_validated_and_recovered() {
+    let mut producer = Reducer::new();
+    producer.apply(start(1, "abc", vec![]).unwrap()).unwrap();
+    producer
+        .apply(next_change(
+            &producer,
+            1,
+            "projection:2",
+            "",
+            vec![advance_projection(0, 2)],
+        ))
+        .unwrap();
+    let snapshot = producer.document().unwrap().snapshot();
+    assert_eq!(snapshot.projection_cursor(), SourceCursor::new(2));
+    let original_digest = snapshot.digest().clone();
+
+    let mut tampered = serde_json::to_value(&snapshot).unwrap();
+    tampered["projection_cursor"] = serde_json::json!("3");
+    let tampered: Snapshot = serde_json::from_value(tampered).unwrap();
+    assert_ne!(tampered.derived_digest(), original_digest);
+
+    let mut invalid = serde_json::to_value(&snapshot).unwrap();
+    invalid["projection_cursor"] = serde_json::json!("4");
+    let invalid = snapshot_from_value(invalid);
+    let mut consumer = Reducer::new();
+    assert!(matches!(
+        consumer.recover_snapshot(invalid),
+        Err(ProtocolError::InvalidSnapshot(_))
+    ));
+
+    consumer.recover_snapshot(snapshot).unwrap();
+    assert_eq!(
+        consumer.document().unwrap().projection_cursor(),
+        SourceCursor::new(2)
+    );
+
+    let gap = ChangeSet::new(
+        Epoch::new(1),
+        Sequence::new(3),
+        change_id("projection:gap"),
+        SourceDelta::unchanged(SourceCursor::new(3)),
+        vec![ProjectionOp::FinishDocument],
+    )
+    .unwrap();
+    assert!(matches!(
+        consumer.apply(gap).unwrap(),
+        ApplyOutcome::RecoveryRequired {
+            reason: RecoveryReason::SequenceGap { .. },
+            ..
+        }
+    ));
+    let mut rollback = serde_json::to_value(producer.document().unwrap().snapshot()).unwrap();
+    rollback["coordinate"]["sequence"] = serde_json::json!("2");
+    rollback["coordinate"]["change_id"] = serde_json::json!("projection:rollback");
+    rollback["projection_cursor"] = serde_json::json!("1");
+    let rollback = snapshot_from_value(rollback);
+    assert!(matches!(
+        consumer.recover_snapshot(rollback),
+        Err(ProtocolError::InvalidSnapshot(_))
+    ));
 }
 
 #[test]
@@ -316,6 +656,75 @@ fn canonical_parent_child_grammar_is_atomic_for_changes_and_snapshots() {
         Err(ProtocolError::InvalidSnapshot(_))
     ));
     assert!(consumer.document().is_none());
+}
+
+#[test]
+fn paragraph_accepts_display_math_between_text_children() {
+    let paragraph = leaf(0, NodeStability::Stable, (0, 0), ContentKind::Paragraph {});
+    let left = leaf(
+        1,
+        NodeStability::Stable,
+        (0, 0),
+        ContentKind::Text {
+            text: mdstream_protocol::SemanticText::Normalized {
+                value: "before".to_string(),
+            },
+        },
+    );
+    let math = leaf(
+        2,
+        NodeStability::Stable,
+        (0, 0),
+        ContentKind::Math {
+            display: true,
+            text: mdstream_protocol::SemanticText::Normalized {
+                value: "x + y".to_string(),
+            },
+        },
+    );
+    let right = leaf(
+        3,
+        NodeStability::Stable,
+        (0, 0),
+        ContentKind::Text {
+            text: mdstream_protocol::SemanticText::Normalized {
+                value: "after".to_string(),
+            },
+        },
+    );
+    let operations = vec![
+        ProjectionOp::InsertNode {
+            node: paragraph.clone(),
+        },
+        ProjectionOp::InsertNode { node: left },
+        ProjectionOp::InsertNode { node: math },
+        ProjectionOp::InsertNode { node: right },
+        splice(
+            ChildListOwner::Node {
+                node_id: paragraph.id,
+            },
+            &paragraph.children,
+            0,
+            0,
+            vec![NodeId::new(1), NodeId::new(2), NodeId::new(3)],
+        ),
+        splice(
+            ChildListOwner::Document,
+            &ChildList::empty(),
+            0,
+            0,
+            vec![paragraph.id],
+        ),
+    ];
+
+    let mut reducer = Reducer::new();
+    reducer.apply(start(1, "", operations).unwrap()).unwrap();
+
+    let document = reducer.document().unwrap();
+    assert_eq!(
+        document.node(NodeId::new(0)).unwrap().children.as_slice(),
+        &[NodeId::new(1), NodeId::new(2), NodeId::new(3)]
+    );
 }
 
 #[test]
@@ -625,7 +1034,7 @@ fn forest_grammar_enforces_table_completeness_and_internal_roles() {
         2,
         NodeStability::Stable,
         (0, 0),
-        current_row.children.children.as_ref().clone(),
+        current_row.children.as_slice().to_vec(),
         ContentKind::TableRow {},
     );
     assert!(matches!(
@@ -1359,19 +1768,20 @@ fn producer_apply_rolls_back_noncanonical_routing_state() {
     .unwrap();
 
     assert!(matches!(
-        reducer.apply_producer(gap).unwrap(),
+        reducer.apply_producer_ref(&gap).unwrap(),
         ApplyOutcome::RecoveryRequired {
             reason: RecoveryReason::SequenceGap { .. },
             ..
         }
     ));
+    assert_eq!(gap.sequence(), Sequence::new(2));
     assert_eq!(reducer.status(), ReducerStatus::Ready);
     assert_eq!(reducer.document().unwrap().snapshot(), before);
     assert_eq!(reducer.metrics(), metrics);
 
     let next = next_change(&reducer, 1, "producer:next", "b", vec![]);
     assert!(matches!(
-        reducer.apply_producer(next).unwrap(),
+        reducer.apply_producer_ref(&next).unwrap(),
         ApplyOutcome::Applied { .. }
     ));
     assert_eq!(reducer.document().unwrap().source(), "ab");
@@ -1831,16 +2241,15 @@ fn same_floor_snapshot_recovery_preserves_the_retained_document() {
         )
         .unwrap();
     let snapshot = reducer.document().unwrap().snapshot();
-    let roots_ptr = std::sync::Arc::as_ptr(&reducer.document().unwrap().roots().children);
-    let children_ptr = std::sync::Arc::as_ptr(
-        &reducer
-            .document()
-            .unwrap()
-            .node(parent.id)
-            .unwrap()
-            .children
-            .children,
-    );
+    let roots_ptr = reducer.document().unwrap().roots().as_slice().as_ptr();
+    let children_ptr = reducer
+        .document()
+        .unwrap()
+        .node(parent.id)
+        .unwrap()
+        .children
+        .as_slice()
+        .as_ptr();
     let gap = ChangeSet::new(
         Epoch::new(1),
         Sequence::new(2),
@@ -1859,19 +2268,18 @@ fn same_floor_snapshot_recovery_preserves_the_retained_document() {
     assert!(recovered_impact.is_empty());
     assert_eq!(reducer.status(), ReducerStatus::Ready);
     assert_eq!(
-        std::sync::Arc::as_ptr(&reducer.document().unwrap().roots().children),
+        reducer.document().unwrap().roots().as_slice().as_ptr(),
         roots_ptr
     );
     assert_eq!(
-        std::sync::Arc::as_ptr(
-            &reducer
-                .document()
-                .unwrap()
-                .node(parent.id)
-                .unwrap()
-                .children
-                .children,
-        ),
+        reducer
+            .document()
+            .unwrap()
+            .node(parent.id)
+            .unwrap()
+            .children
+            .as_slice()
+            .as_ptr(),
         children_ptr
     );
 }
@@ -2299,7 +2707,7 @@ fn finalized_is_terminal_even_for_future_same_epoch_sequences() {
         1,
         "finish",
         "",
-        vec![ProjectionOp::FinishDocument],
+        vec![advance_projection(0, 4), ProjectionOp::FinishDocument],
     );
     reducer.apply(finish.clone()).unwrap();
     assert_eq!(reducer.apply(finish).unwrap(), ApplyOutcome::Idempotent);
@@ -2343,11 +2751,12 @@ fn change_impact_reports_source_and_lifecycle_transitions() {
                 2,
                 "lifecycle:finish",
                 "",
-                vec![ProjectionOp::FinishDocument],
+                vec![advance_projection(0, 2), ProjectionOp::FinishDocument],
             ))
             .unwrap(),
     );
     assert!(!finished.source_changed);
+    assert!(finished.projection_changed);
     assert!(finished.lifecycle_changed);
     assert!(!finished.is_empty());
 }
@@ -2424,7 +2833,7 @@ fn structure_splice_reorders_roots_without_changing_node_versions() {
         .apply(rooted_start(1, "ab", vec![second, first]))
         .unwrap();
     assert_eq!(
-        reducer.document().unwrap().roots().children.as_slice(),
+        reducer.document().unwrap().roots().as_slice(),
         &[NodeId::new(9), NodeId::new(4)]
     );
 
@@ -2534,7 +2943,7 @@ fn child_splice_builds_single_owner_tree_and_identity_can_reappear() {
         ApplyOutcome::Applied { .. }
     ));
     assert_eq!(
-        reducer.document().unwrap().roots().children.as_slice(),
+        reducer.document().unwrap().roots().as_slice(),
         &[NodeId::new(1)]
     );
 }
@@ -2579,7 +2988,7 @@ fn deterministic_ids_apply_independently_of_numeric_discovery_order() {
         ApplyOutcome::Applied { .. }
     ));
     assert_eq!(
-        reducer.document().unwrap().roots().children.as_slice(),
+        reducer.document().unwrap().roots().as_slice(),
         &[NodeId::new(100), NodeId::new(1)]
     );
 }
@@ -2845,7 +3254,7 @@ fn move_child_out_then_splice_and_remove_old_container_does_not_panic() {
         .unwrap();
     assert_eq!(impact(outcome).removed_nodes, vec![NodeId::new(0)]);
     assert_eq!(
-        reducer.document().unwrap().roots().children.as_slice(),
+        reducer.document().unwrap().roots().as_slice(),
         &[NodeId::new(1)]
     );
 }
@@ -2967,7 +3376,7 @@ fn append_and_local_replace_share_one_atomic_source_view_and_stale_cas_rolls_bac
         0,
         NodeStability::Provisional,
         (0, 2),
-        original.children.children.as_ref().clone(),
+        original.children.as_slice().to_vec(),
         ContentKind::Paragraph {},
     );
     reducer
@@ -4104,7 +4513,7 @@ fn indexed_local_replacements_do_not_rescan_the_whole_root_list() {
             id,
             NodeStability::Stable,
             (0, 0),
-            current.children.children.as_ref().clone(),
+            current.children.as_slice().to_vec(),
             ContentKind::Heading { level: 1 },
         );
         reducer
@@ -4260,65 +4669,73 @@ fn retained_snapshots_do_not_defer_topology_copies_into_later_appends() {
     producer.apply(bootstrap).unwrap();
 
     let roots_clone = producer.document().unwrap().roots().clone();
-    assert!(!std::sync::Arc::ptr_eq(
-        &producer.document().unwrap().roots().children,
-        &roots_clone.children,
-    ));
+    assert_ne!(
+        producer.document().unwrap().roots().as_slice().as_ptr(),
+        roots_clone.as_slice().as_ptr(),
+    );
     let node_clone = producer
         .document()
         .unwrap()
         .node(NodeId::new(0))
         .unwrap()
         .clone();
-    assert!(!std::sync::Arc::ptr_eq(
-        &producer
+    assert_ne!(
+        producer
             .document()
             .unwrap()
             .node(NodeId::new(0))
             .unwrap()
             .children
-            .children,
-        &node_clone.children.children,
-    ));
+            .as_slice()
+            .as_ptr(),
+        node_clone.children.as_slice().as_ptr(),
+    );
     let reducer_clone = producer.clone();
-    assert!(!std::sync::Arc::ptr_eq(
-        &producer.document().unwrap().roots().children,
-        &reducer_clone.document().unwrap().roots().children,
-    ));
+    assert_ne!(
+        producer.document().unwrap().roots().as_slice().as_ptr(),
+        reducer_clone
+            .document()
+            .unwrap()
+            .roots()
+            .as_slice()
+            .as_ptr(),
+    );
 
     let retained = producer.document().unwrap().snapshot();
-    assert!(!std::sync::Arc::ptr_eq(
-        &producer.document().unwrap().roots().children,
-        &retained.roots().children,
-    ));
-    assert!(!std::sync::Arc::ptr_eq(
-        &producer
+    assert_ne!(
+        producer.document().unwrap().roots().as_slice().as_ptr(),
+        retained.roots().as_slice().as_ptr(),
+    );
+    assert_ne!(
+        producer
             .document()
             .unwrap()
             .node(NodeId::new(0))
             .unwrap()
             .children
-            .children,
-        &retained.nodes()[0].children.children,
-    ));
+            .as_slice()
+            .as_ptr(),
+        retained.nodes()[0].children.as_slice().as_ptr(),
+    );
 
     let retained_clone = retained.clone();
     let mut consumer = Reducer::new();
     consumer.recover_snapshot(retained_clone).unwrap();
-    assert!(!std::sync::Arc::ptr_eq(
-        &consumer.document().unwrap().roots().children,
-        &retained.roots().children,
-    ));
-    assert!(!std::sync::Arc::ptr_eq(
-        &consumer
+    assert_ne!(
+        consumer.document().unwrap().roots().as_slice().as_ptr(),
+        retained.roots().as_slice().as_ptr(),
+    );
+    assert_ne!(
+        consumer
             .document()
             .unwrap()
             .node(NodeId::new(0))
             .unwrap()
             .children
-            .children,
-        &retained.nodes()[0].children.children,
-    ));
+            .as_slice()
+            .as_ptr(),
+        retained.nodes()[0].children.as_slice().as_ptr(),
+    );
 
     let next = leaf(2, NodeStability::Stable, (0, 0), ContentKind::Paragraph {});
     let roots = consumer.document().unwrap().roots().clone();
@@ -4339,7 +4756,7 @@ fn retained_snapshots_do_not_defer_topology_copies_into_later_appends() {
         consumer.metrics().child_ids_copied - baseline.child_ids_copied,
         1
     );
-    assert_eq!(retained.roots().children.as_slice(), &[NodeId::new(0)]);
+    assert_eq!(retained.roots().as_slice(), &[NodeId::new(0)]);
 }
 
 #[test]
@@ -4410,26 +4827,32 @@ fn normalized_semantic_text_counts_toward_metadata_limits() {
         max_node_metadata_bytes: 3,
         ..ProtocolLimits::default()
     };
-    let node = leaf(
-        0,
-        NodeStability::Stable,
-        (0, 0),
+    let fixtures = [
         ContentKind::Text {
             text: mdstream_protocol::SemanticText::Normalized {
                 value: "four".to_string(),
             },
         },
-    );
-    let mut reducer = Reducer::with_limits(limits);
+        ContentKind::Html {
+            block: true,
+            text: mdstream_protocol::SemanticText::Normalized {
+                value: "four".to_string(),
+            },
+        },
+    ];
 
-    assert!(matches!(
-        reducer.apply(rooted_start(1, "", vec![node])),
-        Err(ProtocolError::ValueTooLarge {
-            field: "semantic_text.value",
-            limit: 3,
-            actual: 4,
-        })
-    ));
+    for content in fixtures {
+        let node = leaf(0, NodeStability::Stable, (0, 0), content);
+        let mut reducer = Reducer::with_limits(limits);
+        assert!(matches!(
+            reducer.apply(rooted_start(1, "", vec![node])),
+            Err(ProtocolError::ValueTooLarge {
+                field: "semantic_text.value",
+                limit: 3,
+                actual: 4,
+            })
+        ));
+    }
 }
 
 #[test]

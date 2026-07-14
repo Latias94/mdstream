@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ChangeId, ContentNode, Coordinate, Epoch, NodeId, NodeProjection, NodeVersion, PayloadDigest,
-    ProtocolError, ProtocolLimits, ProtocolMaturity, ResourceId, ResourceVersion, SchemaVersion,
-    SemanticResource, Sequence, SourceCursor, StructureVersion,
+    ChangeId, ContentKind, ContentNode, Coordinate, Epoch, NodeId, NodeProjection, NodeVersion,
+    PayloadDigest, ProtocolError, ProtocolLimits, ProtocolMaturity, ResourceId, ResourceVersion,
+    SchemaVersion, SemanticResource, Sequence, SourceCursor, StructureVersion,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +47,15 @@ pub enum ChildListOwner {
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 /// A compare-and-set operation over canonical projections or resources.
 pub enum ProjectionOp {
+    /// Advances the exclusive source frontier covered by the canonical projection.
+    ///
+    /// This operation is compare-and-set against the document projection cursor.
+    /// Source-only changes intentionally omit it and leave projection coverage
+    /// unchanged.
+    AdvanceProjection {
+        expected_cursor: SourceCursor,
+        new_cursor: SourceCursor,
+    },
     InsertNode {
         node: ContentNode,
     },
@@ -93,7 +102,128 @@ pub enum ProjectionOp {
     FinishDocument,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Aggregate payload budgets consumed by projection operations in one change.
+pub struct ChangePayloadCost {
+    pub structural_items: usize,
+    pub metadata_bytes: usize,
+}
+
+impl ChangePayloadCost {
+    pub const ZERO: Self = Self {
+        structural_items: 0,
+        metadata_bytes: 0,
+    };
+
+    pub fn for_insert_node(
+        node: &ContentNode,
+        limits: ProtocolLimits,
+    ) -> Result<Self, ProtocolError> {
+        let content_items = content_structural_items(&node.content);
+        validate_structural_component("child_list.children", node.children.len(), limits)?;
+        validate_structural_component("change.table.alignments", content_items, limits)?;
+        Ok(Self {
+            structural_items: node
+                .children
+                .len()
+                .checked_add(content_items)
+                .ok_or(ProtocolError::MetadataOverflow)?,
+            metadata_bytes: node.validate_shape(limits)?,
+        })
+    }
+
+    pub fn for_projection(
+        node_id: NodeId,
+        projection: &NodeProjection,
+        limits: ProtocolLimits,
+    ) -> Result<Self, ProtocolError> {
+        let content_items = content_structural_items(&projection.content);
+        validate_structural_component("change.table.alignments", content_items, limits)?;
+        Ok(Self {
+            structural_items: content_items,
+            metadata_bytes: projection.validate_shape(node_id, limits)?,
+        })
+    }
+
+    pub fn for_content(
+        content: &ContentKind,
+        limits: ProtocolLimits,
+    ) -> Result<Self, ProtocolError> {
+        let content_items = content_structural_items(content);
+        validate_structural_component("change.table.alignments", content_items, limits)?;
+        Ok(Self {
+            structural_items: content_items,
+            metadata_bytes: crate::ir::validate_kind(content, limits)?,
+        })
+    }
+
+    pub fn for_splice(insert_len: usize, limits: ProtocolLimits) -> Result<Self, ProtocolError> {
+        validate_structural_component("child_list.children", insert_len, limits)?;
+        Ok(Self {
+            structural_items: insert_len,
+            metadata_bytes: 0,
+        })
+    }
+
+    pub fn for_resource(
+        resource: &SemanticResource,
+        limits: ProtocolLimits,
+    ) -> Result<Self, ProtocolError> {
+        Ok(Self {
+            structural_items: 0,
+            metadata_bytes: resource.validate_local(limits)?,
+        })
+    }
+
+    pub fn checked_add(self, other: Self) -> Result<Self, ProtocolError> {
+        Ok(Self {
+            structural_items: self
+                .structural_items
+                .checked_add(other.structural_items)
+                .ok_or(ProtocolError::MetadataOverflow)?,
+            metadata_bytes: self
+                .metadata_bytes
+                .checked_add(other.metadata_bytes)
+                .ok_or(ProtocolError::MetadataOverflow)?,
+        })
+    }
+}
+
+fn validate_structural_component(
+    field: &'static str,
+    actual: usize,
+    limits: ProtocolLimits,
+) -> Result<(), ProtocolError> {
+    if actual > limits.max_children_per_list {
+        Err(ProtocolError::ValueTooLarge {
+            field,
+            limit: limits.max_children_per_list,
+            actual,
+        })
+    } else {
+        Ok(())
+    }
+}
+
 impl ProjectionOp {
+    pub fn payload_cost(&self, limits: ProtocolLimits) -> Result<ChangePayloadCost, ProtocolError> {
+        match self {
+            Self::InsertNode { node } => ChangePayloadCost::for_insert_node(node, limits),
+            Self::ReplaceNode {
+                node_id,
+                projection,
+                ..
+            } => ChangePayloadCost::for_projection(*node_id, projection, limits),
+            Self::SpliceChildren { insert, .. } => {
+                ChangePayloadCost::for_splice(insert.len(), limits)
+            }
+            Self::InsertResource { resource } | Self::ReplaceResource { resource, .. } => {
+                ChangePayloadCost::for_resource(resource, limits)
+            }
+            _ => Ok(ChangePayloadCost::ZERO),
+        }
+    }
+
     pub(crate) fn node_target(&self) -> Option<NodeId> {
         match self {
             Self::InsertNode { node } => Some(node.id),
@@ -289,71 +419,22 @@ impl ChangeSet {
             });
         }
 
-        let mut structural_items = 0usize;
+        let mut payload_cost = ChangePayloadCost::ZERO;
         for operation in &self.operations {
-            let (attachments, content_items) = match operation {
-                ProjectionOp::InsertNode { node } => (
-                    node.children.children.len(),
-                    content_structural_items(&node.content),
-                ),
-                ProjectionOp::ReplaceNode { projection, .. } => {
-                    (0, content_structural_items(&projection.content))
-                }
-                ProjectionOp::SpliceChildren { insert, .. } => (insert.len(), 0),
-                _ => (0, 0),
-            };
-            if attachments > limits.max_children_per_list {
-                return Err(ProtocolError::ValueTooLarge {
-                    field: "child_list.children",
-                    limit: limits.max_children_per_list,
-                    actual: attachments,
-                });
-            }
-            if content_items > limits.max_children_per_list {
-                return Err(ProtocolError::ValueTooLarge {
-                    field: "change.table.alignments",
-                    limit: limits.max_children_per_list,
-                    actual: content_items,
-                });
-            }
-            structural_items = structural_items
-                .checked_add(attachments)
-                .and_then(|total| total.checked_add(content_items))
-                .ok_or(ProtocolError::MetadataOverflow)?;
+            payload_cost = payload_cost.checked_add(operation.payload_cost(limits)?)?;
         }
-        if structural_items > limits.max_change_structural_items {
+        if payload_cost.structural_items > limits.max_change_structural_items {
             return Err(ProtocolError::ValueTooLarge {
                 field: "change.structural_items",
                 limit: limits.max_change_structural_items,
-                actual: structural_items,
+                actual: payload_cost.structural_items,
             });
         }
-
-        let mut metadata_bytes = 0usize;
-        for operation in &self.operations {
-            let bytes = match operation {
-                ProjectionOp::InsertNode { node } => node.validate_shape(limits)?,
-                ProjectionOp::ReplaceNode {
-                    node_id,
-                    projection,
-                    ..
-                } => projection.validate_shape(*node_id, limits)?,
-                ProjectionOp::InsertResource { resource }
-                | ProjectionOp::ReplaceResource { resource, .. } => {
-                    resource.validate_local(limits)?
-                }
-                ProjectionOp::SpliceChildren { .. } => 0,
-                _ => 0,
-            };
-            metadata_bytes = metadata_bytes
-                .checked_add(bytes)
-                .ok_or(ProtocolError::MetadataOverflow)?;
-        }
-        if metadata_bytes > limits.max_change_metadata_bytes {
+        if payload_cost.metadata_bytes > limits.max_change_metadata_bytes {
             return Err(ProtocolError::ValueTooLarge {
                 field: "change.metadata",
                 limit: limits.max_change_metadata_bytes,
-                actual: metadata_bytes,
+                actual: payload_cost.metadata_bytes,
             });
         }
         Ok(())

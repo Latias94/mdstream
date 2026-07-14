@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mdstream.dev/schemas/conformance/0.4-draft.1/fixture.json",
+  "$id": "https://mdstream.dev/schemas/conformance/0.4-draft.2/fixture.json",
   "title": "mdstream conformance fixture",
   "type": "object",
   "additionalProperties": false,
@@ -16,7 +16,7 @@
     "expected"
   ],
   "properties": {
-    "schema": { "const": "mdstream.conformance/0.4-draft.1" },
+    "schema": { "const": "mdstream.conformance/0.4-draft.2" },
     "id": { "$ref": "#/$defs/identifier" },
     "description": { "type": "string", "minLength": 1 },
     "source": { "type": "string" },
@@ -551,6 +551,32 @@
         }
       }
     },
+    "codeBlockSyntax": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "indented" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "marker", "length"],
+          "properties": {
+            "kind": { "const": "fenced" },
+            "marker": { "enum": ["backtick", "tilde"] },
+            "length": {
+              "type": "integer",
+              "minimum": 3,
+              "maximum": 4294967295
+            }
+          }
+        }
+      ]
+    },
     "contentKind": {
       "oneOf": [
         {
@@ -637,15 +663,67 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "fenced", "language", "meta", "mermaid", "text"],
+          "required": ["kind", "syntax", "info", "text"],
           "properties": {
             "kind": { "const": "code_block" },
-            "fenced": { "type": "boolean" },
-            "language": { "type": ["string", "null"] },
-            "meta": { "type": ["string", "null"] },
-            "mermaid": { "type": "boolean" },
+            "syntax": { "$ref": "#/$defs/codeBlockSyntax" },
+            "info": { "type": ["string", "null"] },
             "text": { "$ref": "#/$defs/semanticText" }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "syntax": {
+                    "properties": { "kind": { "const": "indented" } },
+                    "required": ["kind"]
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "info": { "type": "null" }
+                }
+              },
+              "else": {
+                "oneOf": [
+                  {
+                    "properties": {
+                      "info": { "type": "null" }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "info": { "type": "string", "pattern": "\\S" }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "syntax": {
+                    "properties": {
+                      "kind": { "const": "fenced" },
+                      "marker": { "const": "backtick" }
+                    },
+                    "required": ["kind", "marker"]
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "info": {
+                    "oneOf": [
+                      { "type": "null" },
+                      { "type": "string", "pattern": "^[^`]*$" }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
         },
         {
           "type": "object",
@@ -706,11 +784,11 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "block", "opaque"],
+          "required": ["kind", "block", "text"],
           "properties": {
             "kind": { "const": "html" },
             "block": { "type": "boolean" },
-            "opaque": { "type": "boolean" }
+            "text": { "$ref": "#/$defs/semanticText" }
           }
         },
         {
@@ -837,6 +915,16 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "expected_cursor", "new_cursor"],
+          "properties": {
+            "kind": { "const": "advance_projection" },
+            "expected_cursor": { "$ref": "#/$defs/decimal" },
+            "new_cursor": { "$ref": "#/$defs/decimal" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "node"],
           "properties": {
             "kind": { "const": "insert_node" },
@@ -952,7 +1040,7 @@
         "operations"
       ],
       "properties": {
-        "schema": { "const": "mdstream.content/0.4-draft.2" },
+        "schema": { "const": "mdstream.content/0.4-draft.5" },
         "maturity": { "const": "draft" },
         "epoch": { "$ref": "#/$defs/decimal" },
         "sequence": { "$ref": "#/$defs/decimal" },
@@ -1075,16 +1163,18 @@
         "epoch",
         "lifecycle",
         "source",
+        "projection_cursor",
         "roots",
         "nodes",
         "resources"
       ],
       "properties": {
-        "schema": { "const": "mdstream.content/0.4-draft.2" },
+        "schema": { "const": "mdstream.content/0.4-draft.5" },
         "maturity": { "const": "draft" },
         "epoch": { "$ref": "#/$defs/decimal" },
         "lifecycle": { "enum": ["open", "finalized"] },
         "source": { "type": "string" },
+        "projection_cursor": { "$ref": "#/$defs/decimal" },
         "roots": { "$ref": "#/$defs/childList" },
         "nodes": { "type": "array", "items": { "$ref": "#/$defs/contentNode" } },
         "resources": {

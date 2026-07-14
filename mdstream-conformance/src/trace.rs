@@ -40,9 +40,8 @@ impl TraceInputEvent {
     }
 }
 
-/// Builds the temporary source-only protocol bridge used before the 0.4 engine
-/// begins emitting projection operations. Every chunk becomes one continuous
-/// source append and the trace ends with an explicit finalization change.
+/// Builds a source-only protocol trace. Every chunk becomes one continuous
+/// source append; finalization explicitly marks the complete source as covered.
 pub fn source_only_trace<I, S>(
     id: impl Into<String>,
     schedule: impl Into<String>,
@@ -116,7 +115,15 @@ where
             SourceDelta::unchanged(SourceCursor::new(
                 u64::try_from(cursor).map_err(|_| ProtocolError::CursorOverflow)?,
             )),
-            vec![ProjectionOp::FinishDocument],
+            vec![
+                ProjectionOp::AdvanceProjection {
+                    expected_cursor: SourceCursor::new(0),
+                    new_cursor: SourceCursor::new(
+                        u64::try_from(cursor).map_err(|_| ProtocolError::CursorOverflow)?,
+                    ),
+                },
+                ProjectionOp::FinishDocument,
+            ],
         )?);
     }
     input_events.push(TraceInputEvent::Finish {
@@ -157,6 +164,7 @@ pub struct NormalizedSnapshot {
     pub epoch: Epoch,
     pub lifecycle: DocumentLifecycle,
     pub source: String,
+    pub projection_cursor: SourceCursor,
     pub roots: ChildList,
     pub nodes: Vec<ContentNode>,
     pub resources: Vec<SemanticResource>,
@@ -170,6 +178,7 @@ impl From<&Snapshot> for NormalizedSnapshot {
             epoch: snapshot.coordinate().epoch,
             lifecycle: snapshot.lifecycle(),
             source: snapshot.source().to_string(),
+            projection_cursor: snapshot.projection_cursor(),
             roots: snapshot.roots().clone(),
             nodes: snapshot.nodes().to_vec(),
             resources: snapshot.resources().to_vec(),
