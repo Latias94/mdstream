@@ -2224,26 +2224,7 @@ fn validate_resource_kind(
     node: &ContentNode,
     resource: &SemanticResource,
 ) -> Result<(), StageFailure> {
-    let valid = match (&node.content, &resource.content) {
-        (
-            ContentKind::Link { .. } | ContentKind::Image { .. },
-            SemanticResourceKind::Link { .. },
-        ) => true,
-        (
-            ContentKind::CitationDefinition { key, .. }
-            | ContentKind::CitationReference { key, .. },
-            SemanticResourceKind::Citation {
-                key: resource_key, ..
-            },
-        ) => key == resource_key,
-        _ => false,
-    };
-    if valid
-        && node
-            .content
-            .resource_ref()
-            .is_some_and(|reference| reference.version == resource.version)
-    {
+    if resource_kind_is_compatible(node, resource) {
         Ok(())
     } else {
         Err(ProtocolError::InvalidChange(
@@ -2253,12 +2234,45 @@ fn validate_resource_kind(
     }
 }
 
+fn resource_kind_is_compatible(node: &ContentNode, resource: &SemanticResource) -> bool {
+    let kind_matches = match (&node.content, &resource.content) {
+        (
+            ContentKind::Link { .. } | ContentKind::Image { .. },
+            SemanticResourceKind::Link { .. },
+        ) => true,
+        (
+            ContentKind::FootnoteDefinition { label, .. }
+            | ContentKind::FootnoteReference { label, .. },
+            SemanticResourceKind::Footnote {
+                label: resource_label,
+            },
+        ) => label == resource_label,
+        (
+            ContentKind::CitationDefinition { key, .. }
+            | ContentKind::CitationReference { key, .. },
+            SemanticResourceKind::Citation {
+                key: resource_key, ..
+            },
+        ) => key == resource_key,
+        _ => false,
+    };
+    kind_matches
+        && node
+            .content
+            .resource_ref()
+            .is_some_and(|reference| reference.version == resource.version)
+}
+
 fn validate_resource_identity(
     current: &SemanticResource,
     replacement: &SemanticResource,
 ) -> Result<(), ProtocolError> {
     let compatible = match (&current.content, &replacement.content) {
         (SemanticResourceKind::Link { .. }, SemanticResourceKind::Link { .. }) => true,
+        (
+            SemanticResourceKind::Footnote { label: current },
+            SemanticResourceKind::Footnote { label: replacement },
+        ) => current == replacement,
         (
             SemanticResourceKind::Citation {
                 protocol: current_protocol,
@@ -2468,7 +2482,7 @@ pub(crate) fn validate_snapshot(
     limits: ProtocolLimits,
 ) -> Result<ValidationStats, ProtocolError> {
     snapshot.schema().ensure_supported()?;
-    if snapshot.maturity() != ProtocolMaturity::Draft {
+    if snapshot.maturity() != ProtocolMaturity::Candidate {
         return Err(ProtocolError::UnsupportedSchema(format!(
             "maturity {:?}",
             snapshot.maturity()
@@ -2820,26 +2834,7 @@ fn validate_snapshot_resource_kind(
     node: &ContentNode,
     resource: &SemanticResource,
 ) -> Result<(), ProtocolError> {
-    let valid = match (&node.content, &resource.content) {
-        (
-            ContentKind::Link { .. } | ContentKind::Image { .. },
-            SemanticResourceKind::Link { .. },
-        ) => true,
-        (
-            ContentKind::CitationDefinition { key, .. }
-            | ContentKind::CitationReference { key, .. },
-            SemanticResourceKind::Citation {
-                key: resource_key, ..
-            },
-        ) => key == resource_key,
-        _ => false,
-    };
-    if valid
-        && node
-            .content
-            .resource_ref()
-            .is_some_and(|reference| reference.version == resource.version)
-    {
+    if resource_kind_is_compatible(node, resource) {
         Ok(())
     } else {
         Err(ProtocolError::InvalidSnapshot(

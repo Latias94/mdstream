@@ -24,6 +24,7 @@ pub(crate) struct MaterializedForest {
     pub(crate) roots: Vec<NodeId>,
     pub(crate) nodes: BTreeMap<NodeId, MaterializedNode>,
     pub(crate) resources: BTreeMap<ResourceId, SemanticResource>,
+    pub(crate) resource_refs: Vec<ResourceRef>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -45,6 +46,7 @@ pub(crate) enum IdentityError {
     DuplicateLiveNode(NodeId),
     ResourceConflict(ResourceId),
     MissingResource(DraftResourceIndex),
+    MissingRequiredResource,
     NumericOverflow(&'static str),
 }
 
@@ -72,6 +74,9 @@ impl fmt::Display for IdentityError {
             Self::MissingResource(index) => {
                 write!(formatter, "draft resource {} does not exist", index.get())
             }
+            Self::MissingRequiredResource => {
+                formatter.write_str("definition node has no semantic resource")
+            }
             Self::NumericOverflow(field) => {
                 write!(formatter, "{field} exceeds the identity domain")
             }
@@ -98,6 +103,7 @@ impl IdentityLedger {
             roots: Vec::with_capacity(draft.roots.len()),
             nodes: BTreeMap::new(),
             resources,
+            resource_refs: resource_refs.clone(),
         };
         let mut occurrences = BTreeMap::new();
 
@@ -163,15 +169,20 @@ impl<'ledger> StagedIdentities<'ledger> {
                     destination: draft.destination.clone(),
                     title: draft.title.clone(),
                 },
+                DraftResourceRole::Footnote => SemanticResourceKind::Footnote {
+                    label: draft.key.reference_label.clone().unwrap_or_default(),
+                },
                 DraftResourceRole::Citation => SemanticResourceKind::Citation {
                     protocol: mdstream_protocol::CitationProtocol::V1,
-                    key: draft
-                        .key
-                        .reference_label
-                        .as_deref()
-                        .unwrap_or_default()
-                        .trim_start_matches('@')
-                        .to_string(),
+                    key: unicase::UniCase::new(
+                        draft
+                            .key
+                            .reference_label
+                            .as_deref()
+                            .unwrap_or_default()
+                            .trim_start_matches('@'),
+                    )
+                    .to_folded_case(),
                     destination: draft.destination.clone(),
                     title: draft.title.clone(),
                 },
@@ -363,11 +374,17 @@ fn materialize_content(
             display: *display,
             text: text.clone(),
         },
-        DraftContentKind::FootnoteDefinition { label } => ContentKind::FootnoteDefinition {
+        DraftContentKind::FootnoteDefinition { label, target } => ContentKind::FootnoteDefinition {
             label: label.clone(),
+            target: required_resource_reference(*target, resource_refs)?,
         },
-        DraftContentKind::FootnoteReference { label } => ContentKind::FootnoteReference {
+        DraftContentKind::FootnoteReference { label, target } => ContentKind::FootnoteReference {
             label: label.clone(),
+            target: resource_reference(*target, resource_refs)?,
+        },
+        DraftContentKind::CitationDefinition { key, target } => ContentKind::CitationDefinition {
+            key: key.clone(),
+            target: required_resource_reference(*target, resource_refs)?,
         },
         DraftContentKind::SoftBreak => ContentKind::SoftBreak {},
         DraftContentKind::HardBreak => ContentKind::HardBreak {},
@@ -387,6 +404,13 @@ fn resource_reference(
                 .ok_or(IdentityError::MissingResource(index))
         })
         .transpose()
+}
+
+fn required_resource_reference(
+    index: Option<DraftResourceIndex>,
+    resource_refs: &[ResourceRef],
+) -> Result<ResourceRef, IdentityError> {
+    resource_reference(index, resource_refs)?.ok_or(IdentityError::MissingRequiredResource)
 }
 
 fn next_occurrence(
@@ -424,29 +448,16 @@ fn node_origin(epoch: Epoch, parent: Option<NodeId>, node: &DraftNode, occurrenc
 
 fn resource_origin(epoch: Epoch, resource: &DraftResource) -> Result<Vec<u8>, IdentityError> {
     let mut origin = Vec::with_capacity(64);
-    origin.extend_from_slice(b"mdstream.resource-origin/1\0");
+    origin.extend_from_slice(b"mdstream.resource-origin/2\0");
     origin.extend_from_slice(&epoch.get().to_be_bytes());
     origin.push(match resource.key.role {
         DraftResourceRole::Link => 0,
         DraftResourceRole::Image => 1,
-        DraftResourceRole::Citation => 2,
+        DraftResourceRole::Footnote => 2,
+        DraftResourceRole::Citation => 3,
     });
-    if let Some(label) = &resource.key.reference_label {
-        origin.push(1);
-        push_length_prefixed(&mut origin, label.as_bytes())?;
-    } else {
-        origin.push(0);
-        origin.extend_from_slice(&resource.key.source.start.get().to_be_bytes());
-    }
+    origin.extend_from_slice(&resource.key.source.start.get().to_be_bytes());
     Ok(origin)
-}
-
-fn push_length_prefixed(output: &mut Vec<u8>, value: &[u8]) -> Result<(), IdentityError> {
-    let length = u64::try_from(value.len())
-        .map_err(|_| IdentityError::NumericOverflow("origin component"))?;
-    output.extend_from_slice(&length.to_be_bytes());
-    output.extend_from_slice(value);
-    Ok(())
 }
 
 const fn origin_tag(origin: DraftOriginHint) -> u8 {

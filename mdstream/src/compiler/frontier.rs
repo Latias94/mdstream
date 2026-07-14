@@ -59,9 +59,10 @@ fn root_is_closed(
         DraftContentKind::Heading { .. } | DraftContentKind::ThematicBreak => {
             Ok(raw.ends_with('\n') || source.get(end..).is_some_and(|tail| tail.starts_with('\n')))
         }
-        DraftContentKind::Paragraph | DraftContentKind::Table { .. } => {
-            Ok(trailing_blank_line(source))
-        }
+        DraftContentKind::Paragraph
+        | DraftContentKind::Table { .. }
+        | DraftContentKind::FootnoteDefinition { .. }
+        | DraftContentKind::CitationDefinition { .. } => Ok(trailing_blank_line(source)),
         DraftContentKind::Custom { .. } => Ok(true),
         _ => Ok(false),
     }

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mdstream.dev/schemas/conformance/0.4-draft.2/fixture.json",
+  "$id": "https://mdstream.dev/schemas/conformance/0.4-candidate.1/fixture.json",
   "title": "mdstream conformance fixture",
   "type": "object",
   "additionalProperties": false,
@@ -16,7 +16,7 @@
     "expected"
   ],
   "properties": {
-    "schema": { "const": "mdstream.conformance/0.4-draft.2" },
+    "schema": { "const": "mdstream.conformance/0.4-candidate.1" },
     "id": { "$ref": "#/$defs/identifier" },
     "description": { "type": "string", "minLength": 1 },
     "source": { "type": "string" },
@@ -517,6 +517,15 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "label"],
+          "properties": {
+            "kind": { "const": "footnote" },
+            "label": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "protocol", "key", "destination", "title"],
           "properties": {
             "kind": { "const": "citation" },
@@ -804,10 +813,26 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "label"],
+          "required": ["kind", "label", "target"],
           "properties": {
-            "kind": { "enum": ["footnote_definition", "footnote_reference"] },
-            "label": { "type": "string", "minLength": 1 }
+            "kind": { "const": "footnote_definition" },
+            "label": { "type": "string", "minLength": 1 },
+            "target": { "$ref": "#/$defs/resourceRef" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "label", "target"],
+          "properties": {
+            "kind": { "const": "footnote_reference" },
+            "label": { "type": "string", "minLength": 1 },
+            "target": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/resourceRef" }
+              ]
+            }
           }
         },
         {
@@ -1040,8 +1065,8 @@
         "operations"
       ],
       "properties": {
-        "schema": { "const": "mdstream.content/0.4-draft.5" },
-        "maturity": { "const": "draft" },
+        "schema": { "const": "mdstream.content/0.4-candidate.1" },
+        "maturity": { "const": "candidate" },
         "epoch": { "$ref": "#/$defs/decimal" },
         "sequence": { "$ref": "#/$defs/decimal" },
         "change_id": { "$ref": "#/$defs/opaque" },
@@ -1169,8 +1194,8 @@
         "resources"
       ],
       "properties": {
-        "schema": { "const": "mdstream.content/0.4-draft.5" },
-        "maturity": { "const": "draft" },
+        "schema": { "const": "mdstream.content/0.4-candidate.1" },
+        "maturity": { "const": "candidate" },
         "epoch": { "$ref": "#/$defs/decimal" },
         "lifecycle": { "enum": ["open", "finalized"] },
         "source": { "type": "string" },

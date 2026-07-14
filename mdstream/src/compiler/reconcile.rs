@@ -7,6 +7,7 @@ use mdstream_protocol::{
 
 use super::{
     MaterializedForest, MaterializedNode,
+    definitions::SemanticCorrection,
     operations::{OperationLimitError, OperationSink},
 };
 
@@ -46,6 +47,16 @@ impl ReconcileMetrics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReconcileOutput {
     pub(crate) metrics: ReconcileMetrics,
+}
+
+pub(crate) struct ReconcileInput<'a> {
+    pub(crate) document: Option<&'a Document>,
+    pub(crate) stable_root_count: usize,
+    pub(crate) previous_frontier_resources: &'a BTreeSet<ResourceId>,
+    pub(crate) stable_resources: &'a BTreeSet<ResourceId>,
+    pub(crate) newly_stable_resources: &'a BTreeSet<ResourceId>,
+    pub(crate) candidate: &'a MaterializedForest,
+    pub(crate) semantic_corrections: Vec<SemanticCorrection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,14 +112,18 @@ impl From<OperationLimitError> for ReconcileError {
 impl std::error::Error for ReconcileError {}
 
 pub(crate) fn reconcile_frontier(
-    document: Option<&Document>,
-    stable_root_count: usize,
-    previous_frontier_resources: &BTreeSet<ResourceId>,
-    stable_resources: &BTreeSet<ResourceId>,
-    newly_stable_resources: &BTreeSet<ResourceId>,
-    candidate: &MaterializedForest,
+    input: ReconcileInput<'_>,
     operations: &mut OperationSink,
 ) -> Result<ReconcileOutput, ReconcileError> {
+    let ReconcileInput {
+        document,
+        stable_root_count,
+        previous_frontier_resources,
+        stable_resources,
+        newly_stable_resources,
+        candidate,
+        semantic_corrections,
+    } = input;
     let current_roots = document.map_or(&[][..], |document| document.roots().as_slice());
     if stable_root_count > current_roots.len() {
         return Err(ReconcileError::StableRootCount);
@@ -141,6 +156,9 @@ pub(crate) fn reconcile_frontier(
     }
 
     reconcile_resources(document, candidate, operations, &mut metrics)?;
+    for correction in semantic_corrections {
+        operations.push_with(correction.cost, || correction.operation)?;
+    }
     reconcile_nodes(
         document,
         &current_frontier,

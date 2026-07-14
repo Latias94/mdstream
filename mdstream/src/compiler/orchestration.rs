@@ -8,12 +8,13 @@ use mdstream_protocol::{
 use super::{
     checkpoints::CheckpointGate,
     custom::{CustomStartContext, PendingCustomState},
+    definitions::{SemanticCommit, SemanticState},
     frontier::{append_closes_structure, stable_root_prefix},
     identity::{IdentityCommit, IdentityLedger},
-    markdown::{DraftUsage, compile_markdown_with_custom},
-    metrics::{CompileObservation, add_metric_bytes, compile_metrics},
+    markdown::{DraftUsage, compile_markdown_with_custom, validate_draft_limits},
+    metrics::{CompileObservation, add_metric_bytes, add_semantic_metrics, compile_metrics},
     operations::{OperationSink, collect_resources, incremental_operations},
-    reconcile::{collect_frontier_nodes, reconcile_frontier},
+    reconcile::{ReconcileInput, collect_frontier_nodes, reconcile_frontier},
     types::{CompilerError, CompilerMetrics, CustomBlockSpec},
 };
 
@@ -22,6 +23,7 @@ pub(crate) struct ContentCompiler {
     custom_blocks: Vec<CustomBlockSpec>,
     limits: ProtocolLimits,
     identity: IdentityLedger,
+    semantics: SemanticState,
     checkpoints: CheckpointGate,
     frontier: CompilerFrontier,
     stable_root_count: usize,
@@ -60,6 +62,7 @@ pub(crate) struct CompilerTransition {
 
 pub(crate) struct CompilerCommit {
     identity: IdentityCommit,
+    semantic: Option<SemanticCommit>,
     checkpoints: CheckpointGate,
     frontier: CompilerFrontier,
     stable_root_count: usize,
@@ -161,6 +164,9 @@ impl ContentCompiler {
 
     pub(crate) fn commit(&mut self, commit: CompilerCommit) {
         self.identity.commit(commit.identity);
+        if let Some(semantic) = commit.semantic {
+            self.semantics.commit(semantic);
+        }
         self.checkpoints = commit.checkpoints;
         self.frontier = commit.frontier;
         self.stable_root_count = commit.stable_root_count;
@@ -177,6 +183,7 @@ impl ContentCompiler {
 
     pub(crate) fn reset(&mut self) {
         self.identity = IdentityLedger::default();
+        self.semantics.reset();
         self.checkpoints.reset();
         self.frontier = CompilerFrontier::default();
         self.stable_root_count = 0;
@@ -233,38 +240,10 @@ impl ContentCompiler {
             finishing,
         )?;
         let pending_custom = compilation.pending_custom;
-        let draft = compilation.forest;
+        let definitions = compilation.definitions;
+        let mut draft = compilation.forest;
         let stable_draft_roots =
             stable_root_prefix(&draft, &source, self.frontier.start, finishing)?;
-        let (candidate, identity) = self.identity.stage(epoch, &draft, stable_draft_roots)?;
-
-        let stable_from_candidate = collect_resources(
-            &candidate,
-            candidate.roots.iter().take(stable_draft_roots).copied(),
-        )?;
-        let frontier_from_candidate = collect_resources(
-            &candidate,
-            candidate.roots.iter().skip(stable_draft_roots).copied(),
-        )?;
-        let reconciled = reconcile_frontier(
-            document,
-            self.stable_root_count,
-            &self.frontier_resources,
-            &self.stable_resources,
-            &stable_from_candidate,
-            &candidate,
-            &mut operations,
-        )?;
-        if projection_cursor != revision {
-            operations.push_tail_with(|| ProjectionOp::AdvanceProjection {
-                expected_cursor: projection_cursor,
-                new_cursor: revision,
-            });
-        }
-        if finishing {
-            operations.push_tail_with(|| ProjectionOp::FinishDocument);
-        }
-
         let next_frontier_start = if let Some(root) = draft.roots.get(stable_draft_roots) {
             physical_line_start(&source, self.frontier.start, root.source.start)?
         } else if !finishing {
@@ -277,6 +256,52 @@ impl ContentCompiler {
         } else {
             revision
         };
+        let semantic =
+            self.semantics
+                .prepare(&mut draft, definitions, next_frontier_start, self.limits)?;
+        validate_draft_limits(&draft, self.limits)?;
+        let (candidate, identity) = self.identity.stage(epoch, &draft, stable_draft_roots)?;
+        let mut semantic = semantic.finalize(document, &candidate, self.limits)?;
+
+        let mut stable_from_candidate = collect_resources(
+            &candidate,
+            candidate.roots.iter().take(stable_draft_roots).copied(),
+        )?;
+        let semantic_resources = semantic
+            .stable_resources
+            .union(&semantic.frontier_resources)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        stable_from_candidate.retain(|id| !semantic_resources.contains(id));
+        stable_from_candidate.extend(semantic.stable_resources.iter().copied());
+        let mut frontier_from_candidate = collect_resources(
+            &candidate,
+            candidate.roots.iter().skip(stable_draft_roots).copied(),
+        )?;
+        frontier_from_candidate.retain(|id| !semantic_resources.contains(id));
+        frontier_from_candidate.extend(semantic.frontier_resources.iter().copied());
+        let reconciled = reconcile_frontier(
+            ReconcileInput {
+                document,
+                stable_root_count: self.stable_root_count,
+                previous_frontier_resources: &self.frontier_resources,
+                stable_resources: &self.stable_resources,
+                newly_stable_resources: &stable_from_candidate,
+                candidate: &candidate,
+                semantic_corrections: std::mem::take(&mut semantic.corrections),
+            },
+            &mut operations,
+        )?;
+        if projection_cursor != revision {
+            operations.push_tail_with(|| ProjectionOp::AdvanceProjection {
+                expected_cursor: projection_cursor,
+                new_cursor: revision,
+            });
+        }
+        if finishing {
+            operations.push_tail_with(|| ProjectionOp::FinishDocument);
+        }
+
         let remaining_frontier = revision
             .get()
             .checked_sub(next_frontier_start.get())
@@ -305,6 +330,7 @@ impl ContentCompiler {
                 frontier_bytes: remaining_frontier,
                 next_checkpoint: checkpoints.next_checkpoint(),
                 reconciled: reconciled.metrics,
+                semantic: semantic.work,
             },
         )?;
         let stable_root_count = self
@@ -316,6 +342,7 @@ impl ContentCompiler {
             operations: operations.into_operations(),
             commit: CompilerCommit {
                 identity,
+                semantic: Some(semantic.commit),
                 checkpoints,
                 frontier: CompilerFrontier {
                     start: next_frontier_start,
@@ -383,10 +410,13 @@ impl ContentCompiler {
         metrics.frontier_bytes = 0;
         metrics.next_checkpoint = checkpoints.next_checkpoint();
         let stable_root_count = document.map_or(0, |document| document.roots().len());
+        let (semantic, semantic_work) = self.semantics.stage_stabilize()?;
+        let metrics = add_semantic_metrics(metrics, semantic_work)?;
         Ok(CompilerTransition {
             operations: operations.into_operations(),
             commit: CompilerCommit {
                 identity: IdentityCommit::default(),
+                semantic: Some(semantic),
                 checkpoints,
                 frontier: CompilerFrontier {
                     start: revision,
@@ -443,6 +473,7 @@ impl ContentCompiler {
             operations: operations.into_operations(),
             commit: CompilerCommit {
                 identity: IdentityCommit::default(),
+                semantic: None,
                 checkpoints: self.checkpoints,
                 frontier: CompilerFrontier {
                     pending_custom: observation.pending_custom,
@@ -480,6 +511,7 @@ impl ContentCompiler {
             operations: Vec::new(),
             commit: CompilerCommit {
                 identity: IdentityCommit::default(),
+                semantic: None,
                 checkpoints: self.checkpoints,
                 frontier: CompilerFrontier {
                     pending_custom: observation.pending_custom,

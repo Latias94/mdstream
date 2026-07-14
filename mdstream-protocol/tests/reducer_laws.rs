@@ -8,6 +8,9 @@ use mdstream_protocol::{
     SourceCursor, SourceDelta, SourceRange, encode_change_json, encode_snapshot_json,
 };
 
+#[path = "reducer_laws/footnote_resources.rs"]
+mod footnote_resources;
+
 fn change_id(value: &str) -> ChangeId {
     ChangeId::new(value).unwrap()
 }

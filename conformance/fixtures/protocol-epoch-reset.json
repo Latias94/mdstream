@@ -1,14 +1,14 @@
 {
-  "schema": "mdstream.conformance/0.4-draft.2",
+  "schema": "mdstream.conformance/0.4-candidate.1",
   "id": "protocol.epoch-reset",
   "description": "A predecessor-linked epoch reset replaces source and rejects delayed old changes.",
   "source": "new",
   "dialect": {
-    "id": "mdstream.draft",
+    "id": "mdstream.canonical/0.4-candidate.1",
     "extensions": []
   },
   "profile": {
-    "id": "mdstream.protocol/0.4-draft.5",
+    "id": "mdstream.protocol/0.4-candidate.1",
     "claim_scope": ["protocol_replay"],
     "pipeline": []
   },
@@ -36,8 +36,8 @@
       ],
       "changes": [
         {
-          "schema": "mdstream.content/0.4-draft.5",
-          "maturity": "draft",
+          "schema": "mdstream.content/0.4-candidate.1",
+          "maturity": "candidate",
           "epoch": "1",
           "sequence": "0",
           "change_id": "reset:old:start",
@@ -46,8 +46,8 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.5",
-          "maturity": "draft",
+          "schema": "mdstream.content/0.4-candidate.1",
+          "maturity": "candidate",
           "epoch": "1",
           "sequence": "1",
           "change_id": "reset:old:1",
@@ -56,8 +56,8 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.5",
-          "maturity": "draft",
+          "schema": "mdstream.content/0.4-candidate.1",
+          "maturity": "candidate",
           "epoch": "2",
           "sequence": "0",
           "change_id": "reset:new:start",
@@ -73,8 +73,8 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.5",
-          "maturity": "draft",
+          "schema": "mdstream.content/0.4-candidate.1",
+          "maturity": "candidate",
           "epoch": "2",
           "sequence": "1",
           "change_id": "reset:new:1",
@@ -83,8 +83,8 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-draft.5",
-          "maturity": "draft",
+          "schema": "mdstream.content/0.4-candidate.1",
+          "maturity": "candidate",
           "epoch": "2",
           "sequence": "2",
           "change_id": "reset:new:finish",
@@ -104,8 +104,8 @@
   ],
   "expected": {
     "normalized_snapshot": {
-      "schema": "mdstream.content/0.4-draft.5",
-      "maturity": "draft",
+      "schema": "mdstream.content/0.4-candidate.1",
+      "maturity": "candidate",
       "epoch": "2",
       "lifecycle": "finalized",
       "source": "new",

@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, ops::Range};
 
 use mdstream_protocol::{ProtocolLimits, SourceCursor, SourceRange};
 use pulldown_cmark::{CowStr, Event, Parser, RefDefs, Tag, TagEnd};
+use unicase::UniCase;
 
 use crate::compiler::{
     CustomBlockSpec,
@@ -9,6 +10,7 @@ use crate::compiler::{
         CustomBlockMatch, CustomStartContext, PendingCustomState,
         find_custom_blocks_with_node_budget, parse_custom_attributes,
     },
+    definitions::DefinitionFact,
     draft::{
         DraftContentKind, DraftForest, DraftNode, DraftOriginHint, DraftResource,
         DraftResourceIndex, DraftResourceKey, DraftResourceRole, SyntheticRole,
@@ -23,14 +25,18 @@ use crate::compiler::{
 use super::{
     MarkdownError,
     budget::{DraftBudget, DraftUsage},
+    definition_topology::merge_definition_nodes,
     frame::{Frame, FrameEnd, FramePayload, collect_semantic_event, end_name},
-    limits::{draft_node_metadata, draft_resource_metadata, validate_draft_limits},
+    limits::{draft_node_metadata, draft_resource_metadata_fields, validate_draft_limits},
     normalization::{
         block_quote_kind, child_hull, citation_key, code_block_header, empty_code_body,
         empty_image_body, extend_range, heading_level, link_contract, list_is_tight,
         markdown_custom_error, offset_range, ordered_list_start, repair_collapsed_range,
         source_contained_body, synthesize_table_body, synthesize_tight_paragraphs,
         synthetic_container, table_alignment, tight_paragraph_count,
+    },
+    unresolved_footnotes::{
+        classify_unresolved_footnotes, collect_canonical_events, overlay_unresolved_footnotes,
     },
 };
 
@@ -53,6 +59,7 @@ pub(super) fn compile_markdown(
 
 pub(crate) struct MarkdownCompilation {
     pub(crate) forest: DraftForest,
+    pub(crate) definitions: Vec<DefinitionFact>,
     pub(crate) parse_passes: u64,
     pub(crate) parsed_source_bytes: u64,
     pub(crate) custom_scan_source_bytes: u64,
@@ -97,36 +104,6 @@ struct CustomBody {
     children: Vec<usize>,
 }
 
-struct ReferenceDefinitions {
-    labels_by_span: BTreeMap<(usize, usize), String>,
-}
-
-impl ReferenceDefinitions {
-    fn new(definitions: &RefDefs<'_>) -> Self {
-        let labels_by_span = definitions
-            .iter()
-            .map(|(label, definition)| {
-                (
-                    (definition.span.start, definition.span.end),
-                    label.to_string(),
-                )
-            })
-            .collect();
-        Self { labels_by_span }
-    }
-
-    fn canonical_label<'definitions>(
-        &'definitions self,
-        definitions: &RefDefs<'_>,
-        label: &str,
-    ) -> Option<&'definitions str> {
-        let definition = definitions.get(label)?;
-        self.labels_by_span
-            .get(&(definition.span.start, definition.span.end))
-            .map(String::as_str)
-    }
-}
-
 struct MarkdownCompiler<'source, 'config> {
     source: &'source str,
     absolute_base: SourceCursor,
@@ -135,6 +112,7 @@ struct MarkdownCompiler<'source, 'config> {
     budget: DraftBudget,
     roots: Vec<DraftNode>,
     resources: Vec<DraftResource>,
+    definitions: Vec<DefinitionFact>,
     reference_resources: BTreeMap<DraftResourceRole, BTreeMap<String, DraftResourceIndex>>,
     stack: Vec<Frame>,
     pending_custom_start: Option<usize>,
@@ -164,6 +142,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
             budget: DraftBudget::new(limits, baseline),
             roots: Vec::new(),
             resources: Vec::new(),
+            definitions: Vec::new(),
             reference_resources: BTreeMap::new(),
             stack: Vec::new(),
             pending_custom_start: None,
@@ -284,20 +263,70 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
             canonical_options(),
             Some(preserve_broken_reference),
         );
-        let reference_labels = ReferenceDefinitions::new(parser.reference_definitions());
-        let mut parser = parser.into_offset_iter();
+        self.record_reference_definitions(parser.reference_definitions(), range.start)?;
+        if fragment.contains("[^") {
+            let events = collect_canonical_events(
+                fragment,
+                parser.into_offset_iter(),
+                self.stack.len(),
+                self.limits.max_markdown_events,
+                self.limits.max_tree_depth,
+            )?;
+            self.record_parse(fragment.len())?;
+            let unresolved =
+                classify_unresolved_footnotes(fragment, &events, self.limits.max_markdown_events)?;
+            let events = overlay_unresolved_footnotes(
+                fragment,
+                events,
+                unresolved,
+                self.limits.max_markdown_overlap_work,
+            )?;
+            self.consume_fragment_events(events, range.start)?;
+        } else {
+            self.consume_fragment_events(parser.into_offset_iter().map(Ok), range.start)?;
+        }
+        Ok(())
+    }
+
+    fn consume_fragment_events<I>(
+        &mut self,
+        mut events: I,
+        fragment_start: usize,
+    ) -> Result<(), MarkdownError>
+    where
+        I: Iterator<Item = Result<(Event<'source>, Range<usize>), MarkdownError>>,
+    {
         let mut pending_event = None;
         let initial_depth = self.stack.len();
-        while let Some((event, event_range)) = next_merged_event(&mut parser, &mut pending_event) {
-            self.consume(
-                event,
-                offset_range(event_range, range.start)?,
-                parser.reference_definitions(),
-                &reference_labels,
-            )?;
+        while let Some((event, event_range)) = next_merged_event(&mut events, &mut pending_event)? {
+            self.consume(event, offset_range(event_range, fragment_start)?)?;
         }
         if self.stack.len() != initial_depth {
             return Err(MarkdownError::UnclosedContainer("fragment"));
+        }
+        Ok(())
+    }
+
+    fn record_reference_definitions(
+        &mut self,
+        definitions: &RefDefs<'_>,
+        fragment_start: usize,
+    ) -> Result<(), MarkdownError> {
+        for (label, definition) in definitions.iter() {
+            let relative = offset_range(definition.span.clone(), fragment_start)?;
+            let source = absolute_range(relative, self.absolute_base)?;
+            let label = label.to_string();
+            let destination = definition.dest.to_string();
+            let title = definition.title.as_ref().map(|title| title.to_string());
+            self.definitions.push(DefinitionFact::reference(
+                label.clone(),
+                source,
+                destination.clone(),
+                title.clone(),
+            ));
+            if let Some(citation) = DefinitionFact::citation(label, source, destination, title) {
+                self.definitions.push(citation);
+            }
         }
         Ok(())
     }
@@ -364,13 +393,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
         self.push_node(node)
     }
 
-    fn consume(
-        &mut self,
-        event: Event<'source>,
-        range: Range<usize>,
-        reference_definitions: &RefDefs<'_>,
-        reference_labels: &ReferenceDefinitions,
-    ) -> Result<(), MarkdownError> {
+    fn consume(&mut self, event: Event<'source>, range: Range<usize>) -> Result<(), MarkdownError> {
         checked_slice(self.source, range.clone())?;
 
         if self
@@ -382,19 +405,9 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
         }
 
         match event {
-            Event::Start(tag) => self.open(tag, range, reference_definitions, reference_labels),
+            Event::Start(tag) => self.open(tag, range),
             Event::End(end) => self.close(end),
-            Event::Text(value) => {
-                self.budget.reserve_node(0)?;
-                let raw = checked_slice(self.source, range.clone())?;
-                self.push_leaf_reserved(
-                    range.clone(),
-                    range,
-                    DraftContentKind::Text {
-                        text: semantic_text(raw, &value),
-                    },
-                )
-            }
+            Event::Text(value) => self.push_text(range, value.as_ref()),
             Event::Code(value) => {
                 self.budget.reserve_node(0)?;
                 let body = delimited_body(self.source, range.clone(), b'`', None)?;
@@ -427,7 +440,8 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
                     range.clone(),
                     range,
                     DraftContentKind::FootnoteReference {
-                        label: label.into_string(),
+                        label: UniCase::new(label.as_ref()).to_folded_case(),
+                        target: None,
                     },
                 )
             }
@@ -451,13 +465,19 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
         }
     }
 
-    fn open(
-        &mut self,
-        tag: Tag<'source>,
-        mut range: Range<usize>,
-        reference_definitions: &RefDefs<'_>,
-        reference_labels: &ReferenceDefinitions,
-    ) -> Result<(), MarkdownError> {
+    fn push_text(&mut self, range: Range<usize>, value: &str) -> Result<(), MarkdownError> {
+        self.budget.reserve_node(0)?;
+        let raw = checked_slice(self.source, range.clone())?;
+        self.push_leaf_reserved(
+            range.clone(),
+            range,
+            DraftContentKind::Text {
+                text: semantic_text(raw, value),
+            },
+        )
+    }
+
+    fn open(&mut self, tag: Tag<'source>, mut range: Range<usize>) -> Result<(), MarkdownError> {
         self.ensure_tree_depth(self.stack.len().saturating_add(1))?;
         let content_structural_items = match &tag {
             Tag::Table(alignments) => alignments.len(),
@@ -506,7 +526,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
             }
             Tag::Item => FramePayload::Item { checked: None },
             Tag::FootnoteDefinition(label) => FramePayload::FootnoteDefinition {
-                label: label.into_string(),
+                label: UniCase::new(label.as_ref()).to_folded_case(),
             },
             Tag::Table(alignments) => FramePayload::Table {
                 alignments: alignments.into_iter().map(table_alignment).collect(),
@@ -527,12 +547,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
             } => {
                 repair_collapsed_range(self.source, &mut range, link_type)?;
                 let (style, reference_label, resolved) = link_contract(link_type, id.as_ref())?;
-                let canonical_reference_label = reference_label.as_deref().map(|label| {
-                    reference_labels
-                        .canonical_label(reference_definitions, label)
-                        .unwrap_or(label)
-                });
-                if let Some(key) = citation_key(link_type, canonical_reference_label) {
+                if let Some(key) = citation_key(link_type, reference_label.as_deref()) {
                     let target = if resolved {
                         Some(self.push_resource(
                             DraftResourceRole::Citation,
@@ -550,7 +565,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
                         Some(self.push_resource(
                             DraftResourceRole::Link,
                             range.clone(),
-                            canonical_reference_label,
+                            reference_label.as_deref(),
                             dest_url.as_ref(),
                             (!title.is_empty()).then_some(title.as_ref()),
                         )?)
@@ -572,16 +587,11 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
             } => {
                 repair_collapsed_range(self.source, &mut range, link_type)?;
                 let (style, reference_label, resolved) = link_contract(link_type, id.as_ref())?;
-                let canonical_reference_label = reference_label.as_deref().map(|label| {
-                    reference_labels
-                        .canonical_label(reference_definitions, label)
-                        .unwrap_or(label)
-                });
                 let target = if resolved {
                     Some(self.push_resource(
                         DraftResourceRole::Image,
                         range.clone(),
-                        canonical_reference_label,
+                        reference_label.as_deref(),
                         dest_url.as_ref(),
                         (!title.is_empty()).then_some(title.as_ref()),
                     )?)
@@ -764,7 +774,10 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
                         DraftContentKind::ListItem { checked }
                     }
                     FramePayload::FootnoteDefinition { label } => {
-                        DraftContentKind::FootnoteDefinition { label }
+                        DraftContentKind::FootnoteDefinition {
+                            label,
+                            target: None,
+                        }
                     }
                     FramePayload::Table { alignments } => {
                         self.budget.reserve_synthetic_nodes(1)?;
@@ -907,7 +920,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
 
         let source = absolute_range(source, self.absolute_base)?;
         let metadata_bytes =
-            resource_metadata_bytes(role, reference_label, destination, title, self.limits)?;
+            draft_resource_metadata_fields(role, reference_label, destination, title, self.limits)?;
         self.budget.reserve_resource(metadata_bytes)?;
 
         let index = DraftResourceIndex::new(self.resources.len());
@@ -920,10 +933,6 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
             destination: destination.to_owned(),
             title: title.map(str::to_owned),
         };
-        debug_assert_eq!(
-            draft_resource_metadata(&resource, self.limits),
-            Ok(metadata_bytes)
-        );
         self.resources.push(resource);
         if let Some(reference_label) = reference_label {
             self.reference_resources
@@ -971,11 +980,11 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
         })
     }
 
-    fn finish(self) -> Result<MarkdownCompilation, MarkdownError> {
+    fn finish(mut self) -> Result<MarkdownCompilation, MarkdownError> {
         if let Some(frame) = self.stack.last() {
             return Err(MarkdownError::UnclosedContainer(frame.payload.name()));
         }
-        let forest = DraftForest {
+        let mut forest = DraftForest {
             roots: self.roots,
             resources: self.resources,
             pending_custom_start: self
@@ -983,6 +992,31 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
                 .map(|start| absolute_cursor(start, self.absolute_base))
                 .transpose()?,
         };
+        let mut definition_nodes = Vec::new();
+        let mut definition_metadata = Vec::new();
+        for definition in &self.definitions {
+            let Some(key) = definition.citation_key() else {
+                continue;
+            };
+            self.budget.reserve_node(0)?;
+            let node = DraftNode::leaf(
+                definition.source,
+                definition.source,
+                DraftContentKind::CitationDefinition {
+                    key: key.to_string(),
+                    target: None,
+                },
+            );
+            let metadata_bytes = draft_node_metadata(&node.content, self.limits)?;
+            definition_nodes.push(node);
+            definition_metadata.push(metadata_bytes);
+        }
+        definition_nodes.sort_by_key(|node| (node.source.start, node.source.end));
+        let root_definitions = merge_definition_nodes(&mut forest.roots, definition_nodes, true)?;
+        for (index, metadata_bytes) in definition_metadata.into_iter().enumerate() {
+            self.budget
+                .reserve_node_payload(index < root_definitions, metadata_bytes)?;
+        }
         let usage = validate_draft_limits(&forest, self.limits)?;
         let baseline = self.budget.baseline();
         debug_assert_eq!(
@@ -999,6 +1033,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
         );
         Ok(MarkdownCompilation {
             forest,
+            definitions: self.definitions,
             parse_passes: self.parse_passes,
             parsed_source_bytes: self.parsed_source_bytes,
             custom_scan_source_bytes: self.custom_scan_source_bytes,
@@ -1022,11 +1057,11 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
 fn next_merged_event<'source, I>(
     events: &mut I,
     pending: &mut Option<(Event<'source>, Range<usize>)>,
-) -> Option<(Event<'source>, Range<usize>)>
+) -> Result<Option<(Event<'source>, Range<usize>)>, MarkdownError>
 where
-    I: Iterator<Item = (Event<'source>, Range<usize>)>,
+    I: Iterator<Item = Result<(Event<'source>, Range<usize>), MarkdownError>>,
 {
-    match (pending.take(), events.next()) {
+    match (pending.take(), events.next().transpose()?) {
         (
             Some((Event::Text(last_text), last_range)),
             Some((Event::Text(next_text), next_range)),
@@ -1036,7 +1071,7 @@ where
             let mut range = last_range;
             range.end = next_range.end;
             loop {
-                match events.next() {
+                match events.next().transpose()? {
                     Some((Event::Text(next_text), next_range)) => {
                         text.push_str(&next_text);
                         range.end = next_range.end;
@@ -1046,7 +1081,10 @@ where
                         if text.is_empty() {
                             return next_merged_event(events, pending);
                         }
-                        return Some((Event::Text(CowStr::Boxed(text.into_boxed_str())), range));
+                        return Ok(Some((
+                            Event::Text(CowStr::Boxed(text.into_boxed_str())),
+                            range,
+                        )));
                     }
                 }
             }
@@ -1055,61 +1093,10 @@ where
             *pending = Some(next_event);
             next_merged_event(events, pending)
         }
-        (None, None) => None,
+        (None, None) => Ok(None),
         (last_event, next_event) => {
             *pending = next_event;
-            last_event
+            Ok(last_event)
         }
     }
-}
-
-fn resource_metadata_bytes(
-    role: DraftResourceRole,
-    reference_label: Option<&str>,
-    destination: &str,
-    title: Option<&str>,
-    limits: ProtocolLimits,
-) -> Result<usize, MarkdownError> {
-    let mut bytes = 0usize;
-    if role == DraftResourceRole::Citation {
-        if let Some(label) = reference_label {
-            add_resource_metadata(
-                &mut bytes,
-                "resource.citation.key",
-                label.trim_start_matches('@'),
-                limits,
-            )?;
-        }
-    }
-    add_resource_metadata(&mut bytes, "resource.destination", destination, limits)?;
-    if let Some(title) = title {
-        add_resource_metadata(&mut bytes, "resource.title", title, limits)?;
-    }
-    if bytes > limits.max_node_metadata_bytes {
-        return Err(MarkdownError::LimitExceeded {
-            field: "resource.metadata",
-            limit: limits.max_node_metadata_bytes,
-            actual: bytes,
-        });
-    }
-    Ok(bytes)
-}
-
-fn add_resource_metadata(
-    bytes: &mut usize,
-    field: &'static str,
-    value: &str,
-    limits: ProtocolLimits,
-) -> Result<(), MarkdownError> {
-    if value.len() > limits.max_metadata_value_bytes {
-        return Err(MarkdownError::LimitExceeded {
-            field,
-            limit: limits.max_metadata_value_bytes,
-            actual: value.len(),
-        });
-    }
-    *bytes = bytes
-        .checked_add(value.len())
-        .ok_or(MarkdownError::NumericOverflow("metadata bytes"))?;
-    Ok(())
 }

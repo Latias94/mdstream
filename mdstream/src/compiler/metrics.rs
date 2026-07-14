@@ -1,4 +1,5 @@
 use super::{
+    definitions::SemanticWork,
     reconcile::ReconcileMetrics,
     types::{CompilerError, CompilerMetrics},
 };
@@ -11,13 +12,15 @@ pub(super) struct CompileObservation {
     pub(super) frontier_bytes: usize,
     pub(super) next_checkpoint: usize,
     pub(super) reconciled: ReconcileMetrics,
+    pub(super) semantic: SemanticWork,
 }
 
 pub(super) fn compile_metrics(
     previous: CompilerMetrics,
     observation: CompileObservation,
 ) -> Result<CompilerMetrics, CompilerError> {
-    Ok(CompilerMetrics {
+    let semantic = observation.semantic;
+    let metrics = CompilerMetrics {
         structural_source_bytes: add_metric_bytes(
             previous.structural_source_bytes,
             observation.structural_source_bytes,
@@ -69,9 +72,60 @@ pub(super) fn compile_metrics(
             .checked_add(observation.reconciled.resources_visited)
             .ok_or(CompilerError::MetricsOverflow("reconciled resources"))?,
         incremental_projection_visits: previous.incremental_projection_visits,
+        semantic_definition_visits: previous.semantic_definition_visits,
+        semantic_state_key_visits: previous.semantic_state_key_visits,
+        semantic_state_edge_visits: previous.semantic_state_edge_visits,
+        semantic_candidate_node_visits: previous.semantic_candidate_node_visits,
+        semantic_candidate_dependency_visits: previous.semantic_candidate_dependency_visits,
+        semantic_dependent_visits: previous.semantic_dependent_visits,
+        semantic_corrections_emitted: previous.semantic_corrections_emitted,
+        retained_semantic_definitions: previous.retained_semantic_definitions,
+        retained_semantic_dependencies: previous.retained_semantic_dependencies,
+        retained_semantic_metadata_bytes: previous.retained_semantic_metadata_bytes,
         frontier_bytes: observation.frontier_bytes,
         next_checkpoint: observation.next_checkpoint,
-    })
+    };
+    add_semantic_metrics(metrics, semantic)
+}
+
+pub(super) fn add_semantic_metrics(
+    mut metrics: CompilerMetrics,
+    semantic: SemanticWork,
+) -> Result<CompilerMetrics, CompilerError> {
+    metrics.semantic_definition_visits = metrics
+        .semantic_definition_visits
+        .checked_add(semantic.definition_visits)
+        .ok_or(CompilerError::MetricsOverflow("semantic definitions"))?;
+    metrics.semantic_state_key_visits = metrics
+        .semantic_state_key_visits
+        .checked_add(semantic.state_key_visits)
+        .ok_or(CompilerError::MetricsOverflow("semantic state key visits"))?;
+    metrics.semantic_state_edge_visits = metrics
+        .semantic_state_edge_visits
+        .checked_add(semantic.state_edge_visits)
+        .ok_or(CompilerError::MetricsOverflow("semantic state edge visits"))?;
+    metrics.semantic_candidate_node_visits = metrics
+        .semantic_candidate_node_visits
+        .checked_add(semantic.candidate_node_visits)
+        .ok_or(CompilerError::MetricsOverflow("semantic candidate nodes"))?;
+    metrics.semantic_candidate_dependency_visits = metrics
+        .semantic_candidate_dependency_visits
+        .checked_add(semantic.candidate_dependency_visits)
+        .ok_or(CompilerError::MetricsOverflow(
+            "semantic candidate dependencies",
+        ))?;
+    metrics.semantic_dependent_visits = metrics
+        .semantic_dependent_visits
+        .checked_add(semantic.dependent_visits)
+        .ok_or(CompilerError::MetricsOverflow("semantic dependent visits"))?;
+    metrics.semantic_corrections_emitted = metrics
+        .semantic_corrections_emitted
+        .checked_add(semantic.corrections_emitted)
+        .ok_or(CompilerError::MetricsOverflow("semantic corrections"))?;
+    metrics.retained_semantic_definitions = semantic.retained_definitions;
+    metrics.retained_semantic_dependencies = semantic.retained_dependencies;
+    metrics.retained_semantic_metadata_bytes = semantic.retained_metadata_bytes;
+    Ok(metrics)
 }
 
 pub(super) fn add_metric_bytes(

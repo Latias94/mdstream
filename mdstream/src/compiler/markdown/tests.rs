@@ -146,7 +146,7 @@ fn unresolved_and_collapsed_references_remain_typed() {
 }
 
 #[test]
-fn canonical_reference_resources_follow_pulldown_label_matching() {
+fn fragment_resources_preserve_usage_labels_before_document_semantics() {
     let source = concat!(
         "[a][Straße] [b][STRASSE] [c](https://example.test) ",
         "[d](https://example.test)\n\n",
@@ -154,13 +154,17 @@ fn canonical_reference_resources_follow_pulldown_label_matching() {
     );
     let forest = compile_markdown(source, SourceCursor::new(0)).unwrap();
 
-    assert_eq!(forest.resources.len(), 3);
+    assert_eq!(forest.resources.len(), 4);
     assert_eq!(
         forest.resources[0].key.reference_label.as_deref(),
-        Some("straße")
+        Some("Straße")
     );
-    assert!(forest.resources[1].key.reference_label.is_none());
+    assert_eq!(
+        forest.resources[1].key.reference_label.as_deref(),
+        Some("STRASSE")
+    );
     assert!(forest.resources[2].key.reference_label.is_none());
+    assert!(forest.resources[3].key.reference_label.is_none());
 }
 
 #[test]

@@ -10,6 +10,9 @@ use mdstream_protocol::{
     decode_change_json, decode_snapshot_json, encode_change_json, encode_snapshot_json,
 };
 
+#[path = "wire_roundtrip/candidate_contract.rs"]
+mod candidate_contract;
+
 fn change_id(value: &str) -> ChangeId {
     ChangeId::new(value).unwrap()
 }
@@ -168,20 +171,6 @@ fn opaque_identifiers_validate_length_character_set_and_string_type() {
 }
 
 #[test]
-fn envelope_has_explicit_draft_schema_and_precise_operation_tags() {
-    let change = rooted_change(leaf(0, ContentKind::Paragraph {}));
-    let value = serde_json::to_value(&change).unwrap();
-    assert_eq!(value["schema"], "mdstream.content/0.4-draft.5");
-    assert_eq!(value["maturity"], "draft");
-    assert_eq!(value["epoch"], "9");
-    assert_eq!(value["sequence"], "0");
-    assert_eq!(value["operations"][0]["kind"], "insert_node");
-    assert_eq!(value["operations"][1]["kind"], "splice_children");
-    assert_eq!(value["operations"][1]["owner"]["kind"], "document");
-    assert_eq!(serde_json::from_value::<ChangeSet>(value).unwrap(), change);
-}
-
-#[test]
 fn all_operation_and_nested_enum_tags_are_stable() {
     let node = leaf(0, ContentKind::Paragraph {});
     let replacement = leaf(0, ContentKind::Heading { level: 1 }).projection();
@@ -333,6 +322,12 @@ fn all_operation_and_nested_enum_tags_are_stable() {
             SemanticResourceKind::Link {
                 destination: "https://example.test".to_string(),
                 title: None,
+            },
+        ),
+        (
+            "footnote",
+            SemanticResourceKind::Footnote {
+                label: "note".to_string(),
             },
         ),
         (
@@ -555,12 +550,14 @@ fn every_content_ir_variant_has_an_exact_stable_tag() {
             "footnote_definition",
             ContentKind::FootnoteDefinition {
                 label: "note".to_string(),
+                target: resource_ref(2),
             },
         ),
         (
             "footnote_reference",
             ContentKind::FootnoteReference {
                 label: "note".to_string(),
+                target: Some(resource_ref(2)),
             },
         ),
         (

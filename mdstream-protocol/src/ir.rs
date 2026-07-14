@@ -142,12 +142,17 @@ pub enum SemanticText {
 pub enum SemanticResourceKind {
     Link {
         destination: String,
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
         title: Option<String>,
+    },
+    Footnote {
+        label: String,
     },
     Citation {
         protocol: CitationProtocol,
         key: String,
         destination: String,
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
         title: Option<String>,
     },
 }
@@ -200,6 +205,10 @@ impl SemanticResource {
                 if let Some(title) = title {
                     tally.add("resource.link.title", title)?;
                 }
+            }
+            SemanticResourceKind::Footnote { label } => {
+                require_nonempty("resource.footnote.label", label)?;
+                tally.add("resource.footnote.label", label)?;
             }
             SemanticResourceKind::Citation {
                 key,
@@ -355,12 +364,16 @@ pub enum ContentKind {
     Strong {},
     Strikethrough {},
     Link {
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
         target: Option<ResourceRef>,
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
         reference_label: Option<String>,
         style: LinkStyle,
     },
     Image {
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
         target: Option<ResourceRef>,
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
         reference_label: Option<String>,
         style: LinkStyle,
         alt: SemanticText,
@@ -370,15 +383,18 @@ pub enum ContentKind {
     },
     CodeBlock {
         syntax: CodeBlockSyntax,
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
         info: Option<String>,
         text: SemanticText,
     },
     List {
         ordered: bool,
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
         start: Option<u32>,
         tight: bool,
     },
     ListItem {
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
         checked: Option<bool>,
     },
     BlockQuote {
@@ -404,9 +420,12 @@ pub enum ContentKind {
     },
     FootnoteDefinition {
         label: String,
+        target: ResourceRef,
     },
     FootnoteReference {
         label: String,
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
+        target: Option<ResourceRef>,
     },
     CitationDefinition {
         key: String,
@@ -414,6 +433,7 @@ pub enum ContentKind {
     },
     CitationReference {
         key: String,
+        #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
         target: Option<ResourceRef>,
     },
     SoftBreak {},
@@ -478,21 +498,18 @@ impl ContentKind {
     }
 
     pub fn referenced_resource(&self) -> Option<ResourceId> {
-        match self {
-            Self::Link { target, .. }
-            | Self::Image { target, .. }
-            | Self::CitationReference { target, .. } => target.as_ref().map(|target| target.id),
-            Self::CitationDefinition { target, .. } => Some(target.id),
-            _ => None,
-        }
+        self.resource_ref().map(|reference| reference.id)
     }
 
     pub fn resource_ref(&self) -> Option<&ResourceRef> {
         match self {
             Self::Link { target, .. }
             | Self::Image { target, .. }
+            | Self::FootnoteReference { target, .. }
             | Self::CitationReference { target, .. } => target.as_ref(),
-            Self::CitationDefinition { target, .. } => Some(target),
+            Self::FootnoteDefinition { target, .. } | Self::CitationDefinition { target, .. } => {
+                Some(target)
+            }
             _ => None,
         }
     }
@@ -501,8 +518,11 @@ impl ContentKind {
         match self {
             Self::Link { target, .. }
             | Self::Image { target, .. }
+            | Self::FootnoteReference { target, .. }
             | Self::CitationReference { target, .. } => target.as_mut(),
-            Self::CitationDefinition { target, .. } => Some(target),
+            Self::FootnoteDefinition { target, .. } | Self::CitationDefinition { target, .. } => {
+                Some(target)
+            }
             _ => None,
         }
     }
@@ -779,7 +799,8 @@ pub(crate) fn validate_kind(
             }
             tally_semantic_text(&mut tally, alt)?;
         }
-        ContentKind::FootnoteDefinition { label } | ContentKind::FootnoteReference { label } => {
+        ContentKind::FootnoteDefinition { label, .. }
+        | ContentKind::FootnoteReference { label, .. } => {
             require_nonempty("footnote.label", label)?;
             tally.add("footnote.label", label)?;
         }
@@ -1224,7 +1245,7 @@ fn require_nonempty(field: &'static str, value: &str) -> Result<(), ProtocolErro
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Rust-side validation budgets for decoding and canonical reduction.
+/// Rust-side budgets for validation, compilation, and canonical reduction.
 ///
 /// This type is deliberately not a wire contract because `usize` has
 /// platform-dependent width. Binding-specific option envelopes must use fixed
@@ -1233,6 +1254,8 @@ pub struct ProtocolLimits {
     pub max_source_bytes: usize,
     pub max_nodes: usize,
     pub max_resources: usize,
+    pub max_definitions: usize,
+    pub max_definition_edges: usize,
     pub max_operations: usize,
     pub max_change_structural_items: usize,
     pub max_document_structural_items: usize,
@@ -1242,7 +1265,12 @@ pub struct ProtocolLimits {
     pub max_node_metadata_bytes: usize,
     pub max_change_metadata_bytes: usize,
     pub max_document_metadata_bytes: usize,
+    pub max_definition_metadata_bytes: usize,
     pub max_tree_depth: usize,
+    /// Maximum parser events retained for one Markdown classification pass.
+    pub max_markdown_events: usize,
+    /// Maximum candidate/event intersections inspected while classifying footnotes.
+    pub max_markdown_overlap_work: usize,
 }
 
 impl Default for ProtocolLimits {
@@ -1251,6 +1279,8 @@ impl Default for ProtocolLimits {
             max_source_bytes: 16 * 1024 * 1024,
             max_nodes: 100_000,
             max_resources: 100_000,
+            max_definitions: 100_000,
+            max_definition_edges: 100_000,
             max_operations: 10_000,
             max_change_structural_items: 100_000,
             max_document_structural_items: 1_000_000,
@@ -1260,7 +1290,10 @@ impl Default for ProtocolLimits {
             max_node_metadata_bytes: 256 * 1024,
             max_change_metadata_bytes: 4 * 1024 * 1024,
             max_document_metadata_bytes: 16 * 1024 * 1024,
+            max_definition_metadata_bytes: 16 * 1024 * 1024,
             max_tree_depth: 256,
+            max_markdown_events: 300_000,
+            max_markdown_overlap_work: 1_000_000,
         }
     }
 }

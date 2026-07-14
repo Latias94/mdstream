@@ -1,5 +1,6 @@
-use mdstream::{CompilerMetrics, CustomBlockSpec, StreamEngine};
-use mdstream_protocol::{ChildListOwner, ContentKind, ProjectionOp};
+use mdstream::{CompilerError, CompilerMetrics, CustomBlockSpec, EngineError, StreamEngine};
+use mdstream_protocol::{ChildListOwner, ContentKind, ProjectionOp, ProtocolLimits};
+use pulldown_cmark::{Options, Parser};
 
 fn deterministic_work(metrics: CompilerMetrics) -> u64 {
     metrics
@@ -11,6 +12,13 @@ fn deterministic_work(metrics: CompilerMetrics) -> u64 {
         .saturating_add(structural_reconcile_work(metrics))
         .saturating_add(metrics.reconcile_resource_visits)
         .saturating_add(metrics.incremental_projection_visits)
+        .saturating_add(metrics.semantic_definition_visits)
+        .saturating_add(metrics.semantic_state_key_visits)
+        .saturating_add(metrics.semantic_state_edge_visits)
+        .saturating_add(metrics.semantic_candidate_node_visits)
+        .saturating_add(metrics.semantic_candidate_dependency_visits)
+        .saturating_add(metrics.semantic_dependent_visits)
+        .saturating_add(metrics.semantic_corrections_emitted)
 }
 
 fn structural_reconcile_work(metrics: CompilerMetrics) -> u64 {
@@ -193,6 +201,22 @@ fn unique_link_fixture(count: usize) -> String {
     source
 }
 
+fn nested_formatting_footnotes(depth: usize, candidates: usize) -> String {
+    let mut source = String::new();
+    for index in 0..depth {
+        source.push(if index % 2 == 0 { '*' } else { '_' });
+        source.push_str("open ");
+    }
+    for index in 0..candidates {
+        source.push_str(&format!("[^note-{index}] "));
+    }
+    for index in (0..depth).rev() {
+        source.push_str(" close");
+        source.push(if index % 2 == 0 { '*' } else { '_' });
+    }
+    source
+}
+
 fn seeded_irregular_leaps(total: usize, seed: u64) -> Vec<usize> {
     let mut chunks = vec![17, 239, 769, 4_099];
     let mut consumed = chunks.iter().sum::<usize>();
@@ -207,6 +231,120 @@ fn seeded_irregular_leaps(total: usize, seed: u64) -> Vec<usize> {
         consumed += chunk;
     }
     chunks
+}
+
+#[test]
+fn unresolved_footnote_parser_events_use_a_bounded_preflight_budget() {
+    let limits = ProtocolLimits {
+        max_markdown_events: 32,
+        ..ProtocolLimits::default()
+    };
+    let source = format!("{}\n\n", nested_formatting_footnotes(1, 20));
+    let mut engine = StreamEngine::builder()
+        .protocol_limits(limits)
+        .build()
+        .unwrap();
+    engine.append("accepted\n\n").unwrap();
+    let before_snapshot = engine.snapshot().unwrap();
+    let before_coordinate = engine.coordinate().cloned().unwrap();
+    let before_metrics = engine.metrics();
+
+    assert!(matches!(
+        engine.append(&source),
+        Err(EngineError::Compiler(CompilerError::LimitExceeded {
+            field: "markdown.events",
+            limit: 32,
+            actual: 33,
+        }))
+    ));
+    assert_eq!(engine.snapshot().unwrap(), before_snapshot);
+    assert_eq!(engine.coordinate(), Some(&before_coordinate));
+    assert_eq!(engine.metrics(), before_metrics);
+
+    let retry = engine
+        .append("retry\n\n")
+        .expect("a valid retry must succeed after parser-limit rejection");
+    assert_eq!(retry.changes().len(), 1);
+    assert_eq!(
+        retry.changes()[0].sequence(),
+        before_coordinate.sequence.checked_add(1).unwrap()
+    );
+}
+
+#[test]
+fn old_footnote_classification_has_an_independent_event_budget() {
+    let source = "[^note]:    [^note]\ncontinuation";
+    let canonical_options = Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_MATH
+        | Options::ENABLE_GFM;
+    let canonical_events = Parser::new_ext(source, canonical_options).count();
+    let old_footnote_events =
+        Parser::new_ext(source, canonical_options | Options::ENABLE_OLD_FOOTNOTES).count();
+    let event_limit = canonical_events;
+
+    assert_eq!(canonical_events, 7);
+    assert_eq!(old_footnote_events, 8);
+    let mut engine = StreamEngine::builder()
+        .protocol_limits(ProtocolLimits {
+            max_markdown_events: event_limit,
+            ..ProtocolLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    assert!(matches!(
+        engine.append(source),
+        Err(EngineError::Compiler(CompilerError::LimitExceeded {
+            field: "markdown.events",
+            limit,
+            actual,
+        })) if limit == event_limit && actual == event_limit.checked_add(1).unwrap()
+    ));
+}
+
+#[test]
+fn nested_unresolved_footnotes_stop_at_the_overlap_work_budget() {
+    let limits = ProtocolLimits::default();
+    let source = nested_formatting_footnotes(128, 4_096);
+    let mut engine = StreamEngine::builder()
+        .protocol_limits(limits)
+        .build()
+        .unwrap();
+
+    assert!(matches!(
+        engine.append(&source),
+        Err(EngineError::Compiler(CompilerError::LimitExceeded {
+            field: "markdown.footnote_overlap_work",
+            limit,
+            actual,
+        })) if limit == limits.max_markdown_overlap_work
+            && actual == limit.checked_add(1).unwrap()
+    ));
+}
+
+#[test]
+fn unresolved_footnote_preflight_applies_the_tree_depth_limit() {
+    let limits = ProtocolLimits {
+        max_tree_depth: 8,
+        ..ProtocolLimits::default()
+    };
+    let source = nested_formatting_footnotes(8, 1_024);
+    let mut engine = StreamEngine::builder()
+        .protocol_limits(limits)
+        .build()
+        .unwrap();
+
+    assert!(matches!(
+        engine.append(&source),
+        Err(EngineError::Compiler(CompilerError::LimitExceeded {
+            field: "tree.depth",
+            limit: 8,
+            actual: 9,
+        }))
+    ));
 }
 
 fn assert_linear_work(label: &str, source: &str, bytes_per_input: u64) {
@@ -487,6 +625,8 @@ fn compiler_stage_counters_have_exact_small_trace_calibration() {
     assert_eq!(initial.reconcile_structure_ids_emitted, 2);
     assert_eq!(initial.reconcile_resource_visits, 0);
     assert_eq!(initial.incremental_projection_visits, 0);
+    assert_eq!(initial.semantic_candidate_node_visits, 2);
+    assert_eq!(initial.semantic_candidate_dependency_visits, 0);
 
     engine.append("b").unwrap();
     let incremental = engine.metrics().compiler;
@@ -536,6 +676,9 @@ fn individual_compiler_stage_counters_are_near_linear() {
     });
     assert_stage_doubling("incremental projections", plain_small, plain_large, |m| {
         m.incremental_projection_visits
+    });
+    assert_stage_doubling("semantic candidate nodes", plain_small, plain_large, |m| {
+        m.semantic_candidate_node_visits
     });
 
     let deferred_small = finished_bytewise_metrics(&"[".repeat(8 * 1024));

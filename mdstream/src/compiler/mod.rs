@@ -1,5 +1,6 @@
 mod checkpoints;
 mod custom;
+mod definitions;
 mod draft;
 mod extensions;
 mod frontier;

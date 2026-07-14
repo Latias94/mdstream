@@ -3,14 +3,23 @@ use std::{
     io::{self, Write},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     ChildList, ContentNode, Coordinate, DocumentLifecycle, PayloadDigest, ProtocolError,
     ProtocolLimits, SemanticResource, SnapshotDigest,
 };
 
-pub const PROTOCOL_SCHEMA: &str = "mdstream.content/0.4-draft.5";
+pub const PROTOCOL_SCHEMA: &str = "mdstream.content/0.4-candidate.1";
+
+/// Deserializes a nullable field while keeping its presence mandatory.
+pub(crate) fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -195,7 +204,7 @@ impl Snapshot {
             resources,
         } = parts;
         let schema = SchemaVersion::current();
-        let maturity = ProtocolMaturity::Draft;
+        let maturity = ProtocolMaturity::Candidate;
         let digest = derive_snapshot_digest(SnapshotDigestView {
             schema: &schema,
             maturity,
@@ -253,7 +262,7 @@ pub fn encode_change_json(
     encode_bounded(value, max_encoded_bytes, "encoded_change")
 }
 
-/// Decodes and validates a draft change from canonical JSON.
+/// Decodes and validates a binding-candidate change from canonical JSON.
 pub fn decode_change_json(
     bytes: &[u8],
     max_encoded_bytes: usize,

@@ -1,5 +1,5 @@
 {
-  "schema": "mdstream.conformance/0.4-draft.2",
+  "schema": "mdstream.conformance/0.4-candidate.1",
   "id": "legacy.rich-content",
   "description": "Temporary 0.3 framing golden spanning rich AI output before the 0.4 engine replaces the legacy bridge.",
   "source": "# Title\n\nParagraph with [ref], [@cite], and $x$.\n\n> Quote\n\n- one\n- two\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n```rust\nfn main() {}\n```\n\n```mermaid\ngraph TD; A-->B\n```\n\n$$\nx + y\n$$\n\n<div>html</div>\n\n[^n]: note\n\n[ref]: https://example.test\n\n:::warning\nincomplete **bold",

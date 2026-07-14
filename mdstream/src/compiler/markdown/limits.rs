@@ -4,7 +4,7 @@ use crate::compiler::draft::{DraftContentKind, DraftForest, DraftResource, Draft
 
 use super::{MarkdownError, budget::DraftUsage};
 
-pub(super) fn validate_draft_limits(
+pub(crate) fn validate_draft_limits(
     forest: &DraftForest,
     limits: ProtocolLimits,
 ) -> Result<DraftUsage, MarkdownError> {
@@ -116,11 +116,12 @@ pub(super) fn draft_node_metadata(
             }
             add_semantic_text(&mut bytes, alt, limits)?;
         }
-        DraftContentKind::FootnoteDefinition { label }
-        | DraftContentKind::FootnoteReference { label } => {
+        DraftContentKind::FootnoteDefinition { label, .. }
+        | DraftContentKind::FootnoteReference { label, .. } => {
             add_metadata(&mut bytes, "footnote.label", label, limits)?;
         }
-        DraftContentKind::CitationReference { key, .. } => {
+        DraftContentKind::CitationDefinition { key, .. }
+        | DraftContentKind::CitationReference { key, .. } => {
             add_metadata(&mut bytes, "citation.key", key, limits)?;
         }
         DraftContentKind::Custom {
@@ -158,24 +159,40 @@ pub(super) fn draft_resource_metadata(
     resource: &DraftResource,
     limits: ProtocolLimits,
 ) -> Result<usize, MarkdownError> {
+    draft_resource_metadata_fields(
+        resource.key.role,
+        resource.key.reference_label.as_deref(),
+        &resource.destination,
+        resource.title.as_deref(),
+        limits,
+    )
+}
+
+pub(super) fn draft_resource_metadata_fields(
+    role: DraftResourceRole,
+    reference_label: Option<&str>,
+    destination: &str,
+    title: Option<&str>,
+    limits: ProtocolLimits,
+) -> Result<usize, MarkdownError> {
     let mut bytes = 0usize;
-    if resource.key.role == DraftResourceRole::Citation {
-        if let Some(label) = &resource.key.reference_label {
-            add_metadata(
-                &mut bytes,
-                "resource.citation.key",
-                label.trim_start_matches('@'),
-                limits,
-            )?;
+    if matches!(
+        role,
+        DraftResourceRole::Citation | DraftResourceRole::Footnote
+    ) {
+        if let Some(label) = reference_label {
+            let field = if role == DraftResourceRole::Citation {
+                "resource.citation.key"
+            } else {
+                "resource.footnote.label"
+            };
+            add_metadata(&mut bytes, field, label.trim_start_matches('@'), limits)?;
         }
     }
-    add_metadata(
-        &mut bytes,
-        "resource.destination",
-        &resource.destination,
-        limits,
-    )?;
-    if let Some(title) = &resource.title {
+    if role != DraftResourceRole::Footnote {
+        add_metadata(&mut bytes, "resource.destination", destination, limits)?;
+    }
+    if let Some(title) = title {
         add_metadata(&mut bytes, "resource.title", title, limits)?;
     }
     check_count("resource.metadata", bytes, limits.max_node_metadata_bytes)?;

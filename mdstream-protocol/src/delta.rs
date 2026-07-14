@@ -33,6 +33,7 @@ impl SourceDelta {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EpochStart {
+    #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
     pub predecessor: Option<Coordinate>,
 }
 
@@ -264,6 +265,7 @@ pub struct ChangeSet {
     epoch: Epoch,
     sequence: Sequence,
     change_id: ChangeId,
+    #[serde(deserialize_with = "crate::wire::deserialize_required_option")]
     epoch_start: Option<EpochStart>,
     source: SourceDelta,
     operations: Vec<ProjectionOp>,
@@ -279,7 +281,7 @@ impl ChangeSet {
     ) -> Result<Self, ProtocolError> {
         let change = Self {
             schema: SchemaVersion::current(),
-            maturity: ProtocolMaturity::Draft,
+            maturity: ProtocolMaturity::Candidate,
             epoch,
             sequence,
             change_id,
@@ -305,7 +307,7 @@ impl ChangeSet {
     ) -> Result<Self, ProtocolError> {
         let change = Self {
             schema: SchemaVersion::current(),
-            maturity: ProtocolMaturity::Draft,
+            maturity: ProtocolMaturity::Candidate,
             epoch,
             sequence: Sequence::new(0),
             change_id,
@@ -374,7 +376,7 @@ impl ChangeSet {
 
     pub(crate) fn validate_envelope(&self) -> Result<(), ProtocolError> {
         self.schema.ensure_supported()?;
-        if self.maturity != ProtocolMaturity::Draft {
+        if self.maturity != ProtocolMaturity::Candidate {
             return Err(ProtocolError::UnsupportedSchema(format!(
                 "maturity {:?}",
                 self.maturity

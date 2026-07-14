@@ -1,5 +1,5 @@
 {
-  "schema": "mdstream.conformance/0.4-draft.2",
+  "schema": "mdstream.conformance/0.4-candidate.1",
   "id": "streamdown.nested-details",
   "description": "Pinned Streamdown characterization for balanced nested same-name HTML elements.",
   "source": "Text before\n\n<details>\n<summary>Outer</summary>\n\n<details>\n<summary>Inner</summary>\n\nInner content\n\n</details>\n\nOuter content after inner closes\n\n</details>\n\nText after",

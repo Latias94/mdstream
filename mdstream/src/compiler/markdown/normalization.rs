@@ -6,6 +6,7 @@ use mdstream_protocol::{
 use pulldown_cmark::{
     Alignment, BlockQuoteKind as PulldownBlockQuoteKind, CodeBlockKind, HeadingLevel, LinkType,
 };
+use unicase::UniCase;
 
 use crate::compiler::{
     custom::CustomSyntaxError,
@@ -73,20 +74,12 @@ pub(super) fn link_contract(
 }
 
 pub(super) fn citation_key(link_type: LinkType, label: Option<&str>) -> Option<String> {
-    if !matches!(
-        link_type,
-        LinkType::Reference
-            | LinkType::ReferenceUnknown
-            | LinkType::Collapsed
-            | LinkType::CollapsedUnknown
-            | LinkType::Shortcut
-            | LinkType::ShortcutUnknown
-    ) {
+    if !matches!(link_type, LinkType::Shortcut | LinkType::ShortcutUnknown) {
         return None;
     }
     let label = label?.trim();
     let key = label.strip_prefix('@')?.trim();
-    (!key.is_empty()).then(|| key.to_lowercase())
+    (!key.is_empty()).then(|| UniCase::new(key).to_folded_case())
 }
 
 pub(super) fn repair_collapsed_range(

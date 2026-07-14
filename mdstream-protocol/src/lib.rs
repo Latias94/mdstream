@@ -7,10 +7,10 @@
 //!
 //! # Stability
 //!
-//! The `0.4-draft` schema is an internal draft. Its Rust and JSON surfaces may
-//! change until compiler, processor, and adoption conformance promotes it to a
-//! candidate. Renderer artifacts and parser-specific types intentionally do
-//! not belong in this crate.
+//! `mdstream.content/0.4-candidate.1` is the current binding candidate. Its Rust
+//! and JSON surfaces may still change through breaking candidate revisions
+//! until adoption conformance promotes the contract to final 0.4. Renderer
+//! artifacts and parser-specific types intentionally do not belong here.
 
 mod delta;
 mod document;

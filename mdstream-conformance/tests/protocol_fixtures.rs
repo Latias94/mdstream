@@ -18,6 +18,9 @@ use mdstream_protocol::{
     SourceCursor, SourceDelta, SourceRange, StructureVersion, TableAlignment,
 };
 
+#[path = "protocol_fixtures/required_nullable.rs"]
+mod required_nullable;
+
 fn corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../conformance")
 }
@@ -300,6 +303,7 @@ fn compatibility_profiles_are_narrow_and_pinned_to_upstream_versions() {
         "streamdown.block-framing/2.5.0",
         "remend.pending-repair/1.3.0",
         "incremark.final-ast/0.3.10+marked-default",
+        "mdstream.legacy-framing/0.3",
     ] {
         assert!(profiles.contains(expected), "missing profile {expected}");
     }
@@ -619,9 +623,11 @@ fn protocol_schema_accepts_every_serde_operation_and_content_variant() {
         },
         ContentKind::FootnoteDefinition {
             label: "note".to_string(),
+            target: reference.clone(),
         },
         ContentKind::FootnoteReference {
             label: "note".to_string(),
+            target: None,
         },
         ContentKind::CitationDefinition {
             key: "paper".to_string(),

@@ -21,6 +21,7 @@ impl DraftResourceIndex {
 pub(crate) enum DraftResourceRole {
     Link,
     Image,
+    Footnote,
     Citation,
 }
 
@@ -124,9 +125,15 @@ pub(crate) enum DraftContentKind {
     },
     FootnoteDefinition {
         label: String,
+        target: Option<DraftResourceIndex>,
     },
     FootnoteReference {
         label: String,
+        target: Option<DraftResourceIndex>,
+    },
+    CitationDefinition {
+        key: String,
+        target: Option<DraftResourceIndex>,
     },
     SoftBreak,
     HardBreak,
