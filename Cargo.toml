@@ -6,5 +6,5 @@ members = [
     "mdstream-protocol",
     "mdstream-tokio",
 ]
-exclude = ["fuzz"]
+exclude = ["fuzz", "mdstream-merman"]
 resolver = "2"

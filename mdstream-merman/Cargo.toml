@@ -1,0 +1,25 @@
+[package]
+name = "mdstream-merman"
+version = "0.4.0"
+description = "Optional headless Merman processor adapter for mdstream."
+readme = "README.md"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Latias94/mdstream"
+homepage = "https://github.com/Latias94/mdstream"
+
+[dependencies]
+mdstream-processors = { path = "../mdstream-processors", version = "=0.4.0" }
+mdstream-protocol = { path = "../mdstream-protocol", version = "=0.4.0" }
+merman = { version = "=0.8.0-alpha.3", default-features = false, features = [
+    "core-full",
+    "render",
+] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[workspace]
+resolver = "2"
