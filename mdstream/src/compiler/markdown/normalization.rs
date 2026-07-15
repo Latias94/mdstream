@@ -116,6 +116,37 @@ pub(super) fn offset_range(
     Ok(start..end)
 }
 
+pub(super) fn trim_redundant_trailing_blank_lines(
+    source: &str,
+    range: &mut Range<usize>,
+) -> Result<(), MarkdownError> {
+    let raw = checked_slice(source, range.clone())?;
+    let mut blank_bytes = 0usize;
+    let mut first_blank_bytes = 0usize;
+    let mut blank_lines = 0usize;
+
+    for line in raw.split_inclusive('\n').rev() {
+        if !line.trim().is_empty() {
+            break;
+        }
+        blank_lines = blank_lines
+            .checked_add(1)
+            .ok_or(MarkdownError::CursorOverflow)?;
+        blank_bytes = blank_bytes
+            .checked_add(line.len())
+            .ok_or(MarkdownError::CursorOverflow)?;
+        first_blank_bytes = line.len();
+    }
+
+    if blank_lines > 1 {
+        range.end = range
+            .end
+            .checked_sub(blank_bytes - first_blank_bytes)
+            .ok_or(MarkdownError::CursorOverflow)?;
+    }
+    Ok(())
+}
+
 pub(super) fn markdown_custom_error(error: CustomSyntaxError) -> MarkdownError {
     match error {
         CustomSyntaxError::AttributeName => MarkdownError::InvalidCustomAttributeName,

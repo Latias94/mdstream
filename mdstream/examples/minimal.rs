@@ -1,52 +1,30 @@
-//! Minimal `mdstream` usage (no adapters, no analyzers).
-//!
-//! Run:
-//!   cargo run --example minimal
+use mdstream::{EngineOutput, StreamEngine};
+use mdstream_protocol::{ApplyOutcome, Reducer};
 
-use mdstream::{DocumentState, MdStream, Options};
+fn apply(reducer: &mut Reducer, output: EngineOutput) {
+    for change in output.into_changes() {
+        assert!(matches!(
+            reducer.apply(change).unwrap(),
+            ApplyOutcome::Applied { .. } | ApplyOutcome::Recovered { .. }
+        ));
+    }
+}
 
 fn main() {
-    let mut stream = MdStream::new(Options::default());
-    let mut state = DocumentState::new();
+    let mut engine = StreamEngine::new();
+    let mut reducer = Reducer::new();
 
-    let chunks = [
-        "# Title\n\n",
-        "Hello **wor",
-        "ld**.\n\n",
-        "A list:\n",
-        "- item 1\n",
-        "- item 2\n",
-    ];
-
-    for (i, chunk) in chunks.iter().enumerate() {
-        println!("\n== tick {i} ==");
-        let applied = state.apply(stream.append(chunk));
-
-        if applied.reset {
-            println!("reset: true");
-        }
-        if !applied.invalidated.is_empty() {
-            println!("invalidated: {:?}", applied.invalidated);
-        }
-
-        println!("committed={}", state.committed().len());
-        if let Some(p) = state.pending() {
-            println!(
-                "pending id={} kind={:?} text={:?}",
-                p.id.0,
-                p.kind,
-                p.display_or_raw()
-            );
-        } else {
-            println!("pending: <none>");
-        }
+    for chunk in ["# mdstream\n\n", "A **streaming** document."] {
+        apply(&mut reducer, engine.append(chunk).unwrap());
     }
+    apply(&mut reducer, engine.finish().unwrap());
 
-    println!("\n== finalize ==");
-    let applied = state.apply(stream.finalize());
+    let document = reducer.document().unwrap();
     println!(
-        "final reset={} invalidated={:?}",
-        applied.reset, applied.invalidated
+        "lifecycle={:?} roots={} nodes={} source_bytes={}",
+        document.lifecycle(),
+        document.roots().len(),
+        document.nodes().len(),
+        document.source().len()
     );
-    println!("final committed={}", state.committed().len());
 }

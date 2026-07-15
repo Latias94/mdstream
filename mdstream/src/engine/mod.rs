@@ -1,5 +1,6 @@
 mod builder;
 mod effects;
+mod input;
 mod lifecycle;
 mod limits;
 mod storage;
@@ -18,9 +19,9 @@ use mdstream_protocol::{
     ReducerMetrics, Snapshot,
 };
 
+use self::input::NewlineNormalizer;
 use self::lifecycle::{append_change, reset_change};
 use crate::compiler::ContentCompiler;
-use crate::stream::NewlineNormalizer;
 
 #[derive(Debug)]
 pub struct StreamEngine {

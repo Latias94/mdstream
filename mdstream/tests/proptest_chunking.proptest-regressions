@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 89f7d32e6a60ad4d4117cbfc6f42d0b907051e2e824a6973a06a119260960254 # shrinks to markdown = "\n[^note]: footnote body\n\n\n", seed = 0, max_bytes = 1

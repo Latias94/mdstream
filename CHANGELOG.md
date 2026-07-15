@@ -7,8 +7,37 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
 
 ### Added
 
-- Added a `builder_extensions` example showing how to configure boundary
-  plugins and pending transformers with `MdStreamBuilder`.
+- Added the versioned Content IR, canonical reducer, replayable changes,
+  snapshots, lifecycle/recovery laws, deterministic node identity, and semantic
+  correction protocol.
+- Added the lifecycle-aware `StreamEngine`, resource/work metrics, setup-only
+  custom blocks, processor artifact host, citation processor, and optional
+  standalone Merman adapter.
+- Added framework-neutral egui and GPUI integration examples plus lossless Tokio
+  change-set transport.
+
+### Breaking Changes
+
+- Removed `MdStream`, `MdStreamBuilder`, `Block`, `BlockStatus`, `Update`,
+  `UpdateRef`, `PendingBlockRef`, `DocumentState`, `AnalyzedStream`, and
+  `BlockAnalyzer` without deprecated aliases.
+- Removed runtime boundary-plugin and pending-transformer mutation, mutable
+  committed/cache access, root pending-repair helpers, and the old Pulldown
+  event-cache adapter.
+- Replaced the implicit `committed + pending` contract with ordered
+  `ChangeSet` values applied by `mdstream_protocol::Reducer`.
+- Moved specialized content behavior out of the parser loop and into typed,
+  version-checked processors whose artifacts are not canonical document state.
+
+### Migration
+
+| Removed 0.3 API | 0.4 API |
+| --- | --- |
+| `MdStream` / `MdStreamBuilder` | `StreamEngine` / `StreamEngineBuilder` |
+| `Update` / `UpdateRef` | `mdstream_protocol::ChangeSet` |
+| `Block` / `BlockStatus` | `ContentNode` / `NodeStability` |
+| `DocumentState` | `mdstream_protocol::Reducer` |
+| analyzers and pending transformers | typed Content IR and `mdstream-processors` |
 
 ## 0.3.0 - 2026-07-07
 

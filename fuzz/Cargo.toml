@@ -28,11 +28,4 @@ test = false
 doc = false
 bench = false
 
-[[bin]]
-name = "terminator"
-path = "fuzz_targets/terminator.rs"
-test = false
-doc = false
-bench = false
-
 [workspace]

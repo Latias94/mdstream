@@ -4,370 +4,148 @@
 [![docs.rs](https://docs.rs/mdstream/badge.svg)](https://docs.rs/mdstream)
 [![CI](https://github.com/Latias94/mdstream/actions/workflows/ci.yml/badge.svg)](https://github.com/Latias94/mdstream/actions/workflows/ci.yml)
 
-`mdstream` is a **streaming-first Markdown middleware** for Rust.
+`mdstream` is a headless streaming content engine for AI-generated Markdown.
+It turns token chunks into versioned, replayable document changes with stable
+content identity. UI frameworks consume the same canonical state without
+reparsing Markdown or depending on a renderer.
 
-It targets LLM token-by-token / chunk-by-chunk output and helps downstream UIs (egui, gpui/Zed, TUI, etc.) avoid the classic **O(n²)** re-parse + re-render pattern that causes latency and flicker.
-
-## When to use
-
-Use `mdstream` when you:
-
-- Receive Markdown incrementally (LLM streaming) and want to avoid re-parsing the full document every tick.
-- Need stable cache keys for UI rendering (blocks are immutable once committed).
-- Want a render-agnostic “middleware” that can feed any renderer (Rust UI frameworks, terminal output, etc.).
-
-You probably **don’t** need `mdstream` if you only parse static Markdown once, or if you already have a renderer that handles incremental updates internally.
-
-## API at a glance
-
-- `MdStream`: streaming block splitter (`append` / `finalize`) that produces `Update`.
-- `MdStreamBuilder`: setup-time builder for options, boundary plugins, and pending transformers.
-- `MdStream::append_ref` / `finalize_ref`: borrowed update views (`UpdateRef`) for high-frequency UIs
-  that want to avoid cloning the pending tail on every tick.
-- `MdStream::snapshot_blocks(&mut self)`: take a best-effort snapshot (may run stateful transformers).
-- `Update`: `committed + pending` plus signals like `reset` and `invalidated`.
-- `UpdateRef`: `committed + pending` (borrowed) plus `reset` and `invalidated`.
-- `Block`: carries `id`, `kind`, `raw`, and optional `display` (pending-only).
-- `PendingBlockRef`: a borrowed view of the current pending block (`raw` + optional `display`).
-- `DocumentState`: a UI-friendly container to apply `Update` safely (recommended).
-- Root-level pending repair helpers: `TerminatorOptions` and `terminate_markdown`.
-- Root-level syntax helpers: `CodeFenceHeader`, `parse_code_fence_header`,
-  `parse_code_fence_header_from_block`, `is_code_fence_closing_line`, and
-  `is_list_marker_line_prefix`.
-- Optional adapter: `PulldownAdapter` behind the `pulldown` feature.
-
-## Goals
-
-- **Fix the O(n²) problem**: only the *new* part should be processed on each chunk.
-- **Render-agnostic**: no rendering; provide stable, incremental building blocks that any UI can consume.
-- **Handle the dirty work**: deal with chunk boundaries and incomplete Markdown so downstream parsers/renderers behave predictably.
-- **Match capabilities of Streamdown + Incremark** in streaming Markdown handling and edge-case coverage.
-
-## Non-goals
-
-- Not a Markdown renderer.
-- Not a full CommonMark/GFM conformance test suite (we prioritize streaming stability and practical compatibility).
-- Not a hard dependency on a specific parser (pulldown-cmark integration is optional).
-
-## Core Model (high level)
-
-- The input stream is represented as a sequence of **blocks**:
-  - **Committed blocks**: stable, never change again (safe for UI to cache by `BlockId`).
-  - A single **pending block**: may change while streaming (UI updates only this block).
-- Some scope-driven transitions require a full reset (e.g. switching into single-block footnote mode):
-  - `append()` may return `Update { reset: true, .. }` to tell consumers to drop cached blocks.
-- A **pending pipeline** can optionally produce a `display` view for the pending block:
-  - Markdown terminator (remend-like) for incomplete constructs near the tail.
-  - Custom transforms via `PendingTransformer` (eg placeholders, sanitizers).
-    - `PendingTransformer` is stateful: `transform(&mut self, ...)` and `reset(&mut self)`.
-    - Consequently, `MdStream::snapshot_blocks` requires `&mut self`.
-
-### Borrowed updates (`append_ref`) and async usage
-
-`append_ref` is intended for the common UI architecture where the **UI thread owns the stream**
-and receives chunks via a channel:
-
-- It avoids cloning large pending buffers (especially large code fences).
-- The returned `UpdateRef` borrows from the stream; it is **not** suitable for sending across
-  threads/tasks.
-- If you must send updates across tasks, use `append()` (owned `Update`) or convert a borrowed view
-  via `UpdateRef::to_owned()` (this may allocate).
-
-## Installation
-
-```toml
-[dependencies]
-mdstream = "0.3.0"
+```text
+token chunks
+    -> StreamEngine
+    -> ChangeSet batches
+    -> canonical Reducer / Content IR
+    -> GPUI, egui, TUI, WASM, React, Flutter
+    -> optional code, math, citation, and Mermaid processors
 ```
 
-Optional Tokio glue (delta coalescing + helpers):
+The 0.4 API is intentionally breaking. The previous block splitter and its
+`committed + pending` update model are not retained as compatibility wrappers.
 
-```toml
-[dependencies]
-mdstream-tokio = "0.3.0"
-```
+## Workspace
 
-Rust version support:
+| Package | Responsibility |
+| --- | --- |
+| `mdstream` | Synchronous streaming engine, Markdown compiler, stable identity, and resource metrics |
+| `mdstream-protocol` | Versioned Content IR, changes, snapshots, reducer, wire schema, and recovery laws |
+| `mdstream-processors` | Version-checked processor requests, artifact lifecycle, cancellation, and limits |
+| `mdstream-conformance` | Chunk schedules, replay laws, fixtures, workload generators, and budget contracts |
+| `mdstream-tokio` | Lossless bounded channels and a `StreamEngine` actor |
+| `mdstream-merman` | Optional standalone Merman processor adapter on its own Rust toolchain lane |
 
-- `mdstream`: Rust 1.85 or newer.
-- `mdstream-tokio`: Rust 1.88.0 or newer, matching its current TUI dependency floor.
+## Quick Start
 
-Backpressure policy (producer side):
-
-- `Block`: never drop; safest for real content.
-- `DropNew`: drop when UI is slow; good for best-effort signals.
-- `CoalesceLocal`: buffer locally and flush opportunistically; good for high-frequency token streams.
-
-Practical examples:
-
-1) Agent CLI (chat transcript, LLM token streaming)
-
-- Goal: keep all text, avoid per-token UI updates, avoid unbounded memory.
-- Recommended: bounded channel + `CoalesceLocal` on the producer, and `CoalescingReceiver` on the UI side.
+The engine produces changes. A consumer applies every change through the
+canonical reducer and renders only the node IDs reported by `ChangeImpact`.
 
 ```rust
-use mdstream_tokio::{BackpressurePolicy, CoalescePreset, CoalescingReceiver, DeltaSender};
-use tokio::sync::mpsc;
+use mdstream::{EngineOutput, StreamEngine};
+use mdstream_protocol::{ApplyOutcome, Reducer};
 
-let (tx, rx) = mpsc::channel::<String>(64);
-let mut sender = DeltaSender::new(tx, BackpressurePolicy::CoalesceLocal);
-let mut rx = CoalescingReceiver::new(rx, CoalescePreset::Balanced.options());
-
-// producer task: sender.send(token_or_chunk).await
-// UI task: if let Some(chunk) = rx.recv().await { stream.append(&chunk); }
-```
-
-2) Agent CLI (progress / typing indicator / spinner)
-
-- Goal: keep UI responsive; old updates are not important.
-- Recommended: `DropNew` (or a separate small channel just for status).
-
-```rust
-let (tx, rx) = mpsc::channel::<String>(1);
-let mut sender = DeltaSender::new(tx, BackpressurePolicy::DropNew);
-// producer: sender.send("thinking...").await;  // may be dropped if UI is busy
-```
-
-3) “Tool output” streaming (logs, ANSI output, file watcher)
-
-- Goal: preserve output; losing lines is bad.
-- Recommended: `Block` with a bounded channel (natural backpressure), optionally with receiver-side coalescing.
-
-```rust
-let (tx, rx) = mpsc::channel::<String>(256);
-let mut sender = DeltaSender::new(tx, BackpressurePolicy::Block);
-// producer: sender.send(line).await; // waits if UI falls behind
-```
-
-Rule of thumb:
-
-- If the message is user-visible content that must not be lost → `Block` or `CoalesceLocal`.
-- If the message is “state” and newer replaces older → `DropNew`.
-
-## Quick Start (UI Integration)
-
-Recommended: keep UI state in `DocumentState` and apply each `Update` to it. This makes `reset`
-handling hard to get wrong.
-
-```rust
-use mdstream::{DocumentState, MdStream, Options};
-
-let mut stream = MdStream::new(Options::default());
-let mut state = DocumentState::new();
-
-let u = stream.append("# Title\n\nHello **wor");
-let applied = state.apply(u);
-
-if applied.reset {
-    // Drop any external caches derived from old blocks.
+fn apply(reducer: &mut Reducer, output: EngineOutput) {
+    for change in output.into_changes() {
+        match reducer.apply(change).unwrap() {
+            ApplyOutcome::Applied { impact, .. }
+            | ApplyOutcome::Recovered { impact, .. } => {
+                for node_id in impact.changed_nodes {
+                    // Rebuild only the view cached under this stable NodeId.
+                    let _ = node_id;
+                }
+            }
+            outcome => panic!("unexpected producer outcome: {outcome:?}"),
+        }
+    }
 }
-// If you enable invalidation (see below), `applied.invalidated` tells you which committed blocks to refresh.
 
-for b in state.committed() {
-    // Render stable blocks once.
-    let text = b.display_or_raw();
-    let _ = text;
-}
-if let Some(p) = state.pending() {
-    // Render/update the pending block each tick.
-    let text = p.display_or_raw();
-    let _ = text;
-}
+let mut engine = StreamEngine::new();
+let mut reducer = Reducer::new();
+
+apply(&mut reducer, engine.append("# Title\n\nHello **wor").unwrap());
+apply(&mut reducer, engine.append("ld**").unwrap());
+apply(&mut reducer, engine.finish().unwrap());
+
+let document = reducer.document().unwrap();
+assert_eq!(document.source(), "# Title\n\nHello **world**");
 ```
 
-If you prefer to manage your own `(Vec<Block>, Option<Block>)`, you can apply updates with
-`Update::apply_to`.
+`finish` is terminal and idempotent. `reset` starts a predecessor-linked epoch.
+Appending after finish returns a typed error without changing engine state.
 
-For setup-heavy streams, use the builder and then keep runtime updates on `MdStream`:
+## Setup-Only Extensions
+
+Grammar configuration is sealed when the engine is built. Runtime grammar or
+transformer mutation is deliberately unavailable.
 
 ```rust
-use mdstream::{
-    ContainerBoundaryPlugin, IncompleteLinkPlaceholderTransformer, MdStream, Options,
-};
+use mdstream::{CustomBlockSpec, StreamEngine};
 
-let mut stream = MdStream::builder(Options::default())
-    .boundary_plugin(ContainerBoundaryPlugin::default())
-    .pending_transformer(IncompleteLinkPlaceholderTransformer::default())
-    .build();
+let mut engine = StreamEngine::builder()
+    .custom_block(CustomBlockSpec::try_new("app.thinking/1", "thinking")?)
+    .build()?;
 
-let update = stream.append("::: note\nstreaming");
-let _ = update;
+let output = engine.append("<thinking>\nwork\n</thinking>\n")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`MdStream::new`, `MdStream::streamdown_defaults`, and the existing `push_*` / `with_*` methods remain
-available. The builder is a setup convenience, not a separate runtime engine.
+Custom blocks use a small standalone line grammar. `pulldown-cmark 0.13.x`
+remains the internal CommonMark/GFM semantic compiler for Markdown regions;
+neither parser-specific types nor renderer artifacts enter the public protocol.
 
-## Examples
+## UI State and Artifacts
+
+- `NodeId` is the stable UI key.
+- `NodeVersion` is the deterministic cache and compare-and-set version.
+- `ChangeImpact` identifies changed and removed nodes/resources.
+- `Snapshot` is explicit recovery state, not a payload emitted on every append.
+- `ArtifactHost` stores processor output separately and rejects stale results
+  using epoch, node/input versions, processor/configuration versions, and
+  request generation.
+
+See the compile-tested examples:
 
 ```sh
 cargo run -p mdstream --example minimal
-cargo run -p mdstream --example builder_extensions
-cargo run -p mdstream --example footnotes_reset
-cargo run -p mdstream --example stateful_transformer
-cargo run -p mdstream --example tui_like
-cargo run -p mdstream --features pulldown --example pulldown_incremental
+cargo run -p mdstream --example custom_blocks
+cargo run -p mdstream --example egui_adapter
+cargo run -p mdstream --example gpui_adapter
+cargo +1.88.0 run -p mdstream-tokio --example agent_tui
 ```
 
-Tokio + ratatui demo (agent-style streaming):
+The egui and GPUI examples are framework-neutral on purpose. They demonstrate
+the ownership and invalidation contract without adding UI framework dependencies
+to the core workspace.
 
-```sh
-cargo run -p mdstream-tokio --example agent_tui
-```
+## Migration From 0.3
 
-You can also choose a producer-side backpressure policy:
+| 0.3 surface | 0.4 replacement |
+| --- | --- |
+| `MdStream`, `MdStreamBuilder` | `StreamEngine`, `StreamEngineBuilder` |
+| `Update`, `UpdateRef` | ordered `mdstream_protocol::ChangeSet` values |
+| `Block`, `BlockStatus` | typed `ContentNode`, `NodeStability`, and `DocumentLifecycle` |
+| `DocumentState` | `mdstream_protocol::Reducer` |
+| `AnalyzedStream`, `BlockAnalyzer` | typed Content IR plus external processors |
+| runtime boundary/transformer mutation | setup-only `CustomBlockSpec` and processor configuration |
+| pending Markdown repair helpers | `Document::pending_source()` plus host rendering policy |
+| mutable committed/cache access | `ChangeImpact`, stable IDs, and immutable document views |
 
-```sh
-cargo run -p mdstream-tokio --example agent_tui -- --policy coalesce-local
-cargo run -p mdstream-tokio --example agent_tui -- --policy drop-new
-cargo run -p mdstream-tokio --example agent_tui -- --policy block
-```
+There are no deprecated aliases for the removed surface. Consumers must apply
+the protocol through the reducer so sequence gaps, resets, recovery, and
+semantic corrections remain observable.
 
-Keys:
+## Conformance and Limits
 
-- `q`: quit
-- `j/k` or `↑/↓`: scroll
-- `g/G`: top/bottom
-- `f`: toggle follow-tail
-- `c`: cycle coalescing mode
-- `[` / `]`: adjust pending code tail lines
+Final Content IR, stable IDs, node versions, and lifecycle are invariant across
+UTF-8-safe chunk schedules. The workspace checks replay laws, deterministic
+compiler/reducer work, retained and transactional memory, processor budgets,
+and frozen artifact ceilings. Hard resource failures are atomic and leave the
+last accepted document unchanged.
 
-## Optional: Reference Definitions Invalidation (Best-effort)
+The core engine is synchronous and runtime-independent. Tokio integration is
+lossless; lossy policies are not available for canonical document input.
 
-Markdown reference-style links/images can be defined *after* they are used:
+## Rust Versions and License
 
-- usage: `See [docs][ref].` or `See [ref].`
-- definition (often later): `[ref]: https://example.com`
+- Core engine, protocol, conformance, and processor crates: Rust 1.85+
+- `mdstream-tokio`: Rust 1.88+
+- Standalone `mdstream-merman`: Rust 1.95+
 
-In streaming UIs that parse/render **each committed block independently**, late-arriving reference
-definitions can require re-parsing earlier blocks so they turn into real links.
-
-`mdstream` provides an **opt-in** invalidation signal for this:
-
-- Enable: `opts.reference_definitions = ReferenceDefinitionsMode::Invalidate`
-- When a reference definition is **committed**, `Update.invalidated` contains the `BlockId`s of
-  previously committed blocks that likely used the label.
-- Consumers/adapters can re-parse only those blocks instead of re-parsing the entire document.
-
-This is intentionally **best-effort** (optimized for LLM streaming), not a full CommonMark/GFM
-reference definition implementation:
-
-- Only single-line definitions are recognized (`^[ ]{0,3}[label]: ...`), footnotes (`[^x]:`) are excluded.
-- Label matching is normalized (trim, collapse whitespace, case-insensitive).
-- Usage extraction over-approximates: false positives may cause extra invalidations; the goal is to
-  avoid missing invalidations.
-- Definitions inside fenced code blocks do not trigger invalidations.
-- The same internal reference definition store feeds the optional `pulldown-cmark` adapter so
-  invalidated blocks can be re-parsed with the latest committed definitions.
-
-Example:
-
-```rust
-use mdstream::{MdStream, Options, ReferenceDefinitionsMode};
-
-let mut opts = Options::default();
-opts.reference_definitions = ReferenceDefinitionsMode::Invalidate;
-
-let mut s = MdStream::new(opts);
-let u1 = s.append("See [ref].\n\n");
-assert!(u1.committed.is_empty());
-
-let u2 = s.append("[ref]: https://example.com\n\nNext\n");
-assert!(u2.invalidated.contains(&mdstream::BlockId(1)));
-```
-
-## Optional: `pulldown-cmark` Adapter (`pulldown` feature)
-
-`mdstream` is render-agnostic. If you want to reuse the Rust ecosystem around `pulldown-cmark`
-(egui, gpui/Zed, TUI renderers), enable the adapter feature:
-
-```toml
-[dependencies]
-mdstream = { version = "0.3.0", features = ["pulldown"] }
-```
-
-When `reference_definitions` invalidation is enabled, the adapter can re-parse only the invalidated
-blocks:
-
-```rust
-use mdstream::adapters::pulldown::{PulldownAdapter, PulldownAdapterOptions};
-use mdstream::{MdStream, Options, ReferenceDefinitionsMode};
-
-let mut opts = Options::default();
-opts.reference_definitions = ReferenceDefinitionsMode::Invalidate;
-
-let mut stream = MdStream::new(opts);
-let mut adapter = PulldownAdapter::new(PulldownAdapterOptions::default());
-
-stream.append("See [ref].\n\n");
-let u1 = stream.append("[ref]: https://example.com\n");
-adapter.apply_update(&u1);
-
-stream.append("\n");
-let u2 = stream.append("Next\n");
-adapter.apply_update(&u2);
-
-// `u2.invalidated` tells you which committed blocks should be re-rendered.
-```
-
-## Release notes
-
-- Changelog: `CHANGELOG.md`
-- Release checklist: `RELEASE_CHECKLIST.md`
-- Note: This project may prune `docs/` during releases; user-facing guidance lives in this README.
-
-## Maintainer workflow
-
-Primary local gates:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo nextest run --workspace --all-features
-cargo test --workspace --all-features --doc
-cargo check -p mdstream --examples
-cargo check -p mdstream --features pulldown --examples
-cargo check -p mdstream-tokio --examples
-cargo check -p mdstream --benches
-cargo check --manifest-path fuzz/Cargo.toml --bins
-cargo package -p mdstream
-cargo package -p mdstream-tokio
-```
-
-Additional hardening:
-
-- Benchmarks: `cargo bench -p mdstream --bench streaming` (see `docs/PERFORMANCE.md`).
-- Longer `cargo-fuzz` runs are documented in `fuzz/README.md`.
-- MSRV checks are split: `cargo +1.85.0 test -p mdstream --tests --all-features` for the core crate and `cargo +1.88.0 nextest run --workspace --all-features` for the full workspace.
-
-## Design notes (in-repo)
-
-- `docs/ADR_0001_STREAMING_CONCURRENCY.md`
-- `docs/ARCHITECTURE.md`
-- `docs/COMPATIBILITY.md`
-- `docs/PERFORMANCE.md`
-- Feature proposal/preview: `sync` (opt-in) for `Send + Sync` extension points.
-
-## Credits
-
-- Inspired by Vercel's `streamdown`: https://github.com/vercel/streamdown
-- Also informed by `incremark`: https://github.com/kingshuaishuai/incremark
-
-## Status
-
-Current implementation includes:
-
-- `MdStream` core state machine (blocks: committed + pending)
-- `MdStreamBuilder` setup API for extension-heavy streams
-- Pending terminator (Streamdown/remend-inspired)
-- Streaming boundary tests (Streamdown/Incremark-inspired)
-- Reference-style link definitions invalidation (opt-in, for adapters)
-- Optional `pulldown-cmark` adapter via the `pulldown` feature
-- Criterion benchmarks, property tests, and standalone fuzz targets for refactor safety
-
-Try the demo:
-
-`cargo run -p mdstream --example tui_like`
-
-Try the `pulldown-cmark` incremental demo:
-
-`cargo run -p mdstream --features pulldown --example pulldown_incremental`
+Licensed under either Apache-2.0 or MIT at your option.

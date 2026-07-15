@@ -1,69 +1,26 @@
 #![allow(dead_code)]
 
-use mdstream::{BlockKind, MdStream, Options, Update};
-use mdstream_conformance::ChunkSchedule;
+use mdstream::StreamEngine;
+use mdstream_conformance::{ChunkSchedule, NormalizedSnapshot};
+use mdstream_protocol::{ApplyOutcome, Reducer};
 
-pub fn collect_final_blocks(
-    chunks: impl IntoIterator<Item = String>,
-    opts: Options,
-) -> Vec<(BlockKind, String)> {
-    let s = MdStream::new(opts);
-    collect_final_blocks_with_stream(chunks, s)
-}
-
-pub fn collect_final_raw(chunks: impl IntoIterator<Item = String>, opts: Options) -> Vec<String> {
-    collect_final_blocks(chunks, opts)
-        .into_iter()
-        .map(|(_, raw)| raw)
-        .collect()
-}
-
-pub fn collect_final_blocks_with_stream(
-    chunks: impl IntoIterator<Item = String>,
-    mut s: MdStream,
-) -> Vec<(BlockKind, String)> {
-    let mut out = Vec::new();
-
+pub fn replay(chunks: impl IntoIterator<Item = String>) -> NormalizedSnapshot {
+    let mut engine = StreamEngine::new();
+    let mut reducer = Reducer::new();
     for chunk in chunks {
-        let u = s.append(&chunk);
-        apply_update(&mut out, u);
+        apply(&mut reducer, engine.append(&chunk).unwrap());
     }
-    let u = s.finalize();
-    apply_update(&mut out, u);
-    out
+    apply(&mut reducer, engine.finish().unwrap());
+    NormalizedSnapshot::from(reducer.document().unwrap().snapshot())
 }
 
-pub fn collect_final_blocks_borrowed(
-    chunks: impl IntoIterator<Item = String>,
-    opts: Options,
-) -> Vec<(BlockKind, String)> {
-    let mut s = MdStream::new(opts);
-    let mut out = Vec::new();
-
-    for chunk in chunks {
-        let u = s.append_ref(&chunk).to_owned();
-        apply_update(&mut out, u);
+fn apply(reducer: &mut Reducer, output: mdstream::EngineOutput) {
+    for change in output.into_changes() {
+        assert!(matches!(
+            reducer.apply(change).unwrap(),
+            ApplyOutcome::Applied { .. } | ApplyOutcome::Recovered { .. }
+        ));
     }
-    let u = s.finalize_ref().to_owned();
-    apply_update(&mut out, u);
-    out
-}
-
-fn apply_update(out: &mut Vec<(BlockKind, String)>, update: Update) {
-    if update.reset {
-        out.clear();
-    }
-    out.extend(update.committed.into_iter().map(|b| (b.kind, b.raw)));
-}
-
-pub fn collect_final_raw_with_stream(
-    chunks: impl IntoIterator<Item = String>,
-    s: MdStream,
-) -> Vec<String> {
-    collect_final_blocks_with_stream(chunks, s)
-        .into_iter()
-        .map(|(_, raw)| raw)
-        .collect()
 }
 
 pub fn chunk_whole(text: &str) -> Vec<String> {

@@ -1,0 +1,20 @@
+error[E0432]: unresolved imports `mdstream::BoundaryPlugin`, `mdstream::CodeFenceHeader`, `mdstream::Options`, `mdstream::PendingTransformer`, `mdstream::TerminatorOptions`, `mdstream::is_code_fence_closing_line`, `mdstream::is_list_marker_line_prefix`, `mdstream::parse_code_fence_header`, `mdstream::terminate_markdown`
+ --> tests/ui/obsolete_helpers.rs:4:5
+  |
+4 |     BoundaryPlugin, CodeFenceHeader, Options, PendingTransformer, TerminatorOptions,
+  |     ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^ no `TerminatorOptions` in the root
+  |     |               |                |        |
+  |     |               |                |        no `PendingTransformer` in the root
+  |     |               |                no `Options` in the root
+  |     |               no `CodeFenceHeader` in the root
+  |     no `BoundaryPlugin` in the root
+5 |     is_code_fence_closing_line, is_list_marker_line_prefix, parse_code_fence_header,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^ no `parse_code_fence_header` in the root
+  |     |                           |
+  |     |                           no `is_list_marker_line_prefix` in the root
+  |     no `is_code_fence_closing_line` in the root
+6 |     terminate_markdown,
+  |     ^^^^^^^^^^^^^^^^^^ no `terminate_markdown` in the root
+  |
+  = help: consider importing this struct instead:
+          pulldown_cmark::Options

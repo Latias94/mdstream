@@ -34,6 +34,7 @@ use super::{
         markdown_custom_error, offset_range, ordered_list_start, repair_collapsed_range,
         source_contained_body, synthesize_table_body, synthesize_tight_paragraphs,
         synthetic_container, table_alignment, tight_paragraph_count,
+        trim_redundant_trailing_blank_lines,
     },
     unresolved_footnotes::{
         classify_unresolved_footnotes, collect_canonical_events, overlay_unresolved_footnotes,
@@ -686,6 +687,9 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
     }
 
     fn finish_frame(&mut self, mut frame: Frame) -> Result<DraftNode, MarkdownError> {
+        if matches!(&frame.payload, FramePayload::FootnoteDefinition { .. }) {
+            trim_redundant_trailing_blank_lines(self.source, &mut frame.source)?;
+        }
         let source = absolute_range(frame.source.clone(), self.absolute_base)?;
 
         let (content, children, body, origin) = match frame.payload {

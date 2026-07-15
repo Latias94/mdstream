@@ -468,10 +468,7 @@ fn text_overlay_state_error() -> MarkdownError {
     }
 }
 
-fn overlay_text<'source>(
-    source: &'source str,
-    range: Range<usize>,
-) -> Result<MarkdownEvent<'source>, MarkdownError> {
+fn overlay_text(source: &str, range: Range<usize>) -> Result<MarkdownEvent<'_>, MarkdownError> {
     let raw = source
         .get(range.clone())
         .ok_or(MarkdownError::InvalidUtf8Boundary {

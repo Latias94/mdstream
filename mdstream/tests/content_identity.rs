@@ -35,6 +35,15 @@ fn replay_with_engine(
 }
 
 #[test]
+fn trailing_blank_lines_do_not_change_footnote_identity_by_chunk_schedule() {
+    let source = "\n[^note]: footnote body\n\n\n";
+    assert_eq!(
+        replay(source, &ChunkSchedule::Characters),
+        replay(source, &ChunkSchedule::Whole),
+    );
+}
+
+#[test]
 fn html_emphasis_and_link_identity_is_invariant_across_the_first_checkpoint() {
     let source = format!(
         "<aside>streamed html</aside>\n\n{} *important* [docs](https://example.test/docs)\n",
