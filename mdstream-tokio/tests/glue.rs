@@ -1,9 +1,10 @@
 use std::time::Duration;
 
-use mdstream::{MdStream, Options};
+use mdstream::{EngineError, StreamEngine};
+use mdstream_protocol::{ChangeSet, DocumentLifecycle, ProjectionOp, Reducer, Sequence};
 use mdstream_tokio::{
-    BackpressurePolicy, CoalesceOptions, CoalescingReceiver, DeltaSender, FlushReason, SendError,
-    SendOutcome, spawn_mdstream_actor,
+    ActorCommand, BackpressurePolicy, CoalesceOptions, CoalescingReceiver, DeltaSender,
+    FlushReason, SendError, SendOutcome, spawn_stream_engine_actor,
 };
 use tokio::sync::mpsc;
 
@@ -76,17 +77,12 @@ async fn sender_policies_report_expected_outcomes_and_closed_errors() {
     assert_eq!(rx.recv().await.as_deref(), Some("a"));
 
     let (tx, _rx) = mpsc::channel::<String>(1);
-    let mut drop_new = DeltaSender::new(tx, BackpressurePolicy::DropNew);
-    assert_eq!(drop_new.send("b").await.unwrap(), SendOutcome::Sent);
-    assert_eq!(drop_new.send("c").await.unwrap(), SendOutcome::Dropped);
-
-    let (tx, _rx) = mpsc::channel::<String>(1);
     let mut coalesce = DeltaSender::new(tx, BackpressurePolicy::CoalesceLocal);
     assert_eq!(coalesce.send("d").await.unwrap(), SendOutcome::Buffered);
 
     let (tx, rx) = mpsc::channel::<String>(1);
     drop(rx);
-    let mut closed = DeltaSender::new(tx, BackpressurePolicy::DropNew);
+    let mut closed = DeltaSender::new(tx, BackpressurePolicy::Block);
     assert_eq!(closed.send("x").await, Err(SendError::Closed));
 
     let (tx, rx) = mpsc::channel::<String>(1);
@@ -97,42 +93,149 @@ async fn sender_policies_report_expected_outcomes_and_closed_errors() {
 }
 
 #[tokio::test]
-async fn actor_emits_final_update_when_input_closes() {
-    let (tx, rx) = mpsc::channel::<String>(8);
-    let mut updates = spawn_mdstream_actor(MdStream::new(Options::default()), rx, test_options());
+async fn stream_engine_actor_closes_with_one_replayable_finalization() {
+    let (tx, rx) = mpsc::channel(8);
+    let mut output = spawn_stream_engine_actor(StreamEngine::new(), rx, test_options());
 
-    tx.send("Hello".to_string()).await.unwrap();
+    for byte in ["H", "e", "l", "l", "o"] {
+        tx.send(ActorCommand::Append(byte.to_string()))
+            .await
+            .unwrap();
+    }
     drop(tx);
 
-    let first = updates.recv().await.expect("append update");
-    assert!(first.pending.is_some());
+    let mut changes = Vec::new();
+    while let Some(result) = output.recv().await {
+        changes.extend(result.expect("actor command should succeed"));
+    }
 
-    let final_update = updates.recv().await.expect("final update");
-    assert_eq!(final_update.committed.len(), 1);
-    assert_eq!(final_update.committed[0].raw, "Hello");
-    assert!(final_update.pending.is_none());
+    assert!(!changes.is_empty());
+    for (index, change) in changes.iter().enumerate() {
+        assert_eq!(change.sequence(), Sequence::new(index as u64));
+        if let Some(previous) = index.checked_sub(1).and_then(|i| changes.get(i)) {
+            assert_ne!(change.change_id(), previous.change_id());
+        }
+    }
+    assert_eq!(
+        changes
+            .iter()
+            .flat_map(|change| change.operations())
+            .filter(|operation| matches!(operation, ProjectionOp::FinishDocument))
+            .count(),
+        1
+    );
+
+    let mut reducer = Reducer::new();
+    for change in changes {
+        reducer.apply(change).expect("actor trace should replay");
+    }
+    let document = reducer.document().expect("actor should start an epoch");
+    assert_eq!(document.source(), "Hello");
+    assert_eq!(document.lifecycle(), DocumentLifecycle::Finalized);
+    output.join().await.expect("actor task should exit cleanly");
 }
 
 #[tokio::test]
-async fn actor_exits_when_output_receiver_closes() {
-    let (tx, rx) = mpsc::channel::<String>(1);
-    let updates = spawn_mdstream_actor(MdStream::new(Options::default()), rx, test_options());
-    drop(updates);
+async fn stream_engine_actor_reports_terminal_errors_and_reset_changes_in_order() {
+    let (tx, rx) = mpsc::channel(8);
+    let mut output = spawn_stream_engine_actor(StreamEngine::new(), rx, test_options());
 
-    tx.send("Hello".to_string()).await.unwrap();
+    for command in [
+        ActorCommand::Append("old".to_string()),
+        ActorCommand::Finish,
+        ActorCommand::Append("late".to_string()),
+        ActorCommand::Reset,
+        ActorCommand::Append("new".to_string()),
+    ] {
+        tx.send(command).await.unwrap();
+    }
+    drop(tx);
 
-    let mut closed = false;
-    for _ in 0..20 {
-        match tx.send("after".to_string()).await {
-            Ok(()) => tokio::time::sleep(Duration::from_millis(10)).await,
-            Err(_) => {
-                closed = true;
-                break;
-            }
+    let mut changes: Vec<ChangeSet> = Vec::new();
+    let mut errors = Vec::new();
+    while let Some(result) = output.recv().await {
+        match result {
+            Ok(batch) => changes.extend(batch),
+            Err(error) => errors.push(error),
         }
     }
+
+    assert_eq!(errors, vec![EngineError::Finished]);
+    let reset = changes
+        .iter()
+        .find(|change| {
+            change
+                .epoch_start()
+                .is_some_and(|start| start.predecessor.is_some())
+        })
+        .expect("reset must cross the actor as an epoch-start change");
+    assert_eq!(reset.sequence(), Sequence::new(0));
+
+    let mut reducer = Reducer::new();
+    for change in changes {
+        reducer
+            .apply(change)
+            .expect("ordered actor trace should replay");
+    }
+    let document = reducer.document().expect("reset epoch should exist");
+    assert_eq!(document.source(), "new");
+    assert_eq!(document.lifecycle(), DocumentLifecycle::Finalized);
+    output.join().await.expect("actor task should exit cleanly");
+}
+
+#[tokio::test]
+async fn closing_actor_output_cancels_and_releases_input_without_panic() {
+    let (tx, rx) = mpsc::channel(1);
+    let mut actor = spawn_stream_engine_actor(StreamEngine::new(), rx, test_options());
+
+    actor.close_output();
+    tokio::time::timeout(Duration::from_secs(1), actor.join())
+        .await
+        .expect("actor task must not leak after output cancellation")
+        .expect("actor task must not panic");
+
+    assert!(tx.is_closed());
     assert!(
-        closed,
-        "actor should drop input receiver after output closes"
+        tx.send(ActorCommand::Append("ignored".to_string()))
+            .await
+            .is_err()
     );
+}
+
+#[tokio::test]
+async fn actor_preserves_normalized_order_for_one_byte_and_bursty_schedules() {
+    let source = "a\r\nb\rc\n";
+    let one_byte = source
+        .bytes()
+        .map(|byte| char::from(byte).to_string())
+        .collect();
+    let bursty = ["a\r", "\nb", "\rc\n"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    assert_eq!(actor_source(one_byte).await, "a\nb\nc\n");
+    assert_eq!(actor_source(bursty).await, "a\nb\nc\n");
+}
+
+async fn actor_source(chunks: Vec<String>) -> String {
+    let (tx, rx) = mpsc::channel(1);
+    let mut actor = spawn_stream_engine_actor(StreamEngine::new(), rx, test_options());
+    let producer = tokio::spawn(async move {
+        for chunk in chunks {
+            tx.send(ActorCommand::Append(chunk)).await.unwrap();
+        }
+    });
+
+    let mut reducer = Reducer::new();
+    while let Some(result) = actor.recv().await {
+        for change in result.expect("actor command should succeed") {
+            reducer.apply(change).expect("actor trace should replay");
+        }
+    }
+    producer.await.expect("producer task should not panic");
+    actor.join().await.expect("actor task should exit cleanly");
+    let document = reducer.document().expect("actor should start an epoch");
+    assert_eq!(document.lifecycle(), DocumentLifecycle::Finalized);
+    document.source().to_string()
 }

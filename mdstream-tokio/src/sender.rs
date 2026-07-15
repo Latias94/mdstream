@@ -1,5 +1,14 @@
 use tokio::sync::mpsc;
 
+/// Lossless backpressure strategies for canonical document input.
+///
+/// Lossy policies are deliberately absent from this API:
+///
+/// ```compile_fail
+/// use mdstream_tokio::BackpressurePolicy;
+///
+/// let _ = BackpressurePolicy::DropNew;
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackpressurePolicy {
     /// Await capacity. Never drops.
@@ -10,14 +19,6 @@ pub enum BackpressurePolicy {
     ///
     /// Trade-off: the producer task may stall when the UI falls behind.
     Block,
-    /// Drop the new delta when the channel is full.
-    ///
-    /// Recommended when:
-    /// - deltas are replaceable / "best effort" (typing indicators, progress, ephemeral status)
-    /// - you prefer keeping the UI responsive over preserving every update
-    ///
-    /// Trade-off: content loss is expected when the UI is slow.
-    DropNew,
     /// Buffer locally and try to flush opportunistically (keeps content, reduces producer stalls).
     ///
     /// This is useful when producers are very "bursty" and you prefer UI smoothness over strict
@@ -27,14 +28,18 @@ pub enum BackpressurePolicy {
     /// - deltas are very high-frequency (LLM token streams)
     /// - you still want to preserve content, but avoid stalling producers on every small chunk
     ///
-    /// Trade-off: memory is bounded by `local_max_bytes`; flushing becomes "chunky" under load.
+    /// Trade-off: backpressure begins at `local_max_bytes`; one input delta may
+    /// itself be larger than that threshold, and flushing becomes chunky under load.
     CoalesceLocal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SendOutcome {
     Sent,
-    Dropped,
+    /// Accepted into the sender's local buffer, but not yet admitted to the channel.
+    ///
+    /// Call [`DeltaSender::flush`] before dropping the sender. `Drop` cannot
+    /// asynchronously deliver buffered content.
     Buffered,
 }
 
@@ -48,6 +53,9 @@ pub enum SendError {
 /// In many streaming setups, the producer runs in an async task and the UI thread drains updates.
 /// This wrapper provides a few practical backpressure strategies without forcing users to build
 /// their own channel policies.
+///
+/// A [`SendOutcome::Buffered`] result is retained locally. Producers must call
+/// [`Self::flush`] before dropping the sender to complete delivery.
 pub struct DeltaSender {
     pub(crate) tx: mpsc::Sender<String>,
     policy: BackpressurePolicy,
@@ -73,14 +81,19 @@ impl DeltaSender {
         self.policy
     }
 
-    pub fn set_policy(&mut self, policy: BackpressurePolicy) {
+    /// Change policy without allowing buffered content to be overtaken.
+    pub async fn set_policy(&mut self, policy: BackpressurePolicy) -> Result<(), SendError> {
+        if self.policy == policy {
+            return Ok(());
+        }
+        self.flush().await?;
         self.policy = policy;
+        Ok(())
     }
 
     pub async fn send(&mut self, delta: &str) -> Result<SendOutcome, SendError> {
         match self.policy {
             BackpressurePolicy::Block => self.send_block(delta).await,
-            BackpressurePolicy::DropNew => self.send_drop_new(delta),
             BackpressurePolicy::CoalesceLocal => self.send_coalesce_local(delta).await,
         }
     }
@@ -89,25 +102,15 @@ impl DeltaSender {
         if self.local_buf.is_empty() {
             return Ok(SendOutcome::Sent);
         }
-        let buf = std::mem::take(&mut self.local_buf);
-        self.tx.send(buf).await.map_err(|_| SendError::Closed)?;
+        let permit = self.tx.reserve().await.map_err(|_| SendError::Closed)?;
+        permit.send(std::mem::take(&mut self.local_buf));
         Ok(SendOutcome::Sent)
     }
 
     async fn send_block(&mut self, delta: &str) -> Result<SendOutcome, SendError> {
-        self.tx
-            .send(delta.to_string())
-            .await
-            .map_err(|_| SendError::Closed)?;
+        let permit = self.tx.reserve().await.map_err(|_| SendError::Closed)?;
+        permit.send(delta.to_string());
         Ok(SendOutcome::Sent)
-    }
-
-    fn send_drop_new(&mut self, delta: &str) -> Result<SendOutcome, SendError> {
-        match self.tx.try_send(delta.to_string()) {
-            Ok(()) => Ok(SendOutcome::Sent),
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Ok(SendOutcome::Dropped),
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(SendError::Closed),
-        }
     }
 
     async fn send_coalesce_local(&mut self, delta: &str) -> Result<SendOutcome, SendError> {
@@ -117,13 +120,21 @@ impl DeltaSender {
             self.local_buf.len() >= self.local_max_bytes || self.local_buf.contains('\n');
 
         if should_try_flush {
-            match self.tx.try_send(std::mem::take(&mut self.local_buf)) {
-                Ok(()) => return Ok(SendOutcome::Sent),
-                Err(tokio::sync::mpsc::error::TrySendError::Full(s)) => {
-                    self.local_buf = s;
-                    return Ok(SendOutcome::Buffered);
+            match self.tx.try_reserve() {
+                Ok(permit) => {
+                    permit.send(std::mem::take(&mut self.local_buf));
+                    return Ok(SendOutcome::Sent);
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(tokio::sync::mpsc::error::TrySendError::Full(())) => {
+                    if self.local_buf.len() < self.local_max_bytes {
+                        return Ok(SendOutcome::Buffered);
+                    }
+
+                    let permit = self.tx.reserve().await.map_err(|_| SendError::Closed)?;
+                    permit.send(std::mem::take(&mut self.local_buf));
+                    return Ok(SendOutcome::Sent);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => {
                     return Err(SendError::Closed);
                 }
             }

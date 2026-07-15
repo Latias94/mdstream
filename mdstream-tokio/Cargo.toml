@@ -12,9 +12,9 @@ homepage = "https://github.com/Latias94/mdstream"
 
 [dependencies]
 mdstream = { version = "0.3.0", path = "../mdstream" }
+mdstream-protocol = { version = "0.4.0", path = "../mdstream-protocol" }
 tokio = { version = "1.52.3", features = ["sync", "time", "rt", "macros"] }
 
 [dev-dependencies]
 ratatui = "0.30.2"
 crossterm = "0.29.0"
-unicode-width = "0.2.2"
