@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    io::{self, Write},
     sync::Arc,
 };
 
@@ -138,6 +137,54 @@ pub enum SemanticText {
     Normalized { value: String },
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RetainedTextMetrics {
+    pub(crate) bytes: usize,
+    pub(crate) capacity: usize,
+}
+
+impl RetainedTextMetrics {
+    pub(crate) const ZERO: Self = Self {
+        bytes: 0,
+        capacity: 0,
+    };
+
+    pub(crate) fn checked_add(self, other: Self) -> Result<Self, ProtocolError> {
+        Ok(Self {
+            bytes: self
+                .bytes
+                .checked_add(other.bytes)
+                .ok_or(ProtocolError::MetadataOverflow)?,
+            capacity: self
+                .capacity
+                .checked_add(other.capacity)
+                .ok_or(ProtocolError::MetadataOverflow)?,
+        })
+    }
+
+    pub(crate) fn checked_sub(self, other: Self) -> Result<Self, ProtocolError> {
+        Ok(Self {
+            bytes: self
+                .bytes
+                .checked_sub(other.bytes)
+                .ok_or(ProtocolError::MetadataOverflow)?,
+            capacity: self
+                .capacity
+                .checked_sub(other.capacity)
+                .ok_or(ProtocolError::MetadataOverflow)?,
+        })
+    }
+
+    fn add_text(&mut self, bytes: usize, capacity: usize) -> Result<(), ProtocolError> {
+        *self = self.checked_add(Self { bytes, capacity })?;
+        Ok(())
+    }
+
+    fn add_string(&mut self, value: &String) -> Result<(), ProtocolError> {
+        self.add_text(value.len(), value.capacity())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum SemanticResourceKind {
@@ -227,6 +274,33 @@ impl SemanticResource {
         }
         tally.finish("resource.metadata")
     }
+
+    pub(crate) fn retained_text_metrics(&self) -> Result<RetainedTextMetrics, ProtocolError> {
+        let mut metrics = RetainedTextMetrics::ZERO;
+        metrics.add_text(self.version.as_str().len(), self.version.capacity())?;
+        match &self.content {
+            SemanticResourceKind::Link { destination, title } => {
+                metrics.add_string(destination)?;
+                if let Some(title) = title {
+                    metrics.add_string(title)?;
+                }
+            }
+            SemanticResourceKind::Footnote { label } => metrics.add_string(label)?,
+            SemanticResourceKind::Citation {
+                key,
+                destination,
+                title,
+                ..
+            } => {
+                metrics.add_string(key)?;
+                metrics.add_string(destination)?;
+                if let Some(title) = title {
+                    metrics.add_string(title)?;
+                }
+            }
+        }
+        Ok(metrics)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,6 +374,14 @@ impl ChildList {
             version: self.version.clone(),
             children: Arc::clone(&self.children),
         }
+    }
+
+    pub(crate) fn retained_version_text_metrics(
+        &self,
+    ) -> Result<RetainedTextMetrics, ProtocolError> {
+        let mut metrics = RetainedTextMetrics::ZERO;
+        metrics.add_text(self.version.as_str().len(), self.version.capacity())?;
+        Ok(metrics)
     }
 
     pub(crate) fn append_validated(
@@ -527,6 +609,107 @@ impl ContentKind {
             _ => None,
         }
     }
+
+    fn retained_text_metrics(&self) -> Result<RetainedTextMetrics, ProtocolError> {
+        let mut metrics = RetainedTextMetrics::ZERO;
+        match self {
+            Self::Text { text }
+            | Self::InlineCode { text }
+            | Self::Html { text, .. }
+            | Self::Math { text, .. } => add_semantic_text(&mut metrics, text)?,
+            Self::Link {
+                target,
+                reference_label,
+                ..
+            } => {
+                add_resource_ref(&mut metrics, target.as_ref())?;
+                if let Some(label) = reference_label {
+                    metrics.add_string(label)?;
+                }
+            }
+            Self::Image {
+                target,
+                reference_label,
+                alt,
+                ..
+            } => {
+                add_resource_ref(&mut metrics, target.as_ref())?;
+                if let Some(label) = reference_label {
+                    metrics.add_string(label)?;
+                }
+                add_semantic_text(&mut metrics, alt)?;
+            }
+            Self::CodeBlock { info, text, .. } => {
+                if let Some(info) = info {
+                    metrics.add_string(info)?;
+                }
+                add_semantic_text(&mut metrics, text)?;
+            }
+            Self::FootnoteDefinition { label, target }
+            | Self::CitationDefinition { key: label, target } => {
+                metrics.add_string(label)?;
+                add_resource_ref(&mut metrics, Some(target))?;
+            }
+            Self::FootnoteReference { label, target }
+            | Self::CitationReference { key: label, target } => {
+                metrics.add_string(label)?;
+                add_resource_ref(&mut metrics, target.as_ref())?;
+            }
+            Self::Custom {
+                namespace,
+                name,
+                attributes,
+                ..
+            } => {
+                metrics.add_string(namespace)?;
+                metrics.add_string(name)?;
+                for (key, value) in attributes {
+                    metrics.add_string(key)?;
+                    metrics.add_string(value)?;
+                }
+            }
+            Self::Paragraph {}
+            | Self::Heading { .. }
+            | Self::Emphasis {}
+            | Self::Strong {}
+            | Self::Strikethrough {}
+            | Self::List { .. }
+            | Self::ListItem { .. }
+            | Self::BlockQuote { .. }
+            | Self::ThematicBreak {}
+            | Self::Table { .. }
+            | Self::TableHead {}
+            | Self::TableBody {}
+            | Self::TableRow {}
+            | Self::TableCell { .. }
+            | Self::SoftBreak {}
+            | Self::HardBreak {} => {}
+        }
+        Ok(metrics)
+    }
+}
+
+fn add_semantic_text(
+    metrics: &mut RetainedTextMetrics,
+    text: &SemanticText,
+) -> Result<(), ProtocolError> {
+    if let SemanticText::Normalized { value } = text {
+        metrics.add_string(value)?;
+    }
+    Ok(())
+}
+
+fn add_resource_ref(
+    metrics: &mut RetainedTextMetrics,
+    reference: Option<&ResourceRef>,
+) -> Result<(), ProtocolError> {
+    if let Some(reference) = reference {
+        metrics.add_text(
+            reference.version.as_str().len(),
+            reference.version.capacity(),
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -689,6 +872,21 @@ impl ContentNode {
         body: &str,
         resource: Option<&SemanticResource>,
     ) -> ProcessorInputVersion {
+        self.checked_processor_input_version_and_byte_len_with_context(body, resource)
+            .expect("canonical processor inputs always serialize within the address space")
+            .0
+    }
+
+    /// Derives the complete input version and logical owned-input byte cost in
+    /// one canonical serialization pass.
+    ///
+    /// The byte cost covers the serialized node, escaped body, direct resource,
+    /// context field names, and the separately cached version string.
+    pub fn checked_processor_input_version_and_byte_len_with_context(
+        &self,
+        body: &str,
+        resource: Option<&SemanticResource>,
+    ) -> Option<(ProcessorInputVersion, usize)> {
         #[derive(Serialize)]
         struct ProcessorContext<'a> {
             node: &'a ContentNode,
@@ -696,30 +894,30 @@ impl ContentNode {
             resource: Option<&'a SemanticResource>,
         }
 
-        ProcessorInputVersion::digest_json(&ProcessorContext {
-            node: self,
-            body,
-            resource,
-        })
+        let (version, context_bytes) =
+            ProcessorInputVersion::digest_json_with_len(&ProcessorContext {
+                node: self,
+                body,
+                resource,
+            })?;
+        let byte_len = context_bytes.checked_add(version.as_str().len())?;
+        Some((version, byte_len))
     }
 
     /// Returns deterministic logical bytes for the owned node-local processor
     /// input, excluding the separately cached [`ProcessorInputVersion`].
     ///
-    /// Node and resource bytes use their canonical JSON representation so all
-    /// variable-length metadata and direct child identities are charged. This
-    /// is a protocol-level budget measure, not allocator-retained memory.
+    /// This is the canonical context JSON cost and excludes only the separately
+    /// cached input-version string. It is a protocol-level budget measure, not
+    /// allocator-retained memory.
     pub fn checked_processor_input_byte_len_with_context(
         &self,
         body: &str,
         resource: Option<&SemanticResource>,
     ) -> Option<usize> {
-        canonical_json_byte_len(self)?
-            .checked_add(body.len())?
-            .checked_add(match resource {
-                Some(resource) => canonical_json_byte_len(resource)?,
-                None => 0,
-            })
+        let (version, byte_len) =
+            self.checked_processor_input_version_and_byte_len_with_context(body, resource)?;
+        byte_len.checked_sub(version.as_str().len())
     }
 
     pub(crate) fn clone_shared(&self) -> Self {
@@ -777,28 +975,13 @@ impl ContentNode {
         validate_child_arity(&self.content, self.children.children.len())?;
         Ok(metadata)
     }
-}
 
-fn canonical_json_byte_len<T: Serialize>(value: &T) -> Option<usize> {
-    struct ByteCounter(usize);
-
-    impl Write for ByteCounter {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0 = self
-                .0
-                .checked_add(bytes.len())
-                .ok_or_else(|| io::Error::other("canonical JSON byte count overflow"))?;
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
+    pub(crate) fn retained_text_metrics(&self) -> Result<RetainedTextMetrics, ProtocolError> {
+        let mut metrics = self.content.retained_text_metrics()?;
+        metrics.add_text(self.version.as_str().len(), self.version.capacity())?;
+        metrics = metrics.checked_add(self.children.retained_version_text_metrics()?)?;
+        Ok(metrics)
     }
-
-    let mut counter = ByteCounter(0);
-    serde_json::to_writer(&mut counter, value).ok()?;
-    Some(counter.0)
 }
 
 pub(crate) fn validate_kind(

@@ -86,12 +86,18 @@ impl OperationSink {
                 actual: metadata_bytes,
             });
         }
+        let wire_text_bytes = self
+            .payload_cost
+            .wire_text_bytes
+            .checked_add(cost.wire_text_bytes)
+            .expect("compiler payload reservations fit protocol limits");
         Ok(OperationPermit {
             sink: self,
             reserved_tail: false,
             next_payload_cost: ChangePayloadCost {
                 structural_items,
                 metadata_bytes,
+                wire_text_bytes,
             },
         })
     }
@@ -126,18 +132,30 @@ impl OperationSink {
         self.reserve_tail().commit(build());
     }
 
-    pub(super) fn into_operations(self) -> Vec<ProjectionOp> {
+    pub(super) fn into_parts(self) -> (Vec<ProjectionOp>, ChangePayloadCost) {
         debug_assert_eq!(self.reserved_tail, 0);
-        self.operations
+        (self.operations, self.payload_cost)
     }
 }
 
 impl OperationPermit<'_> {
     pub(super) fn commit(self, operation: ProjectionOp) {
+        let wire_text_overhead = operation
+            .wire_text_overhead()
+            .expect("compiler operation versions fit the retained address space");
+        let wire_text_bytes = self
+            .next_payload_cost
+            .wire_text_bytes
+            .checked_add(wire_text_overhead)
+            .expect("compiler operation payload totals fit protocol limits");
+        let payload_cost = ChangePayloadCost {
+            wire_text_bytes,
+            ..self.next_payload_cost
+        };
         if self.reserved_tail {
             self.sink.reserved_tail -= 1;
         }
-        self.sink.payload_cost = self.next_payload_cost;
+        self.sink.payload_cost = payload_cost;
         self.sink.operations.push(operation);
     }
 }
@@ -289,7 +307,7 @@ mod tests {
         assert!(!built.get());
 
         sink.push_tail_with(|| ProjectionOp::FinishDocument);
-        assert_eq!(sink.into_operations(), vec![ProjectionOp::FinishDocument]);
+        assert_eq!(sink.into_parts().0, vec![ProjectionOp::FinishDocument]);
     }
 
     #[test]
@@ -304,6 +322,7 @@ mod tests {
                 ChangePayloadCost {
                     structural_items: 1,
                     metadata_bytes: 0,
+                    ..ChangePayloadCost::ZERO
                 },
                 || ProjectionOp::FinishDocument,
             )
@@ -314,6 +333,7 @@ mod tests {
                 ChangePayloadCost {
                     structural_items: 1,
                     metadata_bytes: 0,
+                    ..ChangePayloadCost::ZERO
                 },
                 || {
                     structural_built.set(true);
@@ -339,6 +359,7 @@ mod tests {
                 ChangePayloadCost {
                     structural_items: 0,
                     metadata_bytes: 2,
+                    ..ChangePayloadCost::ZERO
                 },
                 || {
                     metadata_built.set(true);
@@ -352,5 +373,20 @@ mod tests {
             })
         );
         assert!(!metadata_built.get());
+    }
+
+    #[test]
+    fn operation_sink_returns_protocol_owned_wire_text_cost() {
+        let mut sink = OperationSink::new(ProtocolLimits::default(), 0).unwrap();
+        sink.push_with(ChangePayloadCost::ZERO, || ProjectionOp::StabilizeNode {
+            node_id: NodeId::new(1),
+            expected_version: mdstream_protocol::NodeVersion::new("old").unwrap(),
+            new_version: mdstream_protocol::NodeVersion::new("newer").unwrap(),
+        })
+        .unwrap();
+
+        let (operations, cost) = sink.into_parts();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(cost.wire_text_bytes, "old".len() + "newer".len());
     }
 }

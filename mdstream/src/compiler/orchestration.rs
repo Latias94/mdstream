@@ -57,6 +57,8 @@ impl Default for CompilerFrontier {
 
 pub(crate) struct CompilerTransition {
     operations: Vec<ProjectionOp>,
+    payload_cost: ChangePayloadCost,
+    staging_frontier_bytes: usize,
     commit: CompilerCommit,
 }
 
@@ -141,7 +143,12 @@ impl ContentCompiler {
                 observation.structural_source_bytes,
             )?
         } else if finishing {
-            self.stage_stabilize(document, revision, observation.structural_source_bytes)?
+            self.stage_stabilize(
+                document,
+                revision,
+                frontier_bytes,
+                observation.structural_source_bytes,
+            )?
         } else {
             let projection_cursor = document.map_or(SourceCursor::new(0), |document| {
                 document.projection_cursor()
@@ -214,12 +221,11 @@ impl ContentCompiler {
         let retained_frontier = retained
             .get(frontier_start..)
             .ok_or(CompilerError::InvalidSourceBoundary(self.frontier.start))?;
-        let mut source = String::with_capacity(
-            retained_frontier
-                .len()
-                .checked_add(suffix.len())
-                .ok_or(CompilerError::CursorOverflow)?,
-        );
+        let staging_frontier_bytes = retained_frontier
+            .len()
+            .checked_add(suffix.len())
+            .ok_or(CompilerError::CursorOverflow)?;
+        let mut source = String::with_capacity(staging_frontier_bytes);
         source.push_str(retained_frontier);
         source.push_str(suffix);
 
@@ -337,9 +343,12 @@ impl ContentCompiler {
             .stable_root_count
             .checked_add(stable_draft_roots)
             .ok_or(CompilerError::MetricsOverflow("stable roots"))?;
+        let (operations, payload_cost) = operations.into_parts();
 
         Ok(CompilerTransition {
-            operations: operations.into_operations(),
+            operations,
+            payload_cost,
+            staging_frontier_bytes,
             commit: CompilerCommit {
                 identity,
                 semantic: Some(semantic.commit),
@@ -361,6 +370,7 @@ impl ContentCompiler {
         &self,
         document: Option<&Document>,
         revision: SourceCursor,
+        staging_frontier_bytes: usize,
         structural_source_bytes: usize,
     ) -> Result<CompilerTransition, CompilerError> {
         let mut operations = OperationSink::new(self.limits, 1)?;
@@ -412,8 +422,11 @@ impl ContentCompiler {
         let stable_root_count = document.map_or(0, |document| document.roots().len());
         let (semantic, semantic_work) = self.semantics.stage_stabilize()?;
         let metrics = add_semantic_metrics(metrics, semantic_work)?;
+        let (operations, payload_cost) = operations.into_parts();
         Ok(CompilerTransition {
-            operations: operations.into_operations(),
+            operations,
+            payload_cost,
+            staging_frontier_bytes,
             commit: CompilerCommit {
                 identity: IdentityCommit::default(),
                 semantic: Some(semantic),
@@ -468,9 +481,12 @@ impl ContentCompiler {
             .ok_or(CompilerError::MetricsOverflow("incremental projections"))?;
         metrics.frontier_bytes = frontier_bytes;
         metrics.next_checkpoint = self.checkpoints.next_checkpoint();
+        let (operations, payload_cost) = operations.into_parts();
 
         Ok(CompilerTransition {
-            operations: operations.into_operations(),
+            operations,
+            payload_cost,
+            staging_frontier_bytes: frontier_bytes,
             commit: CompilerCommit {
                 identity: IdentityCommit::default(),
                 semantic: None,
@@ -509,6 +525,8 @@ impl ContentCompiler {
 
         Ok(CompilerTransition {
             operations: Vec::new(),
+            payload_cost: ChangePayloadCost::ZERO,
+            staging_frontier_bytes: frontier_bytes,
             commit: CompilerCommit {
                 identity: IdentityCommit::default(),
                 semantic: None,
@@ -527,8 +545,12 @@ impl ContentCompiler {
 }
 
 impl CompilerTransition {
-    pub(crate) fn into_parts(self) -> (Vec<ProjectionOp>, CompilerCommit) {
-        (self.operations, self.commit)
+    pub(crate) fn staging_frontier_bytes(&self) -> usize {
+        self.staging_frontier_bytes
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<ProjectionOp>, ChangePayloadCost, CompilerCommit) {
+        (self.operations, self.payload_cost, self.commit)
     }
 }
 

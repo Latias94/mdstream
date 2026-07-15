@@ -7,9 +7,11 @@ use mdstream_protocol::{
     ContentNode, Document, NodeId, NodeStability, ProcessorInputVersion, SemanticResource,
 };
 
+#[cfg(test)]
+use crate::ConfigurationVersion;
 use crate::{
-    ConfigurationVersion, HostError, ProcessorArtifact, ProcessorFailure, ProcessorId,
-    ProcessorRequestKey, ProcessorVersion,
+    HostError, ProcessorArtifact, ProcessorFailure, ProcessorId, ProcessorRequestKey,
+    ProcessorVersion,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -97,17 +99,48 @@ pub struct ProcessorInput {
     byte_len: usize,
 }
 
+pub(crate) struct ProcessorInputView<'a> {
+    node: &'a ContentNode,
+    body: &'a str,
+    resource: Option<&'a SemanticResource>,
+    version: ProcessorInputVersion,
+    byte_len: usize,
+}
+
+impl ProcessorInputView<'_> {
+    pub(crate) fn node(&self) -> &ContentNode {
+        self.node
+    }
+
+    pub(crate) fn version(&self) -> &ProcessorInputVersion {
+        &self.version
+    }
+
+    pub(crate) const fn byte_len(&self) -> usize {
+        self.byte_len
+    }
+
+    pub(crate) fn materialize(self) -> ProcessorInput {
+        ProcessorInput {
+            node: self.node.clone(),
+            body: self.body.to_string(),
+            resource: self.resource.cloned(),
+            version: self.version,
+            byte_len: self.byte_len,
+        }
+    }
+}
+
 impl ProcessorInput {
+    #[cfg(test)]
     pub(crate) fn from_parts(
         node: ContentNode,
         body: impl Into<String>,
         resource: Option<SemanticResource>,
     ) -> Result<Self, HostError> {
         let body = body.into();
-        let version = node.processor_input_version_with_context(&body, resource.as_ref());
-        let byte_len = node
-            .checked_processor_input_byte_len_with_context(&body, resource.as_ref())
-            .and_then(|byte_len| byte_len.checked_add(version.as_str().len()))
+        let (version, byte_len) = node
+            .checked_processor_input_version_and_byte_len_with_context(&body, resource.as_ref())
             .ok_or(HostError::CounterOverflow("processor.input_bytes"))?;
         Ok(Self {
             node,
@@ -119,16 +152,31 @@ impl ProcessorInput {
     }
 
     pub fn from_document(document: &Document, node_id: NodeId) -> Result<Self, HostError> {
+        Ok(Self::view_document(document, node_id)?.materialize())
+    }
+
+    pub(crate) fn view_document(
+        document: &Document,
+        node_id: NodeId,
+    ) -> Result<ProcessorInputView<'_>, HostError> {
         let (node, body, resource) = document_parts(document, node_id)?;
-        Self::from_parts(node.clone(), body, resource.cloned())
+        let (version, byte_len) = node
+            .checked_processor_input_version_and_byte_len_with_context(body, resource)
+            .ok_or(HostError::CounterOverflow("processor.input_bytes"))?;
+        Ok(ProcessorInputView {
+            node,
+            body,
+            resource,
+            version,
+            byte_len,
+        })
     }
 
     pub(crate) fn version_from_document(
         document: &Document,
         node_id: NodeId,
     ) -> Result<ProcessorInputVersion, HostError> {
-        let (node, body, resource) = document_parts(document, node_id)?;
-        Ok(node.processor_input_version_with_context(body, resource))
+        Ok(Self::view_document(document, node_id)?.version)
     }
 
     pub fn node(&self) -> &ContentNode {
@@ -224,6 +272,7 @@ pub(crate) fn provisional_allowed(
         || (capabilities.accepts_provisional() && policy == ProcessingPolicy::AllowProvisional)
 }
 
+#[cfg(test)]
 pub(crate) struct BeginRequest {
     pub descriptor: ProcessorDescriptor,
     pub configuration: ConfigurationVersion,

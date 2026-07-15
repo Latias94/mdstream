@@ -2,6 +2,10 @@ use std::fmt;
 
 use mdstream_protocol::{Epoch, NodeId};
 
+use crate::ProcessorResult;
+
+pub(crate) const MAX_IDENTIFIER_BYTES: usize = 128;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentifierErrorKind {
     Empty,
@@ -50,7 +54,7 @@ pub(crate) fn validate_identifier(
     if value.is_empty() {
         return Err(IdentifierError::new(field, IdentifierErrorKind::Empty));
     }
-    if value.len() > 128 {
+    if value.len() > MAX_IDENTIFIER_BYTES {
         return Err(IdentifierError::new(field, IdentifierErrorKind::TooLong));
     }
     if !value.bytes().all(|byte| {
@@ -148,3 +152,46 @@ impl fmt::Display for HostError {
 }
 
 impl std::error::Error for HostError {}
+
+#[derive(Debug, Clone)]
+pub struct CompletionError {
+    error: HostError,
+    result: Box<ProcessorResult>,
+}
+
+impl CompletionError {
+    pub(crate) fn new(error: HostError, result: ProcessorResult) -> Self {
+        Self {
+            error,
+            result: Box::new(result),
+        }
+    }
+
+    pub const fn error(&self) -> &HostError {
+        &self.error
+    }
+
+    pub const fn result(&self) -> &ProcessorResult {
+        &self.result
+    }
+
+    pub fn into_result(self) -> ProcessorResult {
+        *self.result
+    }
+
+    pub fn into_parts(self) -> (HostError, ProcessorResult) {
+        (self.error, *self.result)
+    }
+}
+
+impl fmt::Display for CompletionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for CompletionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}

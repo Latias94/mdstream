@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::ir::RetainedTextMetrics;
 use crate::{
     ApplyOutcome, ChangeId, ChangeImpact, ChangeSet, ChildList, ChildListOwner,
     ChildSequenceCompleteness, ChildSequenceValidator, ContentKind, ContentNode, Coordinate,
@@ -28,10 +29,16 @@ pub struct Document {
     resource_users: BTreeMap<ResourceId, BTreeSet<NodeId>>,
     metadata_bytes: usize,
     structural_items: usize,
+    retained_ir_text_bytes: usize,
+    retained_ir_text_capacity: usize,
 }
 
 impl Document {
     fn blank(epoch: Epoch, change_id: ChangeId, digest: PayloadDigest) -> Self {
+        let roots = ChildList::empty();
+        let retained_ir_text = roots
+            .retained_version_text_metrics()
+            .expect("canonical root versions fit the retained address space");
         Self {
             coordinate: Coordinate {
                 epoch,
@@ -43,7 +50,7 @@ impl Document {
             lifecycle: DocumentLifecycle::Open,
             source: String::new(),
             projection_cursor: SourceCursor::new(0),
-            roots: ChildList::empty(),
+            roots,
             nodes: BTreeMap::new(),
             provisional_nodes: BTreeSet::new(),
             parents: BTreeMap::new(),
@@ -51,6 +58,8 @@ impl Document {
             resource_users: BTreeMap::new(),
             metadata_bytes: 0,
             structural_items: 0,
+            retained_ir_text_bytes: retained_ir_text.bytes,
+            retained_ir_text_capacity: retained_ir_text.capacity,
         }
     }
 
@@ -74,13 +83,27 @@ impl Document {
             .values()
             .filter_map(|node| (node.stability == NodeStability::Provisional).then_some(node.id))
             .collect();
+        let roots = clone_child_list_owned(snapshot.roots());
+        let retained_ir_text = roots
+            .retained_version_text_metrics()
+            .and_then(|root| {
+                nodes.values().try_fold(root, |total, node| {
+                    total.checked_add(node.retained_text_metrics()?)
+                })
+            })
+            .and_then(|total| {
+                resources.values().try_fold(total, |total, resource| {
+                    total.checked_add(resource.retained_text_metrics()?)
+                })
+            })
+            .expect("validated snapshot IR text fits the retained address space");
         Self {
             coordinate: snapshot.coordinate().clone(),
             last_payload_digest: snapshot.last_payload_digest().clone(),
             lifecycle: snapshot.lifecycle(),
             source: snapshot.source().to_string(),
             projection_cursor: snapshot.projection_cursor(),
-            roots: clone_child_list_owned(snapshot.roots()),
+            roots,
             nodes,
             provisional_nodes,
             parents,
@@ -88,6 +111,8 @@ impl Document {
             resource_users,
             metadata_bytes: validation.metadata_bytes,
             structural_items: validation.structural_items,
+            retained_ir_text_bytes: retained_ir_text.bytes,
+            retained_ir_text_capacity: retained_ir_text.capacity,
         }
     }
 
@@ -101,6 +126,11 @@ impl Document {
 
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// Returns the allocator capacity retained by the canonical source store.
+    pub fn source_capacity(&self) -> usize {
+        self.source.capacity()
     }
 
     /// Returns the exclusive source frontier represented by the canonical projection.
@@ -154,6 +184,16 @@ impl Document {
         self.structural_items
     }
 
+    /// Returns text bytes owned by canonical IR projections and structure versions.
+    pub const fn retained_ir_text_bytes(&self) -> usize {
+        self.retained_ir_text_bytes
+    }
+
+    /// Returns text capacity owned by canonical IR projections and structure versions.
+    pub const fn retained_ir_text_capacity(&self) -> usize {
+        self.retained_ir_text_capacity
+    }
+
     /// Returns the number of nodes that must stabilize before finalization.
     pub fn provisional_node_count(&self) -> usize {
         self.provisional_nodes.len()
@@ -189,6 +229,9 @@ pub struct ReducerMetrics {
     pub relationship_steps: u64,
     pub child_ids_copied: u64,
     pub snapshots_validated: u64,
+    pub source_bytes_appended: u64,
+    pub source_reallocation_copied_bytes: u64,
+    pub snapshot_source_bytes_loaded: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,7 +393,7 @@ impl Reducer {
                 .coordinate
                 .clone();
             self.control = Control::Ready;
-            self.record_snapshot_validation(validation);
+            self.record_snapshot_validation(validation, snapshot.source().len());
             return Ok(ApplyOutcome::Recovered {
                 coordinate,
                 impact: ChangeImpact::default(),
@@ -362,11 +405,11 @@ impl Reducer {
         let coordinate = replacement.coordinate.clone();
         self.document = Some(replacement);
         self.control = Control::Ready;
-        self.record_snapshot_validation(validation);
+        self.record_snapshot_validation(validation, snapshot.source().len());
         Ok(ApplyOutcome::Recovered { coordinate, impact })
     }
 
-    fn record_snapshot_validation(&mut self, validation: ValidationStats) {
+    fn record_snapshot_validation(&mut self, validation: ValidationStats, source_bytes: usize) {
         self.metrics.snapshots_validated = self.metrics.snapshots_validated.saturating_add(1);
         self.metrics.nodes_validated = self
             .metrics
@@ -376,6 +419,10 @@ impl Reducer {
             .metrics
             .relationship_steps
             .saturating_add(usize_to_u64(validation.relationship_steps));
+        self.metrics.snapshot_source_bytes_loaded = self
+            .metrics
+            .snapshot_source_bytes_loaded
+            .saturating_add(usize_to_u64(source_bytes));
     }
 
     fn validate_snapshot_progression(
@@ -664,7 +711,7 @@ impl Reducer {
         let staged_impact = staged.impact.clone();
         let stats = staged.stats;
         let mut replacement = blank;
-        commit_document(&mut replacement, change, staged);
+        let source = commit_document(&mut replacement, change, staged);
         let impact = if recovered || self.document.is_some() {
             replacement_impact(self.document.as_ref(), &replacement, true)
         } else {
@@ -673,7 +720,7 @@ impl Reducer {
         let coordinate = replacement.coordinate.clone();
         self.document = Some(replacement);
         self.control = Control::Ready;
-        self.record_apply(change.operations().len(), stats);
+        self.record_apply(change.operations().len(), stats, source);
         if recovered {
             Ok(ApplyOutcome::Recovered { coordinate, impact })
         } else {
@@ -693,14 +740,19 @@ impl Reducer {
             .document
             .as_mut()
             .expect("ready reducer has a document");
-        commit_document(document, change, staged);
+        let source = commit_document(document, change, staged);
         let coordinate = document.coordinate.clone();
         self.control = Control::Ready;
-        self.record_apply(operation_count, stats);
+        self.record_apply(operation_count, stats, source);
         Ok(ApplyOutcome::Applied { coordinate, impact })
     }
 
-    fn record_apply(&mut self, operation_count: usize, stats: ValidationStats) {
+    fn record_apply(
+        &mut self,
+        operation_count: usize,
+        stats: ValidationStats,
+        source: SourceCommitStats,
+    ) {
         self.metrics.applied_changes = self.metrics.applied_changes.saturating_add(1);
         self.metrics.operations_visited = self
             .metrics
@@ -718,6 +770,14 @@ impl Reducer {
             .metrics
             .child_ids_copied
             .saturating_add(usize_to_u64(stats.child_ids_copied));
+        self.metrics.source_bytes_appended = self
+            .metrics
+            .source_bytes_appended
+            .saturating_add(usize_to_u64(source.appended_bytes));
+        self.metrics.source_reallocation_copied_bytes = self
+            .metrics
+            .source_reallocation_copied_bytes
+            .saturating_add(usize_to_u64(source.reallocation_copied_bytes));
     }
 
     fn enter_recovery(&mut self, reason: RecoveryReason) -> ApplyOutcome {
@@ -777,6 +837,12 @@ pub(crate) struct ValidationStats {
     child_ids_copied: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct SourceCommitStats {
+    appended_bytes: usize,
+    reallocation_copied_bytes: usize,
+}
+
 struct StagedChange {
     nodes: BTreeMap<NodeId, Option<ContentNode>>,
     resources: BTreeMap<ResourceId, Option<SemanticResource>>,
@@ -784,6 +850,7 @@ struct StagedChange {
     parents: BTreeMap<NodeId, Option<ChildListOwner>>,
     metadata_bytes: usize,
     structural_items: usize,
+    retained_ir_text: RetainedTextMetrics,
     resulting_cursor: SourceCursor,
     projection_cursor: SourceCursor,
     finish: bool,
@@ -1242,6 +1309,7 @@ fn stage_document(
         }
         .into());
     }
+    let retained_ir_text = stage_retained_ir_text(document, &nodes, &resources, &structures)?;
 
     let ParentStage {
         changes: parents,
@@ -1368,6 +1436,7 @@ fn stage_document(
         parents,
         metadata_bytes,
         structural_items,
+        retained_ir_text,
         resulting_cursor,
         projection_cursor,
         finish,
@@ -2193,6 +2262,55 @@ fn node_structural_items(node: &ContentNode) -> Result<usize, ProtocolError> {
         .ok_or(ProtocolError::MetadataOverflow)
 }
 
+fn stage_retained_ir_text(
+    document: &Document,
+    nodes: &BTreeMap<NodeId, Option<ContentNode>>,
+    resources: &BTreeMap<ResourceId, Option<SemanticResource>>,
+    structures: &BTreeMap<ChildListOwner, StructureEdit>,
+) -> Result<RetainedTextMetrics, ProtocolError> {
+    let mut retained = RetainedTextMetrics {
+        bytes: document.retained_ir_text_bytes,
+        capacity: document.retained_ir_text_capacity,
+    };
+    for (id, replacement) in nodes {
+        if let Some(current) = document.nodes.get(id) {
+            retained = retained.checked_sub(current.retained_text_metrics()?)?;
+        }
+        if let Some(node) = replacement {
+            retained = retained.checked_add(node.retained_text_metrics()?)?;
+        }
+    }
+    for (id, replacement) in resources {
+        if let Some(current) = document.resources.get(id) {
+            retained = retained.checked_sub(current.retained_text_metrics()?)?;
+        }
+        if let Some(resource) = replacement {
+            retained = retained.checked_add(resource.retained_text_metrics()?)?;
+        }
+    }
+    for (owner, edit) in structures {
+        let current = match owner {
+            ChildListOwner::Document => document.roots.retained_version_text_metrics()?,
+            ChildListOwner::Node { node_id } => {
+                let Some(node) = view_node(*node_id, document, nodes) else {
+                    continue;
+                };
+                node.children.retained_version_text_metrics()?
+            }
+        };
+        retained = retained.checked_sub(current)?;
+        let replacement = match edit {
+            StructureEdit::Append { new_version, .. } => RetainedTextMetrics {
+                bytes: new_version.as_str().len(),
+                capacity: new_version.capacity(),
+            },
+            StructureEdit::Replace(children) => children.retained_version_text_metrics()?,
+        };
+        retained = retained.checked_add(replacement)?;
+    }
+    Ok(retained)
+}
+
 fn validate_resource_references(
     document: &Document,
     staged_nodes: &BTreeMap<NodeId, Option<ContentNode>>,
@@ -2384,8 +2502,19 @@ fn replacement_impact(old: Option<&Document>, new: &Document, full_replace: bool
     }
 }
 
-fn commit_document(document: &mut Document, change: &ChangeSet, staged: StagedChange) {
+fn commit_document(
+    document: &mut Document,
+    change: &ChangeSet,
+    staged: StagedChange,
+) -> SourceCommitStats {
+    let source_len = document.source.len();
+    let source_capacity = document.source.capacity();
     document.source.push_str(&change.source().suffix);
+    let source = SourceCommitStats {
+        appended_bytes: change.source().suffix.len(),
+        reallocation_copied_bytes: usize::from(document.source.capacity() != source_capacity)
+            .saturating_mul(source_len),
+    };
     for (id, replacement) in &staged.nodes {
         if let Some(old) = document.nodes.get(id) {
             if let Some(resource_id) = old.content.referenced_resource() {
@@ -2464,6 +2593,8 @@ fn commit_document(document: &mut Document, change: &ChangeSet, staged: StagedCh
     }
     document.metadata_bytes = staged.metadata_bytes;
     document.structural_items = staged.structural_items;
+    document.retained_ir_text_bytes = staged.retained_ir_text.bytes;
+    document.retained_ir_text_capacity = staged.retained_ir_text.capacity;
     document.projection_cursor = staged.projection_cursor;
     if staged.finish {
         document.lifecycle = DocumentLifecycle::Finalized;
@@ -2475,6 +2606,7 @@ fn commit_document(document: &mut Document, change: &ChangeSet, staged: StagedCh
         source_cursor: staged.resulting_cursor,
     };
     document.last_payload_digest = change.payload_digest();
+    source
 }
 
 pub(crate) fn validate_snapshot(

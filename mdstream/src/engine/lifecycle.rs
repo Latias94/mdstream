@@ -13,6 +13,12 @@ pub enum EngineError {
     EpochOverflow,
     SequenceOverflow,
     CursorOverflow,
+    MetricsOverflow(&'static str),
+    LimitExceeded {
+        field: &'static str,
+        limit: usize,
+        actual: usize,
+    },
     Compiler(CompilerError),
     Protocol(ProtocolError),
     InternalInvariant(ProtocolError),
@@ -25,6 +31,15 @@ impl fmt::Display for EngineError {
             Self::EpochOverflow => formatter.write_str("stream engine epoch overflowed"),
             Self::SequenceOverflow => formatter.write_str("stream engine sequence overflowed"),
             Self::CursorOverflow => formatter.write_str("stream engine source cursor overflowed"),
+            Self::MetricsOverflow(field) => write!(formatter, "stream engine {field} overflowed"),
+            Self::LimitExceeded {
+                field,
+                limit,
+                actual,
+            } => write!(
+                formatter,
+                "stream engine {field} {actual} exceeds the configured limit of {limit}"
+            ),
             Self::Compiler(error) => {
                 write!(formatter, "stream content compilation failed: {error}")
             }

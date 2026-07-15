@@ -4879,6 +4879,36 @@ fn processor_input_context_version_and_cost_include_body_and_resource() {
 }
 
 #[test]
+fn processor_input_context_version_has_a_stable_escaped_unicode_golden() {
+    let node = leaf(
+        77,
+        NodeStability::Stable,
+        (0, 0),
+        ContentKind::CodeBlock {
+            syntax: mdstream_protocol::CodeBlockSyntax::Fenced {
+                marker: mdstream_protocol::CodeFenceMarker::Backtick,
+                length: 3,
+            },
+            info: Some("rust & json".to_string()),
+            text: mdstream_protocol::SemanticText::Source {},
+        },
+    );
+    let resource = SemanticResource::new(
+        ResourceId::new(11),
+        SemanticResourceKind::Link {
+            destination: "https://example.test/路径?q=\"x\"".to_string(),
+            title: Some("Café\n世界".to_string()),
+        },
+    );
+
+    assert_eq!(
+        node.processor_input_version_with_context("body\n\"界\"", Some(&resource))
+            .as_str(),
+        "sha256:37d33337a79f26f63093f495d1d7f6e9cc7e50329c3e923fa893ea7b2d9ff78e"
+    );
+}
+
+#[test]
 fn normalized_semantic_text_counts_toward_metadata_limits() {
     let limits = ProtocolLimits {
         max_metadata_value_bytes: 3,

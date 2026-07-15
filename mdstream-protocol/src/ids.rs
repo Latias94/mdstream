@@ -252,6 +252,24 @@ opaque_id!(StructureVersion, "mdstream.structure-version/v1");
 opaque_id!(PayloadDigest, "mdstream.change-payload/v1");
 opaque_id!(SnapshotDigest, "mdstream.snapshot/v1");
 
+impl NodeVersion {
+    pub(crate) fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+}
+
+impl ResourceVersion {
+    pub(crate) fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+}
+
+impl StructureVersion {
+    pub(crate) fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+}
+
 macro_rules! json_digest {
     ($name:ident, $domain:literal) => {
         impl $name {
@@ -273,11 +291,48 @@ json_digest!(ResourceVersion, "mdstream.resource-version/v1");
 json_digest!(PayloadDigest, "mdstream.change-payload/v1");
 json_digest!(SnapshotDigest, "mdstream.snapshot/v1");
 
+impl ProcessorInputVersion {
+    pub(crate) fn digest_json_with_len<T: Serialize>(value: &T) -> Option<(Self, usize)> {
+        let mut digest = Sha256::new();
+        digest.update(b"mdstream.processor-input-version/v1");
+        digest.update([0]);
+        let bytes = {
+            let mut writer = DigestCountWriter {
+                digest: &mut digest,
+                bytes: 0,
+            };
+            serde_json::to_writer(&mut writer, value).ok()?;
+            writer.bytes
+        };
+        Some((Self(format_digest(digest)), bytes))
+    }
+}
+
 struct DigestWriter<'a>(&'a mut Sha256);
 
 impl Write for DigestWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct DigestCountWriter<'a> {
+    digest: &'a mut Sha256,
+    bytes: usize,
+}
+
+impl Write for DigestCountWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(bytes.len())
+            .ok_or_else(|| io::Error::other("canonical JSON byte count overflow"))?;
+        self.digest.update(bytes);
         Ok(bytes.len())
     }
 

@@ -1,3 +1,7 @@
+use std::fmt;
+
+use crate::{HostError, result::MAX_REMOVED_CHANGE_BYTES};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessorLimits {
     /// Maximum deterministic logical bytes in one owned processor input.
@@ -24,6 +28,16 @@ pub struct ProcessorLimits {
     /// diagnostics and processor-provided messages are normalized to this cap
     /// before entering slot state.
     pub max_error_bytes: usize,
+    /// Maximum number of undrained derived-state change records.
+    ///
+    /// This must be at least [`Self::max_slots`] so every slot can emit a
+    /// cleanup record during an epoch reset.
+    pub max_pending_changes: usize,
+    /// Maximum deterministic logical bytes in undrained change records.
+    ///
+    /// This must accommodate one worst-case removal record per slot so
+    /// cleanup can complete without exceeding the queue budget.
+    pub max_pending_change_bytes: usize,
 }
 
 impl Default for ProcessorLimits {
@@ -37,7 +51,93 @@ impl Default for ProcessorLimits {
             max_retained_artifacts: 128,
             max_retained_artifact_bytes: 32 * 1024 * 1024,
             max_error_bytes: 4 * 1024,
+            max_pending_changes: 1024,
+            max_pending_change_bytes: 1024 * 1024,
         }
+    }
+}
+
+impl ProcessorLimits {
+    /// Validates that the change queue can record cleanup for every slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProcessorLimitsError`] when either queue budget is too small
+    /// or calculating the required byte budget overflows `usize`.
+    pub fn validate(&self) -> Result<(), ProcessorLimitsError> {
+        if self.max_pending_changes < self.max_slots {
+            return Err(ProcessorLimitsError::PendingChangesTooSmall {
+                required: self.max_slots,
+                actual: self.max_pending_changes,
+            });
+        }
+        let required_change_bytes = self.max_slots.checked_mul(MAX_REMOVED_CHANGE_BYTES).ok_or(
+            ProcessorLimitsError::PendingChangeBytesOverflow {
+                max_slots: self.max_slots,
+                bytes_per_slot: MAX_REMOVED_CHANGE_BYTES,
+            },
+        )?;
+        if self.max_pending_change_bytes < required_change_bytes {
+            return Err(ProcessorLimitsError::PendingChangeBytesTooSmall {
+                required: required_change_bytes,
+                actual: self.max_pending_change_bytes,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Describes a processor limit configuration that cannot guarantee cleanup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessorLimitsError {
+    /// The change queue cannot hold one cleanup record per slot.
+    PendingChangesTooSmall { required: usize, actual: usize },
+    /// The change queue byte budget cannot hold worst-case cleanup records.
+    PendingChangeBytesTooSmall { required: usize, actual: usize },
+    /// The required cleanup byte budget cannot be represented by `usize`.
+    PendingChangeBytesOverflow {
+        max_slots: usize,
+        bytes_per_slot: usize,
+    },
+}
+
+impl fmt::Display for ProcessorLimitsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PendingChangesTooSmall { required, actual } => write!(
+                formatter,
+                "processor.pending_changes must be at least {required}, found {actual}"
+            ),
+            Self::PendingChangeBytesTooSmall { required, actual } => write!(
+                formatter,
+                "processor.pending_change_bytes must be at least {required}, found {actual}"
+            ),
+            Self::PendingChangeBytesOverflow {
+                max_slots,
+                bytes_per_slot,
+            } => write!(
+                formatter,
+                "processor pending change cleanup capacity overflows for {max_slots} slots at {bytes_per_slot} bytes per slot"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProcessorLimitsError {}
+
+pub(crate) fn check_limit(
+    field: &'static str,
+    limit: usize,
+    actual: usize,
+) -> Result<(), HostError> {
+    if actual > limit {
+        Err(HostError::LimitExceeded {
+            field,
+            limit,
+            actual,
+        })
+    } else {
+        Ok(())
     }
 }
 
@@ -48,8 +148,14 @@ pub struct ProcessorMetrics {
     pub in_flight_input_bytes: usize,
     pub retained_artifacts: usize,
     pub retained_artifact_bytes: usize,
+    pub pending_changes: usize,
+    pub pending_change_bytes: usize,
     pub issued_requests: u64,
     pub accepted_results: u64,
     pub stale_results: u64,
     pub released_artifacts: u64,
+    /// Deterministic store records visited by successful host mutations.
+    pub store_entry_visits: u64,
+    /// Number of owned processor inputs materialized after all preflight checks.
+    pub input_materializations: u64,
 }

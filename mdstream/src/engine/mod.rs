@@ -1,15 +1,21 @@
 mod builder;
 mod effects;
 mod lifecycle;
+mod limits;
+mod storage;
+mod work;
 
 pub use crate::compiler::{CompilerError, CompilerMetrics, CustomBlockSpec, MarkdownDiagnostic};
 pub use builder::StreamEngineBuilder;
 pub use effects::EngineOutput;
 pub use lifecycle::EngineError;
+pub use limits::EngineLimits;
+pub use storage::EngineStorageMetrics;
+pub use work::EngineWorkMetrics;
 
 use mdstream_protocol::{
     ApplyOutcome, Coordinate, DocumentLifecycle, Epoch, ProtocolError, ProtocolLimits, Reducer,
-    Snapshot,
+    ReducerMetrics, Snapshot,
 };
 
 use self::lifecycle::{append_change, reset_change};
@@ -23,6 +29,8 @@ pub struct StreamEngine {
     initial_epoch: Epoch,
     compiler: ContentCompiler,
     limits: ProtocolLimits,
+    engine_limits: EngineLimits,
+    work: EngineWorkMetrics,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -32,25 +40,38 @@ pub struct EngineMetrics {
     pub retained_input_bytes: usize,
     pub retained_source_base: u64,
     pub compiler: CompilerMetrics,
+    pub reducer: ReducerMetrics,
+    pub storage: EngineStorageMetrics,
+    pub work: EngineWorkMetrics,
 }
 
 impl StreamEngine {
     pub fn new() -> Self {
-        Self::with_custom_blocks(Vec::new(), ProtocolLimits::default())
+        Self::with_custom_blocks(
+            Vec::new(),
+            ProtocolLimits::default(),
+            EngineLimits::default(),
+        )
     }
 
     #[cfg(test)]
     fn with_limits(limits: ProtocolLimits) -> Self {
-        Self::with_custom_blocks(Vec::new(), limits)
+        Self::with_custom_blocks(Vec::new(), limits, EngineLimits::default())
     }
 
-    fn with_custom_blocks(custom_blocks: Vec<CustomBlockSpec>, limits: ProtocolLimits) -> Self {
+    fn with_custom_blocks(
+        custom_blocks: Vec<CustomBlockSpec>,
+        limits: ProtocolLimits,
+        engine_limits: EngineLimits,
+    ) -> Self {
         Self {
             normalizer: NewlineNormalizer::default(),
             producer: Reducer::with_limits(limits),
             initial_epoch: Epoch::new(1),
             compiler: ContentCompiler::with_custom_blocks(custom_blocks, limits),
             limits,
+            engine_limits,
+            work: EngineWorkMetrics::default(),
         }
     }
 
@@ -68,10 +89,17 @@ impl StreamEngine {
 
     pub fn reset(&mut self) -> Result<EngineOutput, EngineError> {
         let change = reset_change(&self.producer, self.initial_epoch)?;
+        let work = EngineWorkMetrics::default().stage(
+            &change,
+            mdstream_protocol::ChangePayloadCost::ZERO,
+            0,
+            self.engine_limits,
+        )?;
         apply_canonical(&mut self.producer, &change)?;
 
         self.normalizer = NewlineNormalizer::default();
         self.compiler.reset();
+        self.work = work;
         Ok(EngineOutput::one(change))
     }
 
@@ -93,16 +121,29 @@ impl StreamEngine {
 
     pub fn metrics(&self) -> EngineMetrics {
         let compiler = self.compiler.metrics();
+        let normalized_input_debt_bytes = self.normalizer.pending_bytes();
         let source_cursor = self
             .producer
             .document()
             .map_or(0, |document| document.coordinate().source_cursor.get());
         let frontier_bytes = u64::try_from(compiler.frontier_bytes)
             .expect("compiler frontier lengths fit the protocol cursor domain");
+        let reducer = self.producer.metrics();
+        let storage = EngineStorageMetrics::measure(
+            self.producer.document(),
+            compiler.frontier_bytes,
+            normalized_input_debt_bytes,
+            reducer,
+        );
         EngineMetrics {
-            retained_input_bytes: compiler.frontier_bytes,
+            retained_input_bytes: compiler
+                .frontier_bytes
+                .saturating_add(normalized_input_debt_bytes),
             retained_source_base: source_cursor.saturating_sub(frontier_bytes),
             compiler,
+            reducer,
+            storage,
+            work: self.work,
         }
     }
 
@@ -112,6 +153,7 @@ impl StreamEngine {
         }
 
         let (normalizer, suffix) = self.normalizer.append(chunk);
+        self.preflight_source(&normalizer, &suffix)?;
         if suffix.is_empty() {
             self.normalizer = normalizer;
             return Ok(EngineOutput::default());
@@ -126,7 +168,30 @@ impl StreamEngine {
         }
 
         let (normalizer, suffix) = self.normalizer.finish();
+        self.preflight_source(&normalizer, &suffix)?;
         self.apply_compiler_transition(normalizer, suffix, true)
+    }
+
+    fn preflight_source(
+        &self,
+        normalizer: &NewlineNormalizer,
+        suffix: &str,
+    ) -> Result<(), EngineError> {
+        let retained_source_bytes = self
+            .producer
+            .document()
+            .map_or(0, |document| document.source().len());
+        let source_bytes = retained_source_bytes
+            .checked_add(suffix.len())
+            .and_then(|bytes| bytes.checked_add(normalizer.pending_bytes()))
+            .ok_or(EngineError::CursorOverflow)?;
+        if source_bytes > self.limits.max_source_bytes {
+            return Err(EngineError::Protocol(ProtocolError::SourceTooLarge {
+                limit: self.limits.max_source_bytes,
+                actual: source_bytes,
+            }));
+        }
+        Ok(())
     }
 
     fn apply_compiler_transition(
@@ -135,31 +200,35 @@ impl StreamEngine {
         suffix: String,
         finishing: bool,
     ) -> Result<EngineOutput, EngineError> {
-        let retained_source_bytes = self
-            .producer
-            .document()
-            .map_or(0, |document| document.source().len());
-        let source_bytes = retained_source_bytes
-            .checked_add(suffix.len())
-            .ok_or(EngineError::CursorOverflow)?;
-        if source_bytes > self.limits.max_source_bytes {
-            return Err(EngineError::Protocol(ProtocolError::SourceTooLarge {
-                limit: self.limits.max_source_bytes,
-                actual: source_bytes,
-            }));
-        }
         let epoch = self
             .producer
             .document()
             .map_or(self.initial_epoch, |document| document.coordinate().epoch);
+        let staging_frontier_bytes = self
+            .compiler
+            .metrics()
+            .frontier_bytes
+            .checked_add(suffix.len())
+            .ok_or(EngineError::MetricsOverflow("staging frontier bytes"))?;
+        EngineWorkMetrics::check_transaction_lower_bound(
+            suffix.len(),
+            staging_frontier_bytes,
+            self.engine_limits,
+        )?;
         let transition =
             self.compiler
                 .stage(self.producer.document(), epoch, &suffix, finishing)?;
-        let (operations, commit) = transition.into_parts();
+        debug_assert_eq!(transition.staging_frontier_bytes(), staging_frontier_bytes);
+        let frontier_bytes = transition.staging_frontier_bytes();
+        let (operations, payload_cost, commit) = transition.into_parts();
         let change = append_change(&self.producer, self.initial_epoch, suffix, operations)?;
+        let work = self
+            .work
+            .stage(&change, payload_cost, frontier_bytes, self.engine_limits)?;
         apply_canonical(&mut self.producer, &change)?;
         self.compiler.commit(commit);
         self.normalizer = normalizer;
+        self.work = work;
         Ok(EngineOutput::one(change))
     }
 }

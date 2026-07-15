@@ -1,5 +1,25 @@
 use mdstream::{MdStream, Options, StreamEngine};
-use mdstream_protocol::{ApplyOutcome, Reducer, SourceCursor};
+use mdstream_conformance::NormalizedSnapshot;
+use mdstream_protocol::{
+    ApplyOutcome, ContentKind, NodeId, NodeVersion, Reducer, ResourceRef, Snapshot, SourceCursor,
+};
+
+fn shared_reference(snapshot: &Snapshot) -> (NodeId, NodeVersion, Option<ResourceRef>) {
+    snapshot
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.content {
+            ContentKind::Link {
+                reference_label,
+                target,
+                ..
+            } if reference_label.as_deref() == Some("shared") => {
+                Some((node.id, node.version.clone(), target.clone()))
+            }
+            _ => None,
+        })
+        .expect("the shortcut reference must remain in the canonical projection")
+}
 
 #[test]
 fn max_buffer_bytes_compacts_committed_prefix() {
@@ -75,4 +95,51 @@ fn stream_engine_keeps_absolute_source_and_ranges_after_scanner_compaction() {
         expected_start = expected_end + 2;
     }
     assert_eq!(expected_start, source.len() as u64);
+}
+
+#[test]
+fn compaction_preserves_identity_versions_and_late_semantic_dependencies() {
+    let mut split = StreamEngine::new();
+    split.append("[shared]\n\n").unwrap();
+
+    let mut middle = String::new();
+    for index in 0..200 {
+        let block = format!("# H{index}\n\n");
+        middle.push_str(&block);
+        split.append(&block).unwrap();
+    }
+
+    let before = split.snapshot().unwrap();
+    let (before_id, before_version, before_target) = shared_reference(&before);
+    assert_eq!(before_target, None);
+    let before_reference = before
+        .nodes()
+        .iter()
+        .find(|node| node.id == before_id)
+        .unwrap();
+    assert_eq!(before_reference.source.start, SourceCursor::new(0));
+    assert_eq!(
+        before_reference.source.end,
+        SourceCursor::new("[shared]".len() as u64)
+    );
+    assert!(split.metrics().retained_source_base > 0);
+    assert_eq!(split.metrics().compiler.retained_semantic_dependencies, 1);
+
+    let definition = "[shared]: /target\n";
+    split.append(definition).unwrap();
+    split.finish().unwrap();
+    let after = split.snapshot().unwrap();
+    let (after_id, after_version, after_target) = shared_reference(&after);
+    assert_eq!(after_id, before_id);
+    assert_ne!(after_version, before_version);
+    assert!(after_target.is_some());
+
+    let source = format!("[shared]\n\n{middle}{definition}");
+    let mut whole = StreamEngine::new();
+    whole.append(&source).unwrap();
+    whole.finish().unwrap();
+    assert_eq!(
+        NormalizedSnapshot::from(after),
+        NormalizedSnapshot::from(whole.snapshot().unwrap())
+    );
 }

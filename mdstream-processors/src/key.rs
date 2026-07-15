@@ -1,6 +1,8 @@
 use mdstream_protocol::{Epoch, NodeId, NodeVersion, ProcessorInputVersion, RequestGeneration};
 
-use crate::{IdentifierError, validate_identifier};
+use crate::{IdentifierError, error::MAX_IDENTIFIER_BYTES, validate_identifier};
+
+const CANONICAL_DIGEST_BYTES: usize = "sha256:".len() + 64;
 
 macro_rules! identifier {
     ($name:ident, $field:literal) => {
@@ -71,6 +73,15 @@ pub struct ProcessorRequestKey {
 }
 
 impl ProcessorRequestKey {
+    pub(crate) const MAX_BYTE_LEN: usize = 8
+        + 16
+        + 8
+        + MAX_IDENTIFIER_BYTES
+        + CANONICAL_DIGEST_BYTES
+        + CANONICAL_DIGEST_BYTES
+        + MAX_IDENTIFIER_BYTES
+        + MAX_IDENTIFIER_BYTES;
+
     pub(crate) fn new(
         slot: ProcessorSlotKey,
         node_version: NodeVersion,
@@ -111,5 +122,15 @@ impl ProcessorRequestKey {
 
     pub const fn generation(&self) -> RequestGeneration {
         self.generation
+    }
+
+    pub(crate) fn checked_byte_len(&self) -> Option<usize> {
+        const FIXED_BYTES: usize = 8 + 16 + 8;
+        FIXED_BYTES
+            .checked_add(self.slot.processor_id.as_str().len())?
+            .checked_add(self.node_version.as_str().len())?
+            .checked_add(self.input_version.as_str().len())?
+            .checked_add(self.processor_version.as_str().len())?
+            .checked_add(self.configuration_version.as_str().len())
     }
 }

@@ -5,6 +5,8 @@ use crate::{
     validate_identifier,
 };
 
+pub(crate) const MAX_REMOVED_CHANGE_BYTES: usize = ProcessorRequestKey::MAX_BYTE_LEN + 1 + 1 + 8;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessorFailureCode {
     Processor,
@@ -189,6 +191,13 @@ impl ProcessorResult {
     ) {
         (self.key, self.outcome)
     }
+
+    pub(crate) fn from_parts(
+        key: ProcessorRequestKey,
+        outcome: Result<ProcessorArtifact, ProcessorFailure>,
+    ) -> Self {
+        Self { key, outcome }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +247,17 @@ impl ArtifactChange {
 
     pub fn kind(&self) -> &ArtifactChangeKind {
         &self.kind
+    }
+
+    /// Returns deterministic logical bytes retained by this change record.
+    pub fn checked_byte_len(&self) -> Option<usize> {
+        let kind_bytes = match self.kind {
+            ArtifactChangeKind::Pending => 1,
+            ArtifactChangeKind::Ready { .. } => 1 + 8,
+            ArtifactChangeKind::Failed { .. } => 1 + 1,
+            ArtifactChangeKind::Removed { .. } => 1 + 1 + 8,
+        };
+        self.key.checked_byte_len()?.checked_add(kind_bytes)
     }
 }
 

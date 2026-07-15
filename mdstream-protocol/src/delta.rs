@@ -108,12 +108,14 @@ pub enum ProjectionOp {
 pub struct ChangePayloadCost {
     pub structural_items: usize,
     pub metadata_bytes: usize,
+    pub wire_text_bytes: usize,
 }
 
 impl ChangePayloadCost {
     pub const ZERO: Self = Self {
         structural_items: 0,
         metadata_bytes: 0,
+        wire_text_bytes: 0,
     };
 
     pub fn for_insert_node(
@@ -123,13 +125,15 @@ impl ChangePayloadCost {
         let content_items = content_structural_items(&node.content);
         validate_structural_component("child_list.children", node.children.len(), limits)?;
         validate_structural_component("change.table.alignments", content_items, limits)?;
+        let metadata_bytes = node.validate_shape(limits)?;
         Ok(Self {
             structural_items: node
                 .children
                 .len()
                 .checked_add(content_items)
                 .ok_or(ProtocolError::MetadataOverflow)?,
-            metadata_bytes: node.validate_shape(limits)?,
+            metadata_bytes,
+            wire_text_bytes: metadata_bytes,
         })
     }
 
@@ -140,9 +144,11 @@ impl ChangePayloadCost {
     ) -> Result<Self, ProtocolError> {
         let content_items = content_structural_items(&projection.content);
         validate_structural_component("change.table.alignments", content_items, limits)?;
+        let metadata_bytes = projection.validate_shape(node_id, limits)?;
         Ok(Self {
             structural_items: content_items,
-            metadata_bytes: projection.validate_shape(node_id, limits)?,
+            metadata_bytes,
+            wire_text_bytes: metadata_bytes,
         })
     }
 
@@ -152,9 +158,11 @@ impl ChangePayloadCost {
     ) -> Result<Self, ProtocolError> {
         let content_items = content_structural_items(content);
         validate_structural_component("change.table.alignments", content_items, limits)?;
+        let metadata_bytes = crate::ir::validate_kind(content, limits)?;
         Ok(Self {
             structural_items: content_items,
-            metadata_bytes: crate::ir::validate_kind(content, limits)?,
+            metadata_bytes,
+            wire_text_bytes: metadata_bytes,
         })
     }
 
@@ -163,6 +171,7 @@ impl ChangePayloadCost {
         Ok(Self {
             structural_items: insert_len,
             metadata_bytes: 0,
+            wire_text_bytes: 0,
         })
     }
 
@@ -170,9 +179,11 @@ impl ChangePayloadCost {
         resource: &SemanticResource,
         limits: ProtocolLimits,
     ) -> Result<Self, ProtocolError> {
+        let metadata_bytes = resource.validate_local(limits)?;
         Ok(Self {
             structural_items: 0,
-            metadata_bytes: resource.validate_local(limits)?,
+            metadata_bytes,
+            wire_text_bytes: metadata_bytes,
         })
     }
 
@@ -186,7 +197,19 @@ impl ChangePayloadCost {
                 .metadata_bytes
                 .checked_add(other.metadata_bytes)
                 .ok_or(ProtocolError::MetadataOverflow)?,
+            wire_text_bytes: self
+                .wire_text_bytes
+                .checked_add(other.wire_text_bytes)
+                .ok_or(ProtocolError::MetadataOverflow)?,
         })
+    }
+
+    fn checked_add_wire_text(mut self, bytes: usize) -> Result<Self, ProtocolError> {
+        self.wire_text_bytes = self
+            .wire_text_bytes
+            .checked_add(bytes)
+            .ok_or(ProtocolError::MetadataOverflow)?;
+        Ok(self)
     }
 }
 
@@ -208,7 +231,8 @@ fn validate_structural_component(
 
 impl ProjectionOp {
     pub fn payload_cost(&self, limits: ProtocolLimits) -> Result<ChangePayloadCost, ProtocolError> {
-        match self {
+        let base = match self {
+            Self::AdvanceProjection { .. } | Self::FinishDocument => Ok(ChangePayloadCost::ZERO),
             Self::InsertNode { node } => ChangePayloadCost::for_insert_node(node, limits),
             Self::ReplaceNode {
                 node_id,
@@ -221,8 +245,60 @@ impl ProjectionOp {
             Self::InsertResource { resource } | Self::ReplaceResource { resource, .. } => {
                 ChangePayloadCost::for_resource(resource, limits)
             }
-            _ => Ok(ChangePayloadCost::ZERO),
-        }
+            Self::StabilizeNode { .. } | Self::RemoveNode { .. } | Self::RemoveResource { .. } => {
+                Ok(ChangePayloadCost::ZERO)
+            }
+        }?;
+        base.checked_add_wire_text(self.wire_text_overhead()?)
+    }
+
+    /// Returns operation-owned version text bytes beyond projection metadata.
+    pub fn wire_text_overhead(&self) -> Result<usize, ProtocolError> {
+        let lengths: &[usize] = match self {
+            Self::AdvanceProjection { .. } | Self::FinishDocument => &[],
+            Self::InsertNode { node } => &[
+                node.version.as_str().len(),
+                node.children.version().as_str().len(),
+            ],
+            Self::ReplaceNode {
+                expected_version,
+                projection,
+                ..
+            } => &[
+                expected_version.as_str().len(),
+                projection.version.as_str().len(),
+            ],
+            Self::StabilizeNode {
+                expected_version,
+                new_version,
+                ..
+            } => &[expected_version.as_str().len(), new_version.as_str().len()],
+            Self::RemoveNode {
+                expected_version, ..
+            } => &[expected_version.as_str().len()],
+            Self::SpliceChildren {
+                expected_version,
+                new_version,
+                ..
+            } => &[expected_version.as_str().len(), new_version.as_str().len()],
+            Self::InsertResource { resource } => &[resource.version.as_str().len()],
+            Self::ReplaceResource {
+                expected_version,
+                resource,
+                ..
+            } => &[
+                expected_version.as_str().len(),
+                resource.version.as_str().len(),
+            ],
+            Self::RemoveResource {
+                expected_version, ..
+            } => &[expected_version.as_str().len()],
+        };
+        lengths.iter().try_fold(0usize, |total, length| {
+            total
+                .checked_add(*length)
+                .ok_or(ProtocolError::MetadataOverflow)
+        })
     }
 
     pub(crate) fn node_target(&self) -> Option<NodeId> {
@@ -447,5 +523,28 @@ fn content_structural_items(content: &crate::ContentKind) -> usize {
     match content {
         crate::ContentKind::Table { alignments } => alignments.len(),
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_payload_cost_owns_version_wire_text_bytes() {
+        let operation = ProjectionOp::StabilizeNode {
+            node_id: NodeId::new(1),
+            expected_version: NodeVersion::new("old").unwrap(),
+            new_version: NodeVersion::new("newer").unwrap(),
+        };
+
+        let cost = operation.payload_cost(ProtocolLimits::default()).unwrap();
+        assert_eq!(cost.structural_items, 0);
+        assert_eq!(cost.metadata_bytes, 0);
+        assert_eq!(cost.wire_text_bytes, "old".len() + "newer".len());
+        assert_eq!(
+            operation.wire_text_overhead().unwrap(),
+            cost.wire_text_bytes
+        );
     }
 }

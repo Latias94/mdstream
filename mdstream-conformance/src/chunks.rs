@@ -13,10 +13,185 @@ pub const MAX_EXHAUSTIVE_PARTITIONS: usize = 65_536;
 /// Stable identifier for the seeded schedule algorithm.
 pub const SEEDED_SCHEDULE_ALGORITHM: &str = "fnv1a64-xorshift64-v1";
 
+/// Markdown shapes used by the canonical pending-source scenarios.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingScenarioShape {
+    /// A single unfinished paragraph.
+    Paragraph,
+    /// An unclosed fenced code block.
+    Fence,
+    /// Repeated block quote container lines.
+    Container,
+    /// A GFM table header followed by repeated rows.
+    Table,
+    /// A paragraph containing multibyte Unicode scalars.
+    Unicode,
+}
+
+impl PendingScenarioShape {
+    /// Every canonical pending-source shape in stable selection order.
+    pub const ALL: [Self; 5] = [
+        Self::Paragraph,
+        Self::Fence,
+        Self::Container,
+        Self::Table,
+        Self::Unicode,
+    ];
+
+    /// Returns the stable identifier for this Markdown shape.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Paragraph => "paragraph",
+            Self::Fence => "fence",
+            Self::Container => "container",
+            Self::Table => "table",
+            Self::Unicode => "unicode",
+        }
+    }
+}
+
+/// A fixed byte size used by the canonical pending-source scenarios.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingScenarioSize(usize);
+
+impl PendingScenarioSize {
+    /// 8 KiB.
+    pub const KIB_8: Self = Self(8 * 1024);
+    /// 16 KiB.
+    pub const KIB_16: Self = Self(16 * 1024);
+    /// 32 KiB.
+    pub const KIB_32: Self = Self(32 * 1024);
+    /// 64 KiB.
+    pub const KIB_64: Self = Self(64 * 1024);
+
+    /// Every canonical pending-source size in ascending order.
+    pub const ALL: [Self; 4] = [Self::KIB_8, Self::KIB_16, Self::KIB_32, Self::KIB_64];
+
+    /// Returns the target UTF-8 byte length.
+    pub const fn bytes(self) -> usize {
+        self.0
+    }
+}
+
+/// One canonical pending Markdown shape at one fixed byte size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalPendingScenario {
+    shape: PendingScenarioShape,
+    size: PendingScenarioSize,
+}
+
+impl CanonicalPendingScenario {
+    /// All 20 shape and size combinations in stable size-major order.
+    pub const ALL: [Self; 20] = [
+        Self::new(PendingScenarioShape::Paragraph, PendingScenarioSize::KIB_8),
+        Self::new(PendingScenarioShape::Fence, PendingScenarioSize::KIB_8),
+        Self::new(PendingScenarioShape::Container, PendingScenarioSize::KIB_8),
+        Self::new(PendingScenarioShape::Table, PendingScenarioSize::KIB_8),
+        Self::new(PendingScenarioShape::Unicode, PendingScenarioSize::KIB_8),
+        Self::new(PendingScenarioShape::Paragraph, PendingScenarioSize::KIB_16),
+        Self::new(PendingScenarioShape::Fence, PendingScenarioSize::KIB_16),
+        Self::new(PendingScenarioShape::Container, PendingScenarioSize::KIB_16),
+        Self::new(PendingScenarioShape::Table, PendingScenarioSize::KIB_16),
+        Self::new(PendingScenarioShape::Unicode, PendingScenarioSize::KIB_16),
+        Self::new(PendingScenarioShape::Paragraph, PendingScenarioSize::KIB_32),
+        Self::new(PendingScenarioShape::Fence, PendingScenarioSize::KIB_32),
+        Self::new(PendingScenarioShape::Container, PendingScenarioSize::KIB_32),
+        Self::new(PendingScenarioShape::Table, PendingScenarioSize::KIB_32),
+        Self::new(PendingScenarioShape::Unicode, PendingScenarioSize::KIB_32),
+        Self::new(PendingScenarioShape::Paragraph, PendingScenarioSize::KIB_64),
+        Self::new(PendingScenarioShape::Fence, PendingScenarioSize::KIB_64),
+        Self::new(PendingScenarioShape::Container, PendingScenarioSize::KIB_64),
+        Self::new(PendingScenarioShape::Table, PendingScenarioSize::KIB_64),
+        Self::new(PendingScenarioShape::Unicode, PendingScenarioSize::KIB_64),
+    ];
+
+    /// Selects one canonical shape and size combination.
+    pub const fn new(shape: PendingScenarioShape, size: PendingScenarioSize) -> Self {
+        Self { shape, size }
+    }
+
+    /// Returns the stable identifier for this shape and size combination.
+    pub const fn id(self) -> &'static str {
+        use PendingScenarioShape::{Container, Fence, Paragraph, Table, Unicode};
+
+        match (self.shape, self.size.bytes()) {
+            (Paragraph, 8_192) => "paragraph-8kib",
+            (Fence, 8_192) => "fence-8kib",
+            (Container, 8_192) => "container-8kib",
+            (Table, 8_192) => "table-8kib",
+            (Unicode, 8_192) => "unicode-8kib",
+            (Paragraph, 16_384) => "paragraph-16kib",
+            (Fence, 16_384) => "fence-16kib",
+            (Container, 16_384) => "container-16kib",
+            (Table, 16_384) => "table-16kib",
+            (Unicode, 16_384) => "unicode-16kib",
+            (Paragraph, 32_768) => "paragraph-32kib",
+            (Fence, 32_768) => "fence-32kib",
+            (Container, 32_768) => "container-32kib",
+            (Table, 32_768) => "table-32kib",
+            (Unicode, 32_768) => "unicode-32kib",
+            (Paragraph, 65_536) => "paragraph-64kib",
+            (Fence, 65_536) => "fence-64kib",
+            (Container, 65_536) => "container-64kib",
+            (Table, 65_536) => "table-64kib",
+            (Unicode, 65_536) => "unicode-64kib",
+            _ => unreachable!(),
+        }
+    }
+
+    /// Returns this scenario's Markdown shape.
+    pub const fn shape(self) -> PendingScenarioShape {
+        self.shape
+    }
+
+    /// Returns this scenario's fixed UTF-8 byte length.
+    pub const fn target_bytes(self) -> usize {
+        self.size.bytes()
+    }
+
+    /// Generates the canonical UTF-8 source at exactly the target byte length.
+    pub fn source(self) -> String {
+        let target_bytes = self.target_bytes();
+        match self.shape {
+            PendingScenarioShape::Paragraph => "x".repeat(target_bytes),
+            PendingScenarioShape::Fence => {
+                exact_ascii_fixture("```text\n", "code line\n", target_bytes)
+            }
+            PendingScenarioShape::Container => {
+                let row = format!("> {}\n", "x".repeat(252));
+                exact_ascii_fixture("", &row, target_bytes)
+            }
+            PendingScenarioShape::Table => {
+                let row = format!("{} | {}\n", "x".repeat(124), "y".repeat(124));
+                exact_ascii_fixture("a | b\n--|--\n", &row, target_bytes)
+            }
+            PendingScenarioShape::Unicode => {
+                let unit = "界x";
+                debug_assert_eq!(target_bytes % unit.len(), 0);
+                unit.repeat(target_bytes / unit.len())
+            }
+        }
+    }
+}
+
 const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 const TRIAL_MIX: u64 = 0x9e37_79b9_7f4a_7c15;
 const SEED_MIX: u64 = 0xa076_1d64_78bd_642f;
+
+fn exact_ascii_fixture(prefix: &str, row: &str, target_bytes: usize) -> String {
+    debug_assert!(prefix.is_ascii());
+    debug_assert!(row.is_ascii() && !row.is_empty());
+    debug_assert!(prefix.len() <= target_bytes);
+
+    let mut source = String::with_capacity(target_bytes);
+    source.push_str(prefix);
+    while source.len() < target_bytes {
+        source.push_str(row);
+    }
+    source.truncate(target_bytes);
+    source
+}
 
 /// A portable description of how a source document is split into chunks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -678,5 +853,46 @@ mod tests {
             utf8_ranges_from_target_widths(source, [1], 0).unwrap_err(),
             ChunkError::ZeroFallbackWidth
         );
+    }
+
+    #[test]
+    fn canonical_pending_scenarios_have_stable_ids_and_exact_utf8_lengths() {
+        let expected_ids = [
+            "paragraph-8kib",
+            "fence-8kib",
+            "container-8kib",
+            "table-8kib",
+            "unicode-8kib",
+            "paragraph-16kib",
+            "fence-16kib",
+            "container-16kib",
+            "table-16kib",
+            "unicode-16kib",
+            "paragraph-32kib",
+            "fence-32kib",
+            "container-32kib",
+            "table-32kib",
+            "unicode-32kib",
+            "paragraph-64kib",
+            "fence-64kib",
+            "container-64kib",
+            "table-64kib",
+            "unicode-64kib",
+        ];
+
+        assert_eq!(CanonicalPendingScenario::ALL.len(), expected_ids.len());
+        for (scenario, expected_id) in CanonicalPendingScenario::ALL.into_iter().zip(expected_ids) {
+            assert_eq!(scenario.id(), expected_id);
+            let source = scenario.source();
+            assert_eq!(source.len(), scenario.target_bytes(), "{expected_id}");
+
+            match scenario.shape() {
+                PendingScenarioShape::Paragraph => assert!(!source.contains('\n')),
+                PendingScenarioShape::Fence => assert!(source.starts_with("```text\n")),
+                PendingScenarioShape::Container => assert!(source.starts_with("> ")),
+                PendingScenarioShape::Table => assert!(source.starts_with("a | b\n--|--\n")),
+                PendingScenarioShape::Unicode => assert!(source.starts_with("界x")),
+            }
+        }
     }
 }

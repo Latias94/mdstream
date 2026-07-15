@@ -525,7 +525,7 @@ mod tests {
                 &mut operations,
             )
             .unwrap();
-            let operations = operations.into_operations();
+            let operations = operations.into_parts().0;
 
             assert_eq!(work.owners_visited, 1);
             if current.as_slice() == next {

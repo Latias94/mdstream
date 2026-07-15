@@ -215,7 +215,7 @@ fn matching_result_installs_one_artifact_without_changing_canonical_state() {
     let canonical_before = document.snapshot();
     let processor = EchoProcessor::new();
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(document.coordinate().epoch).unwrap();
 
     let request = host
@@ -251,7 +251,7 @@ fn replacement_releases_artifact_and_generation_closes_the_a_b_a_race() {
     let document_b = reducer_b.document().unwrap();
     let processor = EchoProcessor::new();
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     let installed = host
@@ -331,7 +331,7 @@ fn node_removal_wins_pending_and_ready_result_races() {
     let document = reducer.document().unwrap();
     let processor = EchoProcessor::new();
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     let pending = host
@@ -397,7 +397,7 @@ fn epoch_reset_drains_ready_and_in_flight_state_without_reusing_generation() {
     let document_pending = reducer_pending.document().unwrap();
     let processor = EchoProcessor::new();
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     let ready = host
@@ -469,7 +469,7 @@ fn processor_and_configuration_versions_supersede_and_duplicate_completion_is_st
     let document = reducer.document().unwrap();
     let processor_v1 = EchoProcessor::with_version("v1");
     let processor_v2 = EchoProcessor::with_version("v2");
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     let request_v1 = host
@@ -537,7 +537,7 @@ fn direct_child_identity_changes_processor_input_without_changing_projection_ver
     let document_right = reducer_right.document().unwrap();
     let processor = EchoProcessor::new();
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     let left = host
@@ -577,7 +577,7 @@ fn provisional_processing_requires_capability_and_explicit_policy() {
     let provisional =
         EchoProcessor::with_capabilities("v1", ProcessorCapabilities::with_provisional());
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     for (descriptor, policy) in [
@@ -630,7 +630,7 @@ fn processor_failure_and_panic_become_derived_state_and_host_remains_usable() {
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
     let failure = FailingProcessor::new("test.failure", false);
     let panic = FailingProcessor::new("test.panic", true);
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     for (processor, expected_code) in [
@@ -684,7 +684,7 @@ fn processor_descriptor_panic_is_contained_by_the_execution_adapter() {
     let reducer = document_with_code(7, 41, "hello");
     let document = reducer.document().unwrap();
     let request_processor = EchoProcessor::new();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
     let request = host
         .begin(
@@ -714,7 +714,7 @@ fn document_finish_does_not_wait_for_or_cancel_pending_processors() {
     let mut reducer = document_with_code(7, 41, "hello");
     let processor = EchoProcessor::new();
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
     let request = host
         .begin(
@@ -761,7 +761,7 @@ fn reconcile_invalidates_ready_and_pending_state_for_changed_nodes() {
     let document_b = reducer_b.document().unwrap();
     let processor = EchoProcessor::new();
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
     let impact = ChangeImpact {
         changed_nodes: vec![NodeId::new(41)],
@@ -828,7 +828,7 @@ fn same_epoch_full_replace_invalidates_all_derived_state() {
     let ready_processor = EchoProcessor::new();
     let pending_processor = FailingProcessor::new("test.pending", false);
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     let ready = host
@@ -932,7 +932,7 @@ fn cancellation_is_key_scoped_idempotent_and_rejects_late_results() {
     let document = reducer.document().unwrap();
     let processor = EchoProcessor::new();
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
     let request = host
         .begin(
@@ -945,12 +945,12 @@ fn cancellation_is_key_scoped_idempotent_and_rejects_late_results() {
         .unwrap();
     let result = run_catching(&processor, &request);
 
-    assert!(host.cancel(request.key()));
+    assert!(host.cancel(request.key()).unwrap());
     assert!(request.is_cancelled());
     assert!(host.state(request.key().slot()).is_none());
     assert_eq!(host.metrics().in_flight_jobs, 0);
     let after_cancel = host.metrics();
-    assert!(!host.cancel(request.key()));
+    assert!(!host.cancel(request.key()).unwrap());
     assert_eq!(host.metrics(), after_cancel);
     assert_eq!(
         host.complete(document, result).unwrap(),
@@ -965,7 +965,7 @@ fn artifact_changes_expose_state_without_copying_payloads_into_canonical_ir() {
     let canonical_before = document.snapshot();
     let processor = EchoProcessor::new();
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     let first = host
@@ -1013,7 +1013,7 @@ fn artifact_changes_expose_state_without_copying_payloads_into_canonical_ir() {
     assert_eq!(changes[1].kind(), &ArtifactChangeKind::Pending);
     assert_eq!(changes[1].key(), second.key());
 
-    assert!(host.cancel(second.key()));
+    assert!(host.cancel(second.key()).unwrap());
     let changes = host.take_changes();
     assert_eq!(changes.len(), 1);
     assert_eq!(
@@ -1034,7 +1034,7 @@ fn completion_revalidates_the_document_when_reconcile_was_not_called() {
     let document_a = reducer_a.document().unwrap();
     let document_b = reducer_b.document().unwrap();
     let processor = EchoProcessor::new();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
     let request = host
         .begin(
@@ -1071,7 +1071,7 @@ fn completion_reports_node_removal_when_the_current_document_omits_the_node() {
     let without_node = document_with_code(7, 42, "A");
     let document = reducer.document().unwrap();
     let processor = EchoProcessor::new();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
     let request = host
         .begin(
@@ -1105,7 +1105,7 @@ fn completion_with_the_wrong_document_epoch_is_retryable() {
     let reducer_other = document_with_code(8, 41, "A");
     let document_old = reducer_old.document().unwrap();
     let processor = EchoProcessor::new();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
     let request = host
         .begin(
@@ -1117,24 +1117,26 @@ fn completion_with_the_wrong_document_epoch_is_retryable() {
         )
         .unwrap();
     let result = run_catching(&processor, &request);
-    let retry = result.clone();
     host.take_changes();
     let before_state = host.state(request.key().slot()).unwrap().clone();
     let before_metrics = host.metrics();
 
+    let error = host
+        .complete(reducer_other.document().unwrap(), result)
+        .unwrap_err();
     assert!(matches!(
-        host.complete(reducer_other.document().unwrap(), result),
-        Err(HostError::EpochMismatch {
+        error.error(),
+        HostError::EpochMismatch {
             current,
             received,
-        }) if current == Epoch::new(7) && received == Epoch::new(8)
+        } if *current == Epoch::new(7) && *received == Epoch::new(8)
     ));
     assert_eq!(host.state(request.key().slot()), Some(&before_state));
     assert_eq!(host.metrics(), before_metrics);
     assert!(!request.is_cancelled());
     assert!(host.take_changes().is_empty());
     assert_eq!(
-        host.complete(document_old, retry).unwrap(),
+        host.complete(document_old, error.into_result()).unwrap(),
         CompletionOutcome::Applied
     );
 }
@@ -1150,7 +1152,7 @@ fn stale_completion_only_invalidates_its_processor_slot() {
     let current_processor =
         EchoProcessor::with_identity("test.current", "v1", ProcessorCapabilities::stable_only());
     let configuration = ConfigurationVersion::new("config.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     let stale = host

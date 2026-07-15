@@ -1,13 +1,18 @@
 use mdstream_protocol::{ChangeImpact, Document, Epoch, NodeId, RequestGeneration};
 
 use crate::{
-    ArtifactChange, ArtifactReleaseReason, CompletionOutcome, ConfigurationVersion, HostError,
-    ProcessingPolicy, ProcessorDescriptor, ProcessorFailure, ProcessorFailureCode, ProcessorLimits,
+    ArtifactChange, ArtifactChangeKind, ArtifactReleaseReason, CompletionError, CompletionOutcome,
+    ConfigurationVersion, HostError, ProcessingPolicy, ProcessorArtifact, ProcessorDescriptor,
+    ProcessorFailure, ProcessorFailureCode, ProcessorLimits, ProcessorLimitsError,
     ProcessorMetrics, ProcessorRequest, ProcessorRequestKey, ProcessorResult, ProcessorSlotKey,
     ProcessorSlotState,
-    request::{BeginRequest, CancellationToken, ProcessorInput, provisional_allowed},
+    limits::check_limit,
+    request::{CancellationToken, ProcessorInput, provisional_allowed},
     store::ArtifactStore,
 };
+
+#[cfg(test)]
+use crate::request::BeginRequest;
 
 /// Owns processor request freshness, cancellation, derived state, and budgets.
 ///
@@ -21,13 +26,20 @@ pub struct ArtifactHost {
 }
 
 impl ArtifactHost {
-    pub fn new(limits: ProcessorLimits) -> Self {
-        Self {
+    /// Creates a host after validating its cleanup queue limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProcessorLimitsError`] when `limits` cannot guarantee that
+    /// cleanup changes fit in the pending change queue.
+    pub fn new(limits: ProcessorLimits) -> Result<Self, ProcessorLimitsError> {
+        limits.validate()?;
+        Ok(Self {
             limits,
             epoch: None,
             next_generation: 1,
-            store: ArtifactStore::default(),
-        }
+            store: ArtifactStore::new(limits),
+        })
     }
 
     pub fn begin_epoch(&mut self, epoch: Epoch) -> Result<(), HostError> {
@@ -39,7 +51,7 @@ impl ArtifactHost {
                 });
             }
             Some(current) if epoch == current => return Ok(()),
-            Some(_) => self.store.clear(ArtifactReleaseReason::EpochReset),
+            Some(_) => self.store.clear(ArtifactReleaseReason::EpochReset)?,
             None => {}
         }
         self.epoch = Some(epoch);
@@ -62,18 +74,36 @@ impl ArtifactHost {
                 received: document_epoch,
             });
         }
-        let input = ProcessorInput::from_document(document, node_id)?;
+        let input = ProcessorInput::view_document(document, node_id)?;
         if !provisional_allowed(input.node().stability, descriptor.capabilities(), policy) {
             return Err(HostError::ProvisionalProcessingDisabled(node_id));
         }
-        let begin = BeginRequest {
-            descriptor,
+        let slot = ProcessorSlotKey::new(document_epoch, input.node().id, descriptor.id().clone());
+        self.check_begin_limits(input.byte_len(), &slot)?;
+        let generation = RequestGeneration::new(self.next_generation);
+        let next_generation = self
+            .next_generation
+            .checked_add(1)
+            .ok_or(HostError::RequestGenerationExhausted)?;
+        let key = ProcessorRequestKey::new(
+            slot,
+            input.node().version.clone(),
+            input.version().clone(),
+            descriptor.version().clone(),
             configuration,
-            input,
-        };
-        self.begin_prepared(document_epoch, begin)
+            generation,
+        );
+        let reservation = self.store.preflight_pending(&key, input.byte_len())?;
+        let input = input.materialize();
+        let cancellation = CancellationToken::default();
+        let request = ProcessorRequest::new(key.clone(), input, cancellation.clone());
+        self.store
+            .commit_pending(reservation, key, request.input().byte_len(), cancellation);
+        self.next_generation = next_generation;
+        Ok(request)
     }
 
+    #[cfg(test)]
     fn begin_prepared(
         &mut self,
         epoch: Epoch,
@@ -98,7 +128,7 @@ impl ArtifactHost {
         let cancellation = CancellationToken::default();
         let request = ProcessorRequest::new(key.clone(), begin.input, cancellation.clone());
         self.store
-            .install_pending(key, request.input().byte_len(), cancellation);
+            .install_pending(key, request.input().byte_len(), cancellation)?;
         self.next_generation = next_generation;
         Ok(request)
     }
@@ -141,59 +171,19 @@ impl ArtifactHost {
         )
     }
 
-    pub fn complete(
-        &mut self,
-        document: &Document,
-        result: ProcessorResult,
-    ) -> Result<CompletionOutcome, HostError> {
-        let (key, outcome) = result.into_parts();
-        if !self.store.has_lease(&key) {
-            self.store.record_stale_result();
-            return Ok(CompletionOutcome::Stale);
-        }
-        if !self.store.current_pending(&key) {
-            self.store.settle_lease(&key);
-            self.store.record_stale_result();
-            return Ok(CompletionOutcome::Stale);
-        }
-        match request_document_state(document, &key) {
-            RequestDocumentState::Matching => {
-                self.store.settle_lease(&key);
-            }
-            RequestDocumentState::NodeRemoved => {
-                self.store.settle_lease(&key);
-                self.store
-                    .remove_slot(key.slot(), ArtifactReleaseReason::NodeRemoved);
-                self.store.record_stale_result();
-                return Ok(CompletionOutcome::Stale);
-            }
-            RequestDocumentState::NodeChanged => {
-                self.store.settle_lease(&key);
-                self.store
-                    .remove_slot(key.slot(), ArtifactReleaseReason::NodeChanged);
-                self.store.record_stale_result();
-                return Ok(CompletionOutcome::Stale);
-            }
-            RequestDocumentState::EpochMismatch(received) => {
-                return Err(HostError::EpochMismatch {
-                    current: key.slot().epoch(),
-                    received,
-                });
-            }
-        }
+    fn completion_plan(
+        &self,
+        outcome: &Result<ProcessorArtifact, ProcessorFailure>,
+    ) -> CompletionPlan {
         match outcome {
             Ok(artifact) => {
                 let Some(artifact_bytes) = artifact.checked_byte_len() else {
-                    self.store.install_failure(
-                        key,
-                        resource_limit_failure(
-                            "processor.artifact_bytes",
-                            self.limits.max_artifact_bytes,
-                            usize::MAX,
-                            self.limits.max_error_bytes,
-                        ),
-                    );
-                    return Ok(CompletionOutcome::Applied);
+                    return CompletionPlan::ReplacementFailure(resource_limit_failure(
+                        "processor.artifact_bytes",
+                        self.limits.max_artifact_bytes,
+                        usize::MAX,
+                        self.limits.max_error_bytes,
+                    ));
                 };
                 let metrics = self.store.metrics();
                 let retained_artifacts = metrics.retained_artifacts.checked_add(1);
@@ -225,26 +215,116 @@ impl ArtifactHost {
                     None
                 };
                 if let Some((field, limit, actual)) = violation {
-                    self.store.install_failure(
-                        key,
-                        resource_limit_failure(field, limit, actual, self.limits.max_error_bytes),
-                    );
+                    CompletionPlan::ReplacementFailure(resource_limit_failure(
+                        field,
+                        limit,
+                        actual,
+                        self.limits.max_error_bytes,
+                    ))
                 } else {
-                    self.store.install_artifact(key, artifact);
+                    CompletionPlan::Ready { artifact_bytes }
                 }
             }
-            Err(failure) => {
-                let failure = if failure.message().len() > self.limits.max_error_bytes {
-                    resource_limit_failure(
-                        "processor.error_bytes",
-                        self.limits.max_error_bytes,
-                        failure.message().len(),
-                        self.limits.max_error_bytes,
-                    )
-                } else {
-                    failure
-                };
-                self.store.install_failure(key, failure);
+            Err(failure) if failure.message().len() > self.limits.max_error_bytes => {
+                CompletionPlan::ReplacementFailure(resource_limit_failure(
+                    "processor.error_bytes",
+                    self.limits.max_error_bytes,
+                    failure.message().len(),
+                    self.limits.max_error_bytes,
+                ))
+            }
+            Err(failure) => CompletionPlan::OriginalFailure {
+                code: failure.code(),
+            },
+        }
+    }
+
+    pub fn complete(
+        &mut self,
+        document: &Document,
+        result: ProcessorResult,
+    ) -> Result<CompletionOutcome, CompletionError> {
+        let (key, outcome) = result.into_parts();
+        if !self.store.has_lease(&key) {
+            if let Err(error) = self.store.record_stale_result() {
+                return Err(CompletionError::new(
+                    error,
+                    ProcessorResult::from_parts(key, outcome),
+                ));
+            }
+            return Ok(CompletionOutcome::Stale);
+        }
+        if !self.store.current_pending(&key) {
+            if let Err(error) = self.store.settle_stale(&key) {
+                return Err(CompletionError::new(
+                    error,
+                    ProcessorResult::from_parts(key, outcome),
+                ));
+            }
+            return Ok(CompletionOutcome::Stale);
+        }
+        match request_document_state(document, &key) {
+            RequestDocumentState::Matching => {}
+            RequestDocumentState::NodeRemoved => {
+                if let Err(error) = self
+                    .store
+                    .remove_slot_for_stale_result(key.slot(), ArtifactReleaseReason::NodeRemoved)
+                {
+                    return Err(CompletionError::new(
+                        error,
+                        ProcessorResult::from_parts(key, outcome),
+                    ));
+                }
+                return Ok(CompletionOutcome::Stale);
+            }
+            RequestDocumentState::NodeChanged => {
+                if let Err(error) = self
+                    .store
+                    .remove_slot_for_stale_result(key.slot(), ArtifactReleaseReason::NodeChanged)
+                {
+                    return Err(CompletionError::new(
+                        error,
+                        ProcessorResult::from_parts(key, outcome),
+                    ));
+                }
+                return Ok(CompletionOutcome::Stale);
+            }
+            RequestDocumentState::EpochMismatch(received) => {
+                return Err(CompletionError::new(
+                    HostError::EpochMismatch {
+                        current: key.slot().epoch(),
+                        received,
+                    },
+                    ProcessorResult::from_parts(key, outcome),
+                ));
+            }
+        }
+
+        let plan = self.completion_plan(&outcome);
+        let reservation = match self.store.preflight_completion(
+            &key,
+            plan.change_kind(),
+            plan.retained_artifact_bytes(),
+        ) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                return Err(CompletionError::new(
+                    error,
+                    ProcessorResult::from_parts(key, outcome),
+                ));
+            }
+        };
+        match (outcome, plan) {
+            (Ok(artifact), CompletionPlan::Ready { .. }) => {
+                self.store.commit_artifact(reservation, key, artifact);
+            }
+            (_, CompletionPlan::ReplacementFailure(failure))
+            | (Err(failure), CompletionPlan::OriginalFailure { .. }) => {
+                self.store.commit_failure(reservation, key, failure);
+            }
+            (Ok(_), CompletionPlan::OriginalFailure { .. })
+            | (Err(_), CompletionPlan::Ready { .. }) => {
+                unreachable!("completion plan is derived from the processor outcome")
             }
         }
         Ok(CompletionOutcome::Applied)
@@ -259,7 +339,7 @@ impl ArtifactHost {
             });
         }
         self.store
-            .remove_node(epoch, node_id, ArtifactReleaseReason::NodeRemoved);
+            .remove_node(epoch, node_id, ArtifactReleaseReason::NodeRemoved)?;
         Ok(())
     }
 
@@ -280,21 +360,15 @@ impl ArtifactHost {
             Some(_) | None => self.begin_epoch(document_epoch)?,
         }
         if impact.full_replace {
-            self.store.clear(ArtifactReleaseReason::NodeChanged);
+            self.store.clear(ArtifactReleaseReason::NodeChanged)?;
             return Ok(());
         }
-        for node_id in &impact.removed_nodes {
-            self.store
-                .remove_node(document_epoch, *node_id, ArtifactReleaseReason::NodeRemoved);
-        }
-        for node_id in &impact.changed_nodes {
-            self.store
-                .remove_node(document_epoch, *node_id, ArtifactReleaseReason::NodeChanged);
-        }
+        self.store
+            .remove_nodes(document_epoch, &impact.removed_nodes, &impact.changed_nodes)?;
         Ok(())
     }
 
-    pub fn cancel(&mut self, key: &ProcessorRequestKey) -> bool {
+    pub fn cancel(&mut self, key: &ProcessorRequestKey) -> Result<bool, HostError> {
         self.store.cancel(key)
     }
 
@@ -312,6 +386,33 @@ impl ArtifactHost {
 
     pub fn metrics(&self) -> ProcessorMetrics {
         self.store.metrics()
+    }
+}
+
+enum CompletionPlan {
+    Ready { artifact_bytes: usize },
+    ReplacementFailure(ProcessorFailure),
+    OriginalFailure { code: ProcessorFailureCode },
+}
+
+impl CompletionPlan {
+    fn change_kind(&self) -> ArtifactChangeKind {
+        match self {
+            Self::Ready { artifact_bytes } => ArtifactChangeKind::Ready {
+                artifact_bytes: *artifact_bytes,
+            },
+            Self::ReplacementFailure(failure) => ArtifactChangeKind::Failed {
+                code: failure.code(),
+            },
+            Self::OriginalFailure { code } => ArtifactChangeKind::Failed { code: *code },
+        }
+    }
+
+    const fn retained_artifact_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Ready { artifact_bytes } => Some(*artifact_bytes),
+            Self::ReplacementFailure(_) | Self::OriginalFailure { .. } => None,
+        }
     }
 }
 
@@ -338,18 +439,6 @@ fn request_document_state(document: &Document, key: &ProcessorRequestKey) -> Req
         RequestDocumentState::Matching
     } else {
         RequestDocumentState::NodeChanged
-    }
-}
-
-fn check_limit(field: &'static str, limit: usize, actual: usize) -> Result<(), HostError> {
-    if actual > limit {
-        Err(HostError::LimitExceeded {
-            field,
-            limit,
-            actual,
-        })
-    } else {
-        Ok(())
     }
 }
 
@@ -397,7 +486,7 @@ mod tests {
 
     #[test]
     fn request_generation_exhaustion_preserves_host_state() {
-        let mut host = ArtifactHost::new(ProcessorLimits::default());
+        let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
         host.epoch = Some(Epoch::new(7));
         let range = SourceRange::new(SourceCursor::new(0), SourceCursor::new(0));
         let begin = || BeginRequest {
@@ -428,11 +517,20 @@ mod tests {
             .unwrap(),
         };
         let current = host.begin_prepared(Epoch::new(7), begin()).unwrap();
-        assert!(host.store.settle_lease(current.key()));
-        host.store.install_artifact(
-            current.key().clone(),
-            ProcessorArtifact::text("test.echo.result/1", "text/plain", "ready").unwrap(),
-        );
+        let artifact =
+            ProcessorArtifact::text("test.echo.result/1", "text/plain", "ready").unwrap();
+        let reservation = host
+            .store
+            .preflight_completion(
+                current.key(),
+                ArtifactChangeKind::Ready {
+                    artifact_bytes: artifact.byte_len(),
+                },
+                Some(artifact.byte_len()),
+            )
+            .unwrap();
+        host.store
+            .commit_artifact(reservation, current.key().clone(), artifact);
         host.take_changes();
         host.next_generation = u64::MAX;
         let before_state = host.state(current.key().slot()).unwrap().clone();

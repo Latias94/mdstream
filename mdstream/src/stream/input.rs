@@ -4,6 +4,10 @@ pub(crate) struct NewlineNormalizer {
 }
 
 impl NewlineNormalizer {
+    pub(crate) fn pending_bytes(self) -> usize {
+        usize::from(self.pending_cr)
+    }
+
     pub(crate) fn append(self, chunk: &str) -> (Self, String) {
         if chunk.is_empty() {
             return (self, String::new());

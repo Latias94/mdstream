@@ -1,6 +1,10 @@
-use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use mdstream::{MdStream, Options};
-use std::hint::black_box;
+use criterion::{
+    BatchSize, BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
+};
+use mdstream::{MdStream, Options, StreamEngine};
+use mdstream_conformance::CanonicalPendingScenario;
+use mdstream_protocol::{ApplyOutcome, Reducer};
+use std::{hint::black_box, time::Duration};
 
 const BASIC_MANY_BLOCKS: &str =
     include_str!("../tests/fixtures/streamdown_bench/basic_many_blocks_100.md");
@@ -110,6 +114,34 @@ fn run_borrowed(chunks: &[String]) -> usize {
     observed
 }
 
+fn run_engine_reducer_pending(source: &str) -> usize {
+    let mut engine = StreamEngine::new();
+    let mut reducer = Reducer::new();
+    let mut checksum = 0usize;
+
+    for (start, character) in source.char_indices() {
+        let end = start + character.len_utf8();
+        for change in engine.append(&source[start..end]).unwrap().into_changes() {
+            checksum = checksum
+                .wrapping_add(change.source().suffix.len())
+                .wrapping_add(change.operations().len());
+            assert!(matches!(
+                reducer.apply(change).unwrap(),
+                ApplyOutcome::Applied { .. } | ApplyOutcome::Recovered { .. }
+            ));
+        }
+    }
+
+    let document = reducer
+        .document()
+        .expect("non-empty pending benchmark input installs a document");
+    debug_assert_eq!(document.source(), source);
+    checksum
+        .wrapping_add(document.source().len())
+        .wrapping_add(document.roots().len())
+        .wrapping_add(engine.metrics().work.operations as usize)
+}
+
 fn streaming_benchmarks(c: &mut Criterion) {
     let scenarios = vec![
         ("many_blocks_whole", chunk_whole(BASIC_MANY_BLOCKS)),
@@ -167,5 +199,30 @@ fn streaming_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, streaming_benchmarks);
+fn canonical_pending_benchmarks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("stream_engine_reducer_pending");
+    group.sampling_mode(SamplingMode::Flat);
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(100));
+    group.measurement_time(Duration::from_secs(1));
+
+    for scenario in CanonicalPendingScenario::ALL {
+        let source = scenario.source();
+        let target_bytes = scenario.target_bytes();
+        group.throughput(Throughput::Bytes(target_bytes as u64));
+        group.bench_with_input(
+            BenchmarkId::new(scenario.shape().id(), format!("{}KiB", target_bytes / 1024)),
+            &source,
+            |b, source| {
+                b.iter(|| {
+                    black_box(run_engine_reducer_pending(black_box(source)));
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, streaming_benchmarks, canonical_pending_benchmarks);
 criterion_main!(benches);

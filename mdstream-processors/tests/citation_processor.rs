@@ -100,7 +100,7 @@ fn citation_processor_resolves_typed_context_through_the_artifact_host() {
     let document = reducer.document().unwrap();
     let canonical_before = document.snapshot();
     let processor = CitationProcessor::new();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     let request = host
@@ -138,7 +138,7 @@ fn citation_resource_refresh_and_cancellation_follow_host_freshness() {
     let document_b = reducer_b.document().unwrap();
     let processor = CitationProcessor::new();
     let configuration = ConfigurationVersion::new("bibliography.v1").unwrap();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
 
     let stale = host
@@ -193,7 +193,7 @@ fn citation_resource_refresh_and_cancellation_follow_host_freshness() {
         )
         .unwrap();
     let late_result = run_catching(&processor, &cancelled);
-    assert!(host.cancel(cancelled.key()));
+    assert!(host.cancel(cancelled.key()).unwrap());
     assert!(cancelled.is_cancelled());
     assert_eq!(
         host.complete(document_b, late_result).unwrap(),
@@ -207,7 +207,7 @@ fn unresolved_citation_is_a_structured_derived_failure() {
     let reducer = citation_document(false);
     let document = reducer.document().unwrap();
     let processor = CitationProcessor::new();
-    let mut host = ArtifactHost::new(ProcessorLimits::default());
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
     host.begin_epoch(Epoch::new(7)).unwrap();
     let request = host
         .begin(
