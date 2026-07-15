@@ -20,18 +20,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.85.0
 
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Test mdstream all features
-        run: cargo test -p mdstream --tests --all-features
+      - name: Test core protocol, processors, and engine
+        run: cargo nextest run -p mdstream-protocol -p mdstream-processors -p mdstream --all-features
 
       - name: Check mdstream examples
         run: cargo check -p mdstream --examples
+
+      - name: Replay frozen U7 calibration
+        run: scripts/calibrate-budgets.sh --check
 
   workspace-msrv:
     name: Workspace MSRV / Rust 1.88
@@ -51,6 +59,12 @@ jobs:
 
       - name: Test workspace all features
         run: cargo nextest run --workspace --all-features
+
+      - name: Verify frozen budget contracts
+        run: python3 scripts/verify-budgets.py --contracts
+
+      - name: Verify default dependency graph excludes Merman
+        run: python3 scripts/verify-budgets.py --negative-merman
 
       - name: Doc tests
         run: cargo test --workspace --all-features --doc
@@ -95,7 +109,7 @@ jobs:
         run: cargo check -p mdstream-tokio --examples
 
       - name: Check benchmarks
-        run: cargo check -p mdstream --benches
+        run: cargo check -p mdstream --benches --all-features
 
       - name: Check fuzz targets
         run: cargo check --manifest-path fuzz/Cargo.toml --bins

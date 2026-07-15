@@ -1,0 +1,62 @@
+{
+  "schema": "mdstream.budgets/1",
+  "kind": "streaming_calibration",
+  "provenance": {
+    "source_commit": "475c3b760a95d8845e7bbd9592f810e56c3a11a9",
+    "hot_path_clean": true,
+    "os": "macos",
+    "os_version": "Darwin 25.5.0",
+    "arch": "aarch64",
+    "cpu": "Apple M4 Pro",
+    "rustc": {
+      "release": "1.85.0",
+      "host": "aarch64-apple-darwin",
+      "commit_hash": "4d91de4e48198da2e33413efdcd9cd2cc0c46688"
+    },
+    "cargo_version": "cargo 1.85.0 (d73d2caf9 2024-12-31)",
+    "profile": "release",
+    "command": "scripts/calibrate-budgets.sh",
+    "fixture": {
+      "id": "streamdown-bench.mixed-content-realistic",
+      "path": "mdstream/tests/fixtures/streamdown_bench/mixed_content_realistic.md",
+      "sha256": "e8a7bcfd218ecc7b621db414ff3585210d5047565705a11d2d580590066a90b0",
+      "bytes": 682,
+      "schedule": "characters",
+      "chunks": 676
+    }
+  },
+  "legacy_0_3": {
+    "version": "0.3.0",
+    "input_bytes": 682,
+    "counts": {
+      "append_calls": 676,
+      "update_count": 677,
+      "committed_blocks_emitted": 13,
+      "pending_observations": 669,
+      "reset_count": 0,
+      "invalidated_block_ids": 0,
+      "observed_text_bytes": 33253,
+      "final_block_count": 13,
+      "retained_buffer_bytes": 682
+    }
+  },
+  "minimal_transport": {
+    "protocol_version": "0.4.0",
+    "input_bytes": 682,
+    "counts": {
+      "chunk_count": 676,
+      "change_count": 677,
+      "operation_count": 2,
+      "applied_changes": 677,
+      "operations_visited": 2,
+      "nodes_validated": 0,
+      "relationship_steps": 0,
+      "child_ids_copied": 0,
+      "snapshots_validated": 0
+    },
+    "wire": {
+      "encoded_change_bytes": 142015,
+      "encoded_snapshot_bytes": 1274
+    }
+  }
+}

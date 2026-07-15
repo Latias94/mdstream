@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mdstream.dev/schemas/budgets/1/budget.json",
+  "title": "mdstream resource budget contract",
+  "oneOf": [
+    { "$ref": "#/$defs/streamingBudget" },
+    { "$ref": "#/$defs/bindingBudgets" }
+  ],
+  "$defs": {
+    "nonNegativeInteger": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "rustToolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release", "host", "commit_hash"],
+      "properties": {
+        "release": {
+          "type": "string",
+          "pattern": "^1\\.85\\.[0-9]+$"
+        },
+        "host": { "type": "string", "minLength": 1 },
+        "commit_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "sha256", "bytes", "schedule", "chunks"],
+      "properties": {
+        "id": { "const": "streamdown-bench.mixed-content-realistic" },
+        "path": {
+          "const": "mdstream/tests/fixtures/streamdown_bench/mixed_content_realistic.md"
+        },
+        "sha256": {
+          "const": "e8a7bcfd218ecc7b621db414ff3585210d5047565705a11d2d580590066a90b0"
+        },
+        "bytes": { "const": 682 },
+        "schedule": { "const": "characters" },
+        "chunks": { "const": 676 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_commit",
+        "hot_path_clean",
+        "os",
+        "os_version",
+        "arch",
+        "cpu",
+        "rustc",
+        "cargo_version",
+        "profile",
+        "command",
+        "fixture"
+      ],
+      "properties": {
+        "source_commit": {
+          "const": "475c3b760a95d8845e7bbd9592f810e56c3a11a9"
+        },
+        "hot_path_clean": { "const": true },
+        "os": { "type": "string", "minLength": 1 },
+        "os_version": { "type": "string", "minLength": 1 },
+        "arch": { "type": "string", "minLength": 1 },
+        "cpu": { "type": "string", "minLength": 1 },
+        "rustc": { "$ref": "#/$defs/rustToolchain" },
+        "cargo_version": { "type": "string", "minLength": 1 },
+        "profile": { "const": "release" },
+        "command": { "const": "scripts/calibrate-budgets.sh" },
+        "fixture": { "$ref": "#/$defs/fixture" }
+      }
+    },
+    "legacyCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "append_calls",
+        "update_count",
+        "committed_blocks_emitted",
+        "pending_observations",
+        "reset_count",
+        "invalidated_block_ids",
+        "observed_text_bytes",
+        "final_block_count",
+        "retained_buffer_bytes"
+      ],
+      "properties": {
+        "append_calls": { "const": 676 },
+        "update_count": { "const": 677 },
+        "committed_blocks_emitted": { "const": 13 },
+        "pending_observations": { "const": 669 },
+        "reset_count": { "const": 0 },
+        "invalidated_block_ids": { "const": 0 },
+        "observed_text_bytes": { "const": 33253 },
+        "final_block_count": { "const": 13 },
+        "retained_buffer_bytes": { "const": 682 }
+      }
+    },
+    "legacyCalibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "input_bytes", "counts"],
+      "properties": {
+        "version": { "const": "0.3.0" },
+        "input_bytes": { "const": 682 },
+        "counts": { "$ref": "#/$defs/legacyCounts" }
+      }
+    },
+    "transportCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chunk_count",
+        "change_count",
+        "operation_count",
+        "applied_changes",
+        "operations_visited",
+        "nodes_validated",
+        "relationship_steps",
+        "child_ids_copied",
+        "snapshots_validated"
+      ],
+      "properties": {
+        "chunk_count": { "const": 676 },
+        "change_count": { "const": 677 },
+        "operation_count": { "const": 2 },
+        "applied_changes": { "const": 677 },
+        "operations_visited": { "const": 2 },
+        "nodes_validated": { "const": 0 },
+        "relationship_steps": { "const": 0 },
+        "child_ids_copied": { "const": 0 },
+        "snapshots_validated": { "const": 0 }
+      }
+    },
+    "wireMeasurements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encoded_change_bytes", "encoded_snapshot_bytes"],
+      "properties": {
+        "encoded_change_bytes": { "const": 142015 },
+        "encoded_snapshot_bytes": { "const": 1274 }
+      }
+    },
+    "minimalTransportCalibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "input_bytes", "counts", "wire"],
+      "properties": {
+        "protocol_version": { "const": "0.4.0" },
+        "input_bytes": { "const": 682 },
+        "counts": { "$ref": "#/$defs/transportCounts" },
+        "wire": { "$ref": "#/$defs/wireMeasurements" }
+      }
+    },
+    "streamingBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "provenance", "legacy_0_3", "minimal_transport"],
+      "properties": {
+        "schema": { "const": "mdstream.budgets/1" },
+        "kind": { "const": "streaming_calibration" },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "legacy_0_3": { "$ref": "#/$defs/legacyCalibration" },
+        "minimal_transport": { "$ref": "#/$defs/minimalTransportCalibration" }
+      }
+    },
+    "bindingPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ceiling_basis",
+        "relative_limits_are_advisory",
+        "default_artifacts_allow_merman",
+        "forbidden_default_dependencies"
+      ],
+      "properties": {
+        "ceiling_basis": { "const": "absolute_bytes" },
+        "relative_limits_are_advisory": { "const": true },
+        "default_artifacts_allow_merman": { "const": false },
+        "forbidden_default_dependencies": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "contains": { "const": "merman" },
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "artifactMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["measured_bytes", "artifact_sha256", "command"],
+      "properties": {
+        "measured_bytes": { "$ref": "#/$defs/nonNegativeInteger" },
+        "artifact_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "command": { "type": "string", "minLength": 1 }
+      }
+    },
+    "bindingArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact", "owner", "ceiling_bytes", "status", "measurement"],
+      "properties": {
+        "artifact": {
+          "enum": [
+            "wasm_raw",
+            "wasm_stripped",
+            "wasm_gzip",
+            "wasm_brotli",
+            "npm_packed",
+            "dart_packed",
+            "flutter_native_library",
+            "platform_package_increment"
+          ]
+        },
+        "owner": { "enum": ["U14", "U16", "U17"] },
+        "ceiling_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "status": { "enum": ["pending", "measured"] },
+        "measurement": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/artifactMeasurement" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "pending" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": { "measurement": { "type": "null" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "measured" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "measurement": { "$ref": "#/$defs/artifactMeasurement" }
+            }
+          }
+        }
+      ]
+    },
+    "frozenBindingArtifact": {
+      "allOf": [
+        { "$ref": "#/$defs/bindingArtifact" },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "artifact": { "const": "wasm_raw" },
+                "owner": { "const": "U14" },
+                "ceiling_bytes": { "const": 1572864 }
+              }
+            },
+            {
+              "properties": {
+                "artifact": { "const": "wasm_stripped" },
+                "owner": { "const": "U14" },
+                "ceiling_bytes": { "const": 1310720 }
+              }
+            },
+            {
+              "properties": {
+                "artifact": { "const": "wasm_gzip" },
+                "owner": { "const": "U14" },
+                "ceiling_bytes": { "const": 460800 }
+              }
+            },
+            {
+              "properties": {
+                "artifact": { "const": "wasm_brotli" },
+                "owner": { "const": "U14" },
+                "ceiling_bytes": { "const": 409600 }
+              }
+            },
+            {
+              "properties": {
+                "artifact": { "const": "npm_packed" },
+                "owner": { "const": "U14" },
+                "ceiling_bytes": { "const": 665600 }
+              }
+            },
+            {
+              "properties": {
+                "artifact": { "const": "dart_packed" },
+                "owner": { "const": "U16" },
+                "ceiling_bytes": { "const": 163840 }
+              }
+            },
+            {
+              "properties": {
+                "artifact": { "const": "flutter_native_library" },
+                "owner": { "const": "U17" },
+                "ceiling_bytes": { "const": 6291456 }
+              }
+            },
+            {
+              "properties": {
+                "artifact": { "const": "platform_package_increment" },
+                "owner": { "const": "U17" },
+                "ceiling_bytes": { "const": 8388608 }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "bindingBudgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "policy", "artifacts"],
+      "properties": {
+        "schema": { "const": "mdstream.budgets/1" },
+        "kind": { "const": "binding_artifact_ceilings" },
+        "policy": { "$ref": "#/$defs/bindingPolicy" },
+        "artifacts": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/frozenBindingArtifact" },
+          "allOf": [
+            {
+              "contains": {
+                "properties": { "artifact": { "const": "wasm_raw" } },
+                "required": ["artifact"]
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": { "artifact": { "const": "wasm_stripped" } },
+                "required": ["artifact"]
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": { "artifact": { "const": "wasm_gzip" } },
+                "required": ["artifact"]
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": { "artifact": { "const": "wasm_brotli" } },
+                "required": ["artifact"]
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": { "artifact": { "const": "npm_packed" } },
+                "required": ["artifact"]
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": { "artifact": { "const": "dart_packed" } },
+                "required": ["artifact"]
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "artifact": { "const": "flutter_native_library" }
+                },
+                "required": ["artifact"]
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "properties": {
+                  "artifact": { "const": "platform_package_increment" }
+                },
+                "required": ["artifact"]
+              },
+              "minContains": 1,
+              "maxContains": 1
+            }
+          ]
+        }
+      }
+    }
+  }
+}

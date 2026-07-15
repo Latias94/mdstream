@@ -1,0 +1,68 @@
+{
+  "schema": "mdstream.budgets/1",
+  "kind": "binding_artifact_ceilings",
+  "policy": {
+    "ceiling_basis": "absolute_bytes",
+    "relative_limits_are_advisory": true,
+    "default_artifacts_allow_merman": false,
+    "forbidden_default_dependencies": ["merman"]
+  },
+  "artifacts": [
+    {
+      "artifact": "wasm_raw",
+      "owner": "U14",
+      "ceiling_bytes": 1572864,
+      "status": "pending",
+      "measurement": null
+    },
+    {
+      "artifact": "wasm_stripped",
+      "owner": "U14",
+      "ceiling_bytes": 1310720,
+      "status": "pending",
+      "measurement": null
+    },
+    {
+      "artifact": "wasm_gzip",
+      "owner": "U14",
+      "ceiling_bytes": 460800,
+      "status": "pending",
+      "measurement": null
+    },
+    {
+      "artifact": "wasm_brotli",
+      "owner": "U14",
+      "ceiling_bytes": 409600,
+      "status": "pending",
+      "measurement": null
+    },
+    {
+      "artifact": "npm_packed",
+      "owner": "U14",
+      "ceiling_bytes": 665600,
+      "status": "pending",
+      "measurement": null
+    },
+    {
+      "artifact": "dart_packed",
+      "owner": "U16",
+      "ceiling_bytes": 163840,
+      "status": "pending",
+      "measurement": null
+    },
+    {
+      "artifact": "flutter_native_library",
+      "owner": "U17",
+      "ceiling_bytes": 6291456,
+      "status": "pending",
+      "measurement": null
+    },
+    {
+      "artifact": "platform_package_increment",
+      "owner": "U17",
+      "ceiling_bytes": 8388608,
+      "status": "pending",
+      "measurement": null
+    }
+  ]
+}

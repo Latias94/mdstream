@@ -8,11 +8,13 @@
 #![forbid(unsafe_code)]
 
 mod assertions;
+mod budget;
 mod chunks;
 mod fixture;
 mod trace;
 
 pub use assertions::*;
+pub use budget::*;
 pub use chunks::*;
 pub use fixture::*;
 pub use trace::*;
