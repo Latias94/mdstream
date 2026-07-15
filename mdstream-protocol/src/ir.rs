@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    io::{self, Write},
     sync::Arc,
 };
 
@@ -677,6 +678,50 @@ impl ContentNode {
         })
     }
 
+    /// Derives the version of the complete node-local input exposed to a
+    /// processor.
+    ///
+    /// In addition to the local projection and direct child structure, this
+    /// covers the canonical body bytes and the directly referenced semantic
+    /// resource. Descendant projections remain outside this node-local key.
+    pub fn processor_input_version_with_context(
+        &self,
+        body: &str,
+        resource: Option<&SemanticResource>,
+    ) -> ProcessorInputVersion {
+        #[derive(Serialize)]
+        struct ProcessorContext<'a> {
+            node: &'a ContentNode,
+            body: &'a str,
+            resource: Option<&'a SemanticResource>,
+        }
+
+        ProcessorInputVersion::digest_json(&ProcessorContext {
+            node: self,
+            body,
+            resource,
+        })
+    }
+
+    /// Returns deterministic logical bytes for the owned node-local processor
+    /// input, excluding the separately cached [`ProcessorInputVersion`].
+    ///
+    /// Node and resource bytes use their canonical JSON representation so all
+    /// variable-length metadata and direct child identities are charged. This
+    /// is a protocol-level budget measure, not allocator-retained memory.
+    pub fn checked_processor_input_byte_len_with_context(
+        &self,
+        body: &str,
+        resource: Option<&SemanticResource>,
+    ) -> Option<usize> {
+        canonical_json_byte_len(self)?
+            .checked_add(body.len())?
+            .checked_add(match resource {
+                Some(resource) => canonical_json_byte_len(resource)?,
+                None => 0,
+            })
+    }
+
     pub(crate) fn clone_shared(&self) -> Self {
         Self {
             id: self.id,
@@ -732,6 +777,28 @@ impl ContentNode {
         validate_child_arity(&self.content, self.children.children.len())?;
         Ok(metadata)
     }
+}
+
+fn canonical_json_byte_len<T: Serialize>(value: &T) -> Option<usize> {
+    struct ByteCounter(usize);
+
+    impl Write for ByteCounter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or_else(|| io::Error::other("canonical JSON byte count overflow"))?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, value).ok()?;
+    Some(counter.0)
 }
 
 pub(crate) fn validate_kind(

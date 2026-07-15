@@ -2,6 +2,7 @@
 members = [
     "mdstream",
     "mdstream-conformance",
+    "mdstream-processors",
     "mdstream-protocol",
     "mdstream-tokio",
 ]

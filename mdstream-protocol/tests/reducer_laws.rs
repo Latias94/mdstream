@@ -4824,6 +4824,61 @@ fn processor_input_version_includes_child_structure() {
 }
 
 #[test]
+fn processor_input_context_version_and_cost_include_body_and_resource() {
+    let node = leaf(
+        0,
+        NodeStability::Stable,
+        (0, 0),
+        ContentKind::CodeBlock {
+            syntax: mdstream_protocol::CodeBlockSyntax::Fenced {
+                marker: mdstream_protocol::CodeFenceMarker::Backtick,
+                length: 3,
+            },
+            info: Some("text".to_string()),
+            text: mdstream_protocol::SemanticText::Source {},
+        },
+    );
+    let resource = SemanticResource::new(
+        ResourceId::new(9),
+        SemanticResourceKind::Link {
+            destination: "https://example.test/resource".to_string(),
+            title: Some("Resource".to_string()),
+        },
+    );
+
+    assert_ne!(
+        node.processor_input_version_with_context("a", None),
+        node.processor_input_version_with_context("b", None)
+    );
+    assert_ne!(
+        node.processor_input_version_with_context("a", None),
+        node.processor_input_version_with_context("a", Some(&resource))
+    );
+    let mut mutated = node.clone();
+    let ContentKind::CodeBlock { info, .. } = &mut mutated.content else {
+        unreachable!()
+    };
+    *info = Some("mutated".to_string());
+    assert_eq!(node.version, mutated.version);
+    assert_ne!(
+        node.processor_input_version_with_context("a", None),
+        mutated.processor_input_version_with_context("a", None)
+    );
+    let base_bytes = node
+        .checked_processor_input_byte_len_with_context("", None)
+        .unwrap();
+    assert_eq!(
+        node.checked_processor_input_byte_len_with_context("abc", None),
+        Some(base_bytes + 3)
+    );
+    assert!(
+        node.checked_processor_input_byte_len_with_context("", Some(&resource))
+            .unwrap()
+            > base_bytes
+    );
+}
+
+#[test]
 fn normalized_semantic_text_counts_toward_metadata_limits() {
     let limits = ProtocolLimits {
         max_metadata_value_bytes: 3,
