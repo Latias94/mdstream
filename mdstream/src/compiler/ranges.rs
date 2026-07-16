@@ -84,14 +84,35 @@ pub(super) fn delimited_body(
     expected_length: Option<usize>,
 ) -> Result<Range<usize>, MarkdownError> {
     let raw = checked_slice(source, range.clone())?;
-    let opening = raw.bytes().take_while(|byte| *byte == marker).count();
-    let closing = raw.bytes().rev().take_while(|byte| *byte == marker).count();
-    let valid = opening > 0
-        && opening == closing
-        && expected_length.is_none_or(|expected| opening == expected)
-        && opening
-            .checked_add(closing)
-            .is_some_and(|delimiters| delimiters <= raw.len());
+    // An escaped body marker may be adjacent to a fixed-width closing delimiter.
+    let (opening, closing, valid) = if let Some(expected) = expected_length {
+        let bytes = raw.as_bytes();
+        let opening_matches = bytes
+            .get(..expected)
+            .is_some_and(|delimiters| delimiters.iter().all(|byte| *byte == marker));
+        let closing_matches = bytes
+            .len()
+            .checked_sub(expected)
+            .and_then(|start| bytes.get(start..))
+            .is_some_and(|delimiters| delimiters.iter().all(|byte| *byte == marker));
+        let fits = expected
+            .checked_mul(2)
+            .is_some_and(|delimiters| expected > 0 && delimiters <= bytes.len());
+        (
+            expected,
+            expected,
+            opening_matches && closing_matches && fits,
+        )
+    } else {
+        let opening = raw.bytes().take_while(|byte| *byte == marker).count();
+        let closing = raw.bytes().rev().take_while(|byte| *byte == marker).count();
+        let valid = opening > 0
+            && opening == closing
+            && opening
+                .checked_add(closing)
+                .is_some_and(|delimiters| delimiters <= raw.len());
+        (opening, closing, valid)
+    };
     if !valid {
         return Err(MarkdownError::InvalidDelimiterRange {
             marker: char::from(marker),

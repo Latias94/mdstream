@@ -27,7 +27,7 @@ pub(super) fn stable_root_prefix(
                 .count()
         });
     let stable_before_last = draft.roots.len() - 1;
-    if root_is_closed(
+    let mut stable_roots = if root_is_closed(
         draft
             .roots
             .last()
@@ -35,10 +35,26 @@ pub(super) fn stable_root_prefix(
         source,
         absolute_base,
     )? {
-        Ok(draft.roots.len().min(custom_stability_limit))
+        draft.roots.len()
     } else {
-        Ok(stable_before_last.min(custom_stability_limit))
+        stable_before_last
+    };
+    if table_can_absorb_incomplete_last_root(draft, source) {
+        stable_roots = stable_roots.min(draft.roots.len() - 2);
     }
+    Ok(stable_roots.min(custom_stability_limit))
+}
+
+fn table_can_absorb_incomplete_last_root(draft: &DraftForest, source: &str) -> bool {
+    if source.ends_with('\n') || draft.roots.len() < 2 {
+        return false;
+    }
+    // Pulldown temporarily emits an unfinished table row as a sibling paragraph.
+    let table = &draft.roots[draft.roots.len() - 2];
+    let trailing = &draft.roots[draft.roots.len() - 1];
+    matches!(&table.content, DraftContentKind::Table { .. })
+        && matches!(&trailing.content, DraftContentKind::Paragraph)
+        && table.source.end == trailing.source.start
 }
 
 fn root_is_closed(

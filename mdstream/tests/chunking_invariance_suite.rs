@@ -73,3 +73,15 @@ fn split_crlf_and_ambiguous_table_text_are_chunk_invariant() {
     );
     assert_invariant("ambiguous-table", "a# Heading\n|# Heading\n-->\n");
 }
+
+#[test]
+fn an_incomplete_line_after_a_table_remains_in_the_mutable_frontier() {
+    let source = "$$\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+    assert_eq!(
+        support::replay([
+            "$$\n| A | B |\n|---|---|\n|".to_string(),
+            " 1 | 2 |\n".to_string(),
+        ]),
+        support::replay(support::chunk_whole(source))
+    );
+}

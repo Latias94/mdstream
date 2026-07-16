@@ -1,4 +1,4 @@
-use mdstream_protocol::{LinkStyle, SemanticText, SourceCursor};
+use mdstream_protocol::{LinkStyle, SemanticText, SourceCursor, SourceRange};
 
 use crate::compiler::{DraftContentKind, DraftOriginHint, DraftResourceRole, SyntheticRole};
 
@@ -219,6 +219,39 @@ fn maps_math_footnotes_breaks_rules_and_images() {
             .iter()
             .any(|node| matches!(node.content, DraftContentKind::FootnoteDefinition { .. }))
     );
+}
+
+#[test]
+fn escaped_dollar_before_adjacent_delimiters_remains_compilable() {
+    for (source, display, source_range, body_range) in [
+        (r" $\$$", false, 1..5, 2..4),
+        (r" $$x\$$$", true, 1..8, 3..6),
+    ] {
+        let forest = compile_markdown(source, SourceCursor::new(0)).unwrap();
+        assert_eq!(forest.roots.len(), 1);
+        let math = &forest.roots[0].children[0];
+        assert_eq!(
+            math.source,
+            SourceRange::new(
+                SourceCursor::new(source_range.start),
+                SourceCursor::new(source_range.end)
+            )
+        );
+        assert_eq!(
+            math.body,
+            SourceRange::new(
+                SourceCursor::new(body_range.start),
+                SourceCursor::new(body_range.end)
+            )
+        );
+        assert!(matches!(
+            math.content,
+            DraftContentKind::Math {
+                display: actual,
+                text: SemanticText::Source {}
+            } if actual == display
+        ));
+    }
 }
 
 #[test]
