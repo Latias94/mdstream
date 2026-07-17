@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use mdstream_processors::{
     ArtifactChange, ArtifactChangeKind, CompletionOutcome, ProcessorArtifact, ProcessorFailure,
-    ProcessorFailureCode, ProcessorRequest, ProcessorRequestKey, ProcessorSlotState,
+    ProcessorRequest, ProcessorRequestKey, ProcessorSlotState,
 };
 use mdstream_protocol::{
     ApplyOutcome, ChangeImpact, ChildList, ContentNode, Coordinate, Document, DocumentLifecycle,
@@ -567,7 +567,7 @@ impl From<&ArtifactChangeKind> for ArtifactChangeKindView {
                 artifact_bytes: artifact_bytes.to_string(),
             },
             ArtifactChangeKind::Failed { code } => Self::Failed {
-                code: failure_code(*code),
+                code: code.as_str(),
             },
             ArtifactChangeKind::Removed {
                 reason,
@@ -651,21 +651,8 @@ struct FailureView<'a> {
 impl<'a> From<&'a ProcessorFailure> for FailureView<'a> {
     fn from(failure: &'a ProcessorFailure) -> Self {
         Self {
-            code: failure_code(failure.code()),
+            code: failure.code().as_str(),
             message: failure.message(),
         }
-    }
-}
-
-pub(crate) const fn failure_code(code: ProcessorFailureCode) -> &'static str {
-    match code {
-        ProcessorFailureCode::Processor => "processor",
-        ProcessorFailureCode::Panic => "panic",
-        ProcessorFailureCode::InvalidRequest => "invalid_request",
-        ProcessorFailureCode::Cancelled => "cancelled",
-        ProcessorFailureCode::UnsupportedContent => "unsupported_content",
-        ProcessorFailureCode::UnresolvedContext => "unresolved_context",
-        ProcessorFailureCode::InvalidContext => "invalid_context",
-        ProcessorFailureCode::ResourceLimit => "resource_limit",
     }
 }

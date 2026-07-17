@@ -132,31 +132,19 @@ impl MdstreamEngineSession {
     }
 
     pub fn append(&mut self, chunk: &str) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .append(chunk.as_bytes())
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.append(chunk.as_bytes()))
     }
 
     pub fn finish(&mut self) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .finish()
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.finish())
     }
 
     pub fn reset(&mut self) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .reset()
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.reset())
     }
 
     pub fn snapshot(&mut self) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .snapshot()
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.snapshot())
     }
 
     pub fn metrics(&self) -> Vec<u8> {
@@ -181,41 +169,29 @@ impl MdstreamReducerSession {
 
     #[wasm_bindgen(js_name = applyChange)]
     pub fn apply_change(&mut self, change_json: &[u8]) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .apply_change(change_json)
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.apply_change(change_json))
     }
 
     #[wasm_bindgen(js_name = recoverSnapshot)]
     pub fn recover_snapshot(&mut self, snapshot_json: &[u8]) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .recover_snapshot(snapshot_json)
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.recover_snapshot(snapshot_json))
     }
 
     pub fn snapshot(&mut self) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .snapshot()
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.snapshot())
     }
 
     #[wasm_bindgen(js_name = nodeView)]
     pub fn node_view(&mut self, node_id: &str) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .node_view(parse_decimal_id(node_id, "node_id")?)
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.node_view(parse_decimal_id(node_id, "node_id")?))
     }
 
     #[wasm_bindgen(js_name = resourceView)]
     pub fn resource_view(&mut self, resource_id: &str) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .resource_view(parse_decimal_id(resource_id, "resource_id")?)
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(
+            self.inner
+                .resource_view(parse_decimal_id(resource_id, "resource_id")?),
+        )
     }
 
     #[wasm_bindgen(js_name = beginProcessor)]
@@ -228,17 +204,14 @@ impl MdstreamReducerSession {
         accepts_provisional: bool,
         allow_provisional: bool,
     ) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .begin_processor(
-                parse_decimal_id(node_id, "node_id")?,
-                processor_id.to_string(),
-                processor_version.to_string(),
-                configuration_version.to_string(),
-                accepts_provisional,
-                allow_provisional,
-            )
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.begin_processor(
+            parse_decimal_id(node_id, "node_id")?,
+            processor_id.to_string(),
+            processor_version.to_string(),
+            configuration_version.to_string(),
+            accepts_provisional,
+            allow_provisional,
+        ))
     }
 
     #[wasm_bindgen(js_name = artifactView)]
@@ -248,14 +221,11 @@ impl MdstreamReducerSession {
         node_id: &str,
         processor_id: &str,
     ) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .artifact_view_for(
-                parse_decimal_id(epoch, "epoch")?,
-                parse_decimal_id(node_id, "node_id")?,
-                processor_id.to_string(),
-            )
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.artifact_view_for(
+            parse_decimal_id(epoch, "epoch")?,
+            parse_decimal_id(node_id, "node_id")?,
+            processor_id.to_string(),
+        ))
     }
 
     #[wasm_bindgen(js_name = completeProcessorText)]
@@ -266,15 +236,12 @@ impl MdstreamReducerSession {
         media_type: &str,
         text: &str,
     ) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .complete_processor_text(
-                parse_request_generation(request_id)?,
-                protocol.to_string(),
-                media_type.to_string(),
-                text.to_string(),
-            )
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.complete_processor_text(
+            parse_request_generation(request_id)?,
+            protocol.to_string(),
+            media_type.to_string(),
+            text.to_string(),
+        ))
     }
 
     #[wasm_bindgen(js_name = completeProcessorBinary)]
@@ -285,15 +252,12 @@ impl MdstreamReducerSession {
         media_type: &str,
         bytes: Vec<u8>,
     ) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .complete_processor_binary(
-                parse_request_generation(request_id)?,
-                protocol.to_string(),
-                media_type.to_string(),
-                bytes,
-            )
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.complete_processor_binary(
+            parse_request_generation(request_id)?,
+            protocol.to_string(),
+            media_type.to_string(),
+            bytes,
+        ))
     }
 
     #[wasm_bindgen(js_name = failProcessor)]
@@ -303,22 +267,19 @@ impl MdstreamReducerSession {
         code: &str,
         message: &str,
     ) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .fail_processor(
-                parse_request_generation(request_id)?,
-                parse_processor_failure_code(code)?,
-                message.to_string(),
-            )
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(self.inner.fail_processor(
+            parse_request_generation(request_id)?,
+            parse_processor_failure_code(code)?,
+            message.to_string(),
+        ))
     }
 
     #[wasm_bindgen(js_name = cancelProcessor)]
     pub fn cancel_processor(&mut self, request_id: &str) -> Result<MdstreamOutput, JsValue> {
-        self.inner
-            .cancel_processor(parse_request_generation(request_id)?)
-            .map(MdstreamOutput::from)
-            .map_err(binding_error_to_js)
+        binding_output(
+            self.inner
+                .cancel_processor(parse_request_generation(request_id)?),
+        )
     }
 
     pub fn status(&self) -> String {
@@ -437,24 +398,19 @@ where
 }
 
 fn parse_processor_failure_code(value: &str) -> Result<ProcessorFailureCode, JsValue> {
-    let code = match value {
-        "processor" => ProcessorFailureCode::Processor,
-        "panic" => ProcessorFailureCode::Panic,
-        "invalid_request" => ProcessorFailureCode::InvalidRequest,
-        "cancelled" => ProcessorFailureCode::Cancelled,
-        "unsupported_content" => ProcessorFailureCode::UnsupportedContent,
-        "unresolved_context" => ProcessorFailureCode::UnresolvedContext,
-        "invalid_context" => ProcessorFailureCode::InvalidContext,
-        "resource_limit" => ProcessorFailureCode::ResourceLimit,
-        _ => {
-            return Err(binding_error_to_js(BindingError::new(
-                BindingStatus::InvalidArgument,
-                "bindings.processor_failure_code",
-                format!("unsupported processor failure code {value:?}"),
-            )));
-        }
-    };
-    Ok(code)
+    value.parse().map_err(|_| {
+        binding_error_to_js(BindingError::new(
+            BindingStatus::InvalidArgument,
+            "bindings.processor_failure_code",
+            format!("unsupported processor failure code {value:?}"),
+        ))
+    })
+}
+
+fn binding_output(output: Result<BindingOutput, BindingError>) -> Result<MdstreamOutput, JsValue> {
+    output
+        .map(MdstreamOutput::from)
+        .map_err(binding_error_to_js)
 }
 
 fn binding_error_to_js(error: BindingError) -> JsValue {

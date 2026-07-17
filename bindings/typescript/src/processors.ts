@@ -3,6 +3,7 @@ import {
   type InternalStoreEvents,
 } from "./store.js";
 import {
+  isProcessorFailureCode,
   MdstreamError,
   type ContentNodeView,
   type NodeId,
@@ -441,7 +442,10 @@ function normalizeOutput(value: unknown): ProcessorOutput {
       }
       break;
     case "failure":
-      if (isFailureCode(output.code) && typeof output.message === "string") {
+      if (
+        isProcessorFailureCode(output.code) &&
+        typeof output.message === "string"
+      ) {
         return { kind: "failure", code: output.code, message: output.message };
       }
       break;
@@ -451,19 +455,6 @@ function normalizeOutput(value: unknown): ProcessorOutput {
 
 function invalidProcessorOutput(message: string): ProcessorOutput {
   return { kind: "failure", code: "invalid_request", message };
-}
-
-function isFailureCode(value: unknown): value is ProcessorFailureCode {
-  return (
-    value === "processor" ||
-    value === "panic" ||
-    value === "invalid_request" ||
-    value === "cancelled" ||
-    value === "unsupported_content" ||
-    value === "unresolved_context" ||
-    value === "invalid_context" ||
-    value === "resource_limit"
-  );
 }
 
 function processorErrorMessage(error: unknown): string {

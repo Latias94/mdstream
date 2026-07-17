@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use mdstream_processors::ProcessingPolicy;
+use mdstream_processors::{ProcessingPolicy, ProcessorFailureCode};
 use mdstream_protocol::DecimalIdError;
 use serde::{
     Deserialize, Deserializer,
@@ -389,22 +389,20 @@ pub(crate) enum ProcessorCompletion {
         bytes: Vec<u8>,
     },
     Failure {
-        code: ProcessorFailureCodeWire,
+        #[serde(deserialize_with = "deserialize_processor_failure_code")]
+        code: ProcessorFailureCode,
         message: String,
     },
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ProcessorFailureCodeWire {
-    Processor,
-    Panic,
-    InvalidRequest,
-    Cancelled,
-    UnsupportedContent,
-    UnresolvedContext,
-    InvalidContext,
-    ResourceLimit,
+fn deserialize_processor_failure_code<'de, D>(
+    deserializer: D,
+) -> Result<ProcessorFailureCode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    value.parse().map_err(de::Error::custom)
 }
 
 pub(crate) fn decode_engine_command(

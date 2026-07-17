@@ -1,16 +1,16 @@
 #![cfg(target_arch = "wasm32")]
 
+use mdstream_conformance::{Fixture, NormalizedSnapshot};
 use mdstream_protocol::{
     ApplyOutcome, ChangeId, ChangeSet, ChildList, ChildListOwner, ContentKind, ContentNode,
     DocumentLifecycle, Epoch, NodeId, NodeStability, ProjectionOp, ProtocolLimits, Reducer,
-    Snapshot, SourceCursor, SourceDelta, SourceRange, decode_snapshot_json, encode_change_json,
+    SourceCursor, SourceDelta, SourceRange, decode_snapshot_json, encode_change_json,
     encode_snapshot_json,
 };
 use mdstream_wasm::{
     MdstreamEngineSession, MdstreamOutput, MdstreamPayloadKind, MdstreamReducerSession,
     abi_version, binding_options_schema, binding_schema, package_version,
 };
-use serde::Deserialize;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
 
@@ -98,42 +98,13 @@ fn artifact_view(reducer: &mut MdstreamReducerSession, processor_id: &str) -> Md
     reducer.artifact_view("1", "1", processor_id).unwrap()
 }
 
-#[derive(Deserialize)]
-struct GoldenFixture {
-    traces: Vec<GoldenTrace>,
-    expected: GoldenExpected,
-}
-
-#[derive(Deserialize)]
-struct GoldenTrace {
-    id: String,
-    changes: Vec<ChangeSet>,
-}
-
-#[derive(Deserialize)]
-struct GoldenExpected {
-    normalized_snapshot: serde_json::Value,
-}
-
-fn linear_fixture() -> GoldenFixture {
-    serde_json::from_str(include_str!(
+fn linear_fixture() -> Fixture {
+    let fixture: Fixture = serde_json::from_str(include_str!(
         "../../conformance/fixtures/protocol-linear-source.json"
     ))
-    .unwrap()
-}
-
-fn normalized_snapshot(snapshot: &Snapshot) -> serde_json::Value {
-    serde_json::json!({
-        "schema": snapshot.schema(),
-        "maturity": snapshot.maturity(),
-        "epoch": snapshot.coordinate().epoch,
-        "lifecycle": snapshot.lifecycle(),
-        "source": snapshot.source(),
-        "projection_cursor": snapshot.projection_cursor(),
-        "roots": snapshot.roots(),
-        "nodes": snapshot.nodes(),
-        "resources": snapshot.resources(),
-    })
+    .unwrap();
+    fixture.validate().unwrap();
+    fixture
 }
 
 #[wasm_bindgen_test]
@@ -213,8 +184,8 @@ fn shared_golden_replays_through_the_wasm_reducer() {
         )
         .unwrap();
         assert_eq!(
-            normalized_snapshot(&snapshot),
-            fixture.expected.normalized_snapshot,
+            NormalizedSnapshot::from(&snapshot),
+            fixture.expected.normalized_snapshot.clone().unwrap(),
             "trace {} diverged",
             trace.id
         );
@@ -274,8 +245,8 @@ fn reducer_retry_fork_gap_and_explicit_recovery_match_native_state() {
     )
     .unwrap();
     assert_eq!(
-        normalized_snapshot(&final_snapshot),
-        fixture.expected.normalized_snapshot
+        NormalizedSnapshot::from(&final_snapshot),
+        fixture.expected.normalized_snapshot.clone().unwrap()
     );
 
     let mut forked = MdstreamReducerSession::new(None).unwrap();

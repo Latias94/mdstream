@@ -32,6 +32,7 @@ export {
   type BindingMetricsView,
   type ExternalStore,
   type MdstreamStore,
+  type MdstreamStoreView,
   type ProcessorMetricsView,
   type ReducerResult,
   type StoreListener,

@@ -1,4 +1,9 @@
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::{
+    error::Error,
+    fmt,
+    panic::{AssertUnwindSafe, catch_unwind},
+    str::FromStr,
+};
 
 use crate::{
     CitationArtifact, ContentProcessor, IdentifierError, ProcessorRequest, ProcessorRequestKey,
@@ -18,6 +23,50 @@ pub enum ProcessorFailureCode {
     InvalidContext,
     ResourceLimit,
 }
+
+impl ProcessorFailureCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Processor => "processor",
+            Self::Panic => "panic",
+            Self::InvalidRequest => "invalid_request",
+            Self::Cancelled => "cancelled",
+            Self::UnsupportedContent => "unsupported_content",
+            Self::UnresolvedContext => "unresolved_context",
+            Self::InvalidContext => "invalid_context",
+            Self::ResourceLimit => "resource_limit",
+        }
+    }
+}
+
+impl FromStr for ProcessorFailureCode {
+    type Err = ParseProcessorFailureCodeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "processor" => Ok(Self::Processor),
+            "panic" => Ok(Self::Panic),
+            "invalid_request" => Ok(Self::InvalidRequest),
+            "cancelled" => Ok(Self::Cancelled),
+            "unsupported_content" => Ok(Self::UnsupportedContent),
+            "unresolved_context" => Ok(Self::UnresolvedContext),
+            "invalid_context" => Ok(Self::InvalidContext),
+            "resource_limit" => Ok(Self::ResourceLimit),
+            _ => Err(ParseProcessorFailureCodeError),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseProcessorFailureCodeError;
+
+impl fmt::Display for ParseProcessorFailureCodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("unknown processor failure code")
+    }
+}
+
+impl Error for ParseProcessorFailureCodeError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessorFailure {
@@ -330,11 +379,28 @@ impl ProcessorSlotState {
 
 #[cfg(test)]
 mod tests {
-    use super::checked_artifact_len;
+    use super::{ProcessorFailureCode, checked_artifact_len};
 
     #[test]
     fn artifact_cost_reports_integer_overflow() {
         assert_eq!(checked_artifact_len(usize::MAX, 1, 0), None);
         assert_eq!(checked_artifact_len(1, 2, 3), Some(6));
+    }
+
+    #[test]
+    fn failure_codes_round_trip_their_wire_names() {
+        for code in [
+            ProcessorFailureCode::Processor,
+            ProcessorFailureCode::Panic,
+            ProcessorFailureCode::InvalidRequest,
+            ProcessorFailureCode::Cancelled,
+            ProcessorFailureCode::UnsupportedContent,
+            ProcessorFailureCode::UnresolvedContext,
+            ProcessorFailureCode::InvalidContext,
+            ProcessorFailureCode::ResourceLimit,
+        ] {
+            assert_eq!(code.as_str().parse(), Ok(code));
+        }
+        assert!("other".parse::<ProcessorFailureCode>().is_err());
     }
 }

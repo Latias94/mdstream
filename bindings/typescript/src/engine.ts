@@ -5,10 +5,12 @@ import {
   type ProcessorRegistration,
 } from "./processors.js";
 import {
+  createStoreView,
   readBindingMetrics,
   RustBackedStore,
   type BindingMetricsView,
   type MdstreamStore,
+  type MdstreamStoreView,
   type ReducerResult,
 } from "./store.js";
 import {
@@ -26,10 +28,11 @@ import {
   loadWasmBindings,
   type WasmBindings,
   type WasmEngineSession,
+  type WasmModuleLoader,
   type WasmOutput,
 } from "./wasm.js";
 
-export type WasmModuleLoader = () => unknown | Promise<unknown>;
+export type { WasmModuleLoader } from "./wasm.js";
 
 export type DecimalInput = string | bigint;
 
@@ -119,30 +122,19 @@ export interface BatchMetrics {
   readonly wasmAppendCalls: DecimalCounter;
 }
 
-let defaultRuntime: Promise<MdstreamRuntime> | undefined;
-const customRuntimes = new WeakMap<WasmModuleLoader, Promise<MdstreamRuntime>>();
+const runtimes = new WeakMap<WasmModuleLoader, Promise<MdstreamRuntime>>();
 
 export async function initMdstream(
   options: InitMdstreamOptions = {},
 ): Promise<MdstreamRuntime> {
   const loader = options.loader ?? defaultWasmLoader;
-  if (loader === defaultWasmLoader) {
-    if (defaultRuntime === undefined) {
-      defaultRuntime = createRuntime(loader).catch((error: unknown) => {
-        defaultRuntime = undefined;
-        throw error;
-      });
-    }
-    return defaultRuntime;
-  }
-
-  let runtime = customRuntimes.get(loader);
+  let runtime = runtimes.get(loader);
   if (runtime === undefined) {
     runtime = createRuntime(loader).catch((error: unknown) => {
-      customRuntimes.delete(loader);
+      runtimes.delete(loader);
       throw error;
     });
-    customRuntimes.set(loader, runtime);
+    runtimes.set(loader, runtime);
   }
   return runtime;
 }
@@ -201,7 +193,7 @@ export class MdstreamRuntime {
 }
 
 export class MdstreamEngine {
-  readonly store: MdstreamStore;
+  readonly store: MdstreamStoreView;
   readonly #engine: WasmEngineSession;
   readonly #rustStore: RustBackedStore;
   readonly #scheduler: ProcessorScheduler;
@@ -210,7 +202,7 @@ export class MdstreamEngine {
   private constructor(engine: WasmEngineSession, store: RustBackedStore) {
     this.#engine = engine;
     this.#rustStore = store;
-    this.store = store;
+    this.store = createStoreView(store);
     this.#scheduler = new ProcessorScheduler(store);
     store.setEventSink((events) => this.#scheduler.handleStoreEvents(events));
   }
@@ -349,7 +341,6 @@ export class LosslessInputBatcher {
   #joinCopyBytes = 0n;
   #outputPayloadBytes = 0n;
   #batchCount = 0n;
-  #wasmAppendCalls = 0n;
 
   constructor(engine: MdstreamEngine, maxBatchBytes: number) {
     if (!Number.isSafeInteger(maxBatchBytes) || maxBatchBytes <= 0) {
@@ -384,13 +375,13 @@ export class LosslessInputBatcher {
     if (this.#chunks.length === 0) {
       return undefined;
     }
-    const chunks = [...this.#chunks];
     const bytes = this.#pendingBytes;
-    const joined = chunks.length === 1 ? chunks[0] : chunks.join("");
+    const joined =
+      this.#chunks.length === 1 ? this.#chunks[0] : this.#chunks.join("");
     if (joined === undefined) {
       return undefined;
     }
-    if (chunks.length > 1) {
+    if (this.#chunks.length > 1) {
       this.#joinCopyBytes += BigInt(bytes);
     }
     const result = this.#engine.append(joined);
@@ -433,7 +424,7 @@ export class LosslessInputBatcher {
       joinCopyBytes: counter(this.#joinCopyBytes),
       outputPayloadBytes: counter(this.#outputPayloadBytes),
       batchCount: counter(this.#batchCount),
-      wasmAppendCalls: counter(this.#wasmAppendCalls),
+      wasmAppendCalls: counter(this.#batchCount),
     };
   }
 
@@ -446,7 +437,6 @@ export class LosslessInputBatcher {
     this.#forwardedBytes += BigInt(bytes);
     this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
     this.#batchCount += 1n;
-    this.#wasmAppendCalls += 1n;
   }
 }
 

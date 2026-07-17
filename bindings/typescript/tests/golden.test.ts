@@ -62,6 +62,21 @@ describe("Rust/WASM/TypeScript structural goldens", () => {
     engine.close();
   });
 
+  it("exposes an engine-owned read-only store facade", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine();
+    const store = engine.store as unknown as Record<string, unknown>;
+
+    expect("applyChange" in store).toBe(false);
+    expect("recoverSnapshot" in store).toBe(false);
+    expect("createRecoverySnapshot" in store).toBe(false);
+    expect("close" in store).toBe(false);
+
+    engine.append("# Engine-owned state");
+    expect(engine.store.getSnapshot().status.kind).toBe("ready");
+    engine.close();
+  });
+
   it("accepts bigint limits, rejects JavaScript numbers, and retries failed loaders", async () => {
     const runtime = await initMdstream({ loader: nodeWasmLoader });
     const engine = runtime.createEngine({

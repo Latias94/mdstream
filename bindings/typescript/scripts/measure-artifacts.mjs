@@ -60,16 +60,36 @@ run(
 );
 const packed = await readFile(packPath);
 
-const dependencyTree = run("cargo", ["tree", "-p", "mdstream-wasm", "--prefix", "none"], {
-  cwd: workspaceRoot,
-}).stdout.toLowerCase();
-for (const forbidden of ["merman", "react", "streamdown", "incremark"]) {
-  if (dependencyTree.includes(forbidden)) {
+const budgets = JSON.parse(await readFile(budgetsPath, "utf8"));
+const cargoMetadata = JSON.parse(
+  run(
+    "cargo",
+    [
+      "metadata",
+      "--format-version",
+      "1",
+      "--locked",
+      "--filter-platform",
+      "wasm32-unknown-unknown",
+    ],
+    { cwd: workspaceRoot },
+  ).stdout,
+);
+const npmManifest = JSON.parse(
+  await readFile(resolve(packageRoot, "package.json"), "utf8"),
+);
+const defaultDependencies = new Set([
+  ...cargoDependencyNames(cargoMetadata, "mdstream-wasm"),
+  ...Object.keys(npmManifest.dependencies ?? {}),
+  ...Object.keys(npmManifest.optionalDependencies ?? {}),
+  ...Object.keys(npmManifest.peerDependencies ?? {}),
+].map((dependency) => dependency.toLowerCase()));
+for (const forbidden of budgets.policy.forbidden_default_dependencies) {
+  if (defaultDependencies.has(forbidden.toLowerCase())) {
     throw new Error(`default WASM dependency tree contains forbidden dependency ${forbidden}`);
   }
 }
 
-const budgets = JSON.parse(await readFile(budgetsPath, "utf8"));
 const measurements = new Map([
   ["wasm_raw", artifact(raw)],
   ["wasm_stripped", artifact(stripped)],
@@ -151,12 +171,50 @@ function artifact(bytes) {
   };
 }
 
+function cargoDependencyNames(metadata, rootName) {
+  const root = metadata.packages.find((entry) => entry.name === rootName);
+  if (root === undefined || metadata.resolve === null) {
+    throw new Error(`cargo metadata omitted ${rootName}'s resolved dependency graph`);
+  }
+  const packages = new Map(metadata.packages.map((entry) => [entry.id, entry.name]));
+  const nodes = new Map(metadata.resolve.nodes.map((entry) => [entry.id, entry]));
+  const names = new Set();
+  const visited = new Set([root.id]);
+  const pending = [root.id];
+  while (pending.length > 0) {
+    const id = pending.pop();
+    const node = nodes.get(id);
+    if (node === undefined) {
+      throw new Error(`cargo metadata omitted resolve node ${id}`);
+    }
+    for (const dependency of node.deps) {
+      if (dependency.dep_kinds.every(({ kind }) => kind === "dev")) {
+        continue;
+      }
+      const name = packages.get(dependency.pkg);
+      if (name === undefined) {
+        throw new Error(`cargo metadata omitted dependency package ${dependency.pkg}`);
+      }
+      names.add(name);
+      if (!visited.has(dependency.pkg)) {
+        visited.add(dependency.pkg);
+        pending.push(dependency.pkg);
+      }
+    }
+  }
+  return names;
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? workspaceRoot,
     env: options.env ?? process.env,
     encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
   });
+  if (result.error !== undefined) {
+    throw result.error;
+  }
   if (result.status !== 0) {
     throw new Error(
       `${command} ${args.join(" ")} failed:\n${result.stderr || result.stdout}`,

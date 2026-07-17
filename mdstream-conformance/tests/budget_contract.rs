@@ -109,6 +109,25 @@ fn budget_contract_rejects_default_merman_artifacts() {
 }
 
 #[test]
+fn binding_budget_requires_every_forbidden_default_dependency() {
+    let root = repository_root();
+    let value = read_json(root.join("bindings/budgets.json"));
+
+    for dependency in ["merman", "react", "streamdown", "incremark"] {
+        let mut mutated = value.clone();
+        mutated["policy"]["forbidden_default_dependencies"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|entry| entry.as_str() != Some(dependency));
+        let contract: BindingBudgets = serde_json::from_value(mutated).unwrap();
+        assert!(
+            contract.validate().is_err(),
+            "contract accepted a policy without {dependency}"
+        );
+    }
+}
+
+#[test]
 fn budget_contract_rejects_a_missing_absolute_artifact_ceiling() {
     let root = repository_root();
     let schema = read_json(root.join("conformance/schemas/budget.schema.json"));

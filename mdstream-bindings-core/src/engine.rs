@@ -18,9 +18,8 @@ use mdstream_protocol::{
 use crate::{
     BindingError, BindingMetrics, BindingOutput, BindingPayloadKind, BindingStatus,
     commands::{
-        EngineCommand, ProcessorCompletion, ProcessorFailureCodeWire, ReducerCommand,
-        decode_engine_command, decode_processor_completion, decode_reducer_command,
-        parse_decimal_id, processing_policy,
+        EngineCommand, ProcessorCompletion, ReducerCommand, decode_engine_command,
+        decode_processor_completion, decode_reducer_command, parse_decimal_id, processing_policy,
     },
     errors::{check_size, engine_error, host_error, identifier_error, protocol_error},
     options::{BindingOptions, WireLimits},
@@ -425,13 +424,7 @@ impl ReducerSession {
         code: ProcessorFailureCode,
         message: String,
     ) -> Result<BindingOutput, BindingError> {
-        self.complete_foreign_processor(
-            request_id,
-            ProcessorCompletion::Failure {
-                code: processor_failure_code_wire(code),
-                message,
-            },
-        )
+        self.complete_foreign_processor(request_id, ProcessorCompletion::Failure { code, message })
     }
 
     pub fn cancel_processor(
@@ -619,10 +612,9 @@ impl ReducerSession {
                 key,
                 ProcessorArtifact::binary(protocol, media_type, bytes).map_err(identifier_error)?,
             ),
-            ProcessorCompletion::Failure { code, message } => ProcessorResult::failure(
-                key,
-                ProcessorFailure::new(processor_failure_code(code), message),
-            ),
+            ProcessorCompletion::Failure { code, message } => {
+                ProcessorResult::failure(key, ProcessorFailure::new(code, message))
+            }
         };
         let document = self.reducer.document().ok_or_else(|| {
             BindingError::new(
@@ -731,31 +723,5 @@ impl ReducerSession {
     fn sync_pending_request_metric(&mut self) {
         self.metrics.pending_processor_requests =
             u64::try_from(self.pending_requests.len()).unwrap_or(u64::MAX);
-    }
-}
-
-const fn processor_failure_code(code: ProcessorFailureCodeWire) -> ProcessorFailureCode {
-    match code {
-        ProcessorFailureCodeWire::Processor => ProcessorFailureCode::Processor,
-        ProcessorFailureCodeWire::Panic => ProcessorFailureCode::Panic,
-        ProcessorFailureCodeWire::InvalidRequest => ProcessorFailureCode::InvalidRequest,
-        ProcessorFailureCodeWire::Cancelled => ProcessorFailureCode::Cancelled,
-        ProcessorFailureCodeWire::UnsupportedContent => ProcessorFailureCode::UnsupportedContent,
-        ProcessorFailureCodeWire::UnresolvedContext => ProcessorFailureCode::UnresolvedContext,
-        ProcessorFailureCodeWire::InvalidContext => ProcessorFailureCode::InvalidContext,
-        ProcessorFailureCodeWire::ResourceLimit => ProcessorFailureCode::ResourceLimit,
-    }
-}
-
-const fn processor_failure_code_wire(code: ProcessorFailureCode) -> ProcessorFailureCodeWire {
-    match code {
-        ProcessorFailureCode::Processor => ProcessorFailureCodeWire::Processor,
-        ProcessorFailureCode::Panic => ProcessorFailureCodeWire::Panic,
-        ProcessorFailureCode::InvalidRequest => ProcessorFailureCodeWire::InvalidRequest,
-        ProcessorFailureCode::Cancelled => ProcessorFailureCodeWire::Cancelled,
-        ProcessorFailureCode::UnsupportedContent => ProcessorFailureCodeWire::UnsupportedContent,
-        ProcessorFailureCode::UnresolvedContext => ProcessorFailureCodeWire::UnresolvedContext,
-        ProcessorFailureCode::InvalidContext => ProcessorFailureCodeWire::InvalidContext,
-        ProcessorFailureCode::ResourceLimit => ProcessorFailureCodeWire::ResourceLimit,
     }
 }

@@ -158,15 +158,26 @@ export interface ProcessorCompletionView {
   readonly outcome: "applied" | "stale";
 }
 
-export type ProcessorFailureCode =
-  | "processor"
-  | "panic"
-  | "invalid_request"
-  | "cancelled"
-  | "unsupported_content"
-  | "unresolved_context"
-  | "invalid_context"
-  | "resource_limit";
+export const PROCESSOR_FAILURE_CODES = [
+  "processor",
+  "panic",
+  "invalid_request",
+  "cancelled",
+  "unsupported_content",
+  "unresolved_context",
+  "invalid_context",
+  "resource_limit",
+] as const;
+
+export type ProcessorFailureCode = (typeof PROCESSOR_FAILURE_CODES)[number];
+
+/** @internal */
+export function isProcessorFailureCode(value: unknown): value is ProcessorFailureCode {
+  return (
+    typeof value === "string" &&
+    (PROCESSOR_FAILURE_CODES as readonly string[]).includes(value)
+  );
+}
 
 export type ArtifactChangeKindView =
   | { readonly kind: "pending" }
@@ -628,13 +639,20 @@ function decodeArtifact(value: Record<string, unknown>): ProcessorArtifactView {
       decoded = { kind, text: requiredString(payload.text, "artifact text") };
       break;
     case "binary": {
-      const values = requiredArray(payload.bytes, "artifact bytes").map((entry) => {
-        if (!Number.isInteger(entry) || (entry as number) < 0 || (entry as number) > 255) {
-          throw invalidPayload("artifact bytes must contain octets");
-        }
-        return entry as number;
-      });
-      decoded = { kind, bytes: Uint8Array.from(values) };
+      const values = requiredArray(payload.bytes, "artifact bytes");
+      decoded = {
+        kind,
+        bytes: Uint8Array.from(values, (entry) => {
+          if (
+            !Number.isInteger(entry) ||
+            (entry as number) < 0 ||
+            (entry as number) > 255
+          ) {
+            throw invalidPayload("artifact bytes must contain octets");
+          }
+          return entry as number;
+        }),
+      };
       break;
     }
     case "citation":
@@ -664,19 +682,10 @@ function decodeFailure(value: Record<string, unknown>): ArtifactView["failure"] 
 
 function failureCode(value: unknown): ProcessorFailureCode {
   const code = requiredString(value, "processor failure code");
-  switch (code) {
-    case "processor":
-    case "panic":
-    case "invalid_request":
-    case "cancelled":
-    case "unsupported_content":
-    case "unresolved_context":
-    case "invalid_context":
-    case "resource_limit":
-      return code;
-    default:
-      throw invalidPayload(`unknown processor failure code ${code}`);
+  if (!isProcessorFailureCode(code)) {
+    throw invalidPayload(`unknown processor failure code ${code}`);
   }
+  return code;
 }
 
 function expectedViewKind(kind: BindingPayloadKind): string {

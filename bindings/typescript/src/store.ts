@@ -90,10 +90,7 @@ export interface ProcessorMetricsView {
   readonly inputMaterializations: DecimalCounter;
 }
 
-export interface MdstreamStore extends ExternalStore<StoreSnapshot> {
-  applyChange(change: CanonicalChangeBytes): ReducerResult;
-  recoverSnapshot(snapshot: CanonicalSnapshotBytes): ReducerResult;
-  createRecoverySnapshot(): CanonicalSnapshotBytes | undefined;
+export interface MdstreamStoreView extends ExternalStore<StoreSnapshot> {
   getNodeSnapshot(id: NodeId): NodeView | undefined;
   subscribeNode(id: NodeId, listener: StoreListener): () => void;
   node(id: NodeId): ExternalStore<NodeView | undefined>;
@@ -105,6 +102,12 @@ export interface MdstreamStore extends ExternalStore<StoreSnapshot> {
   artifact(slot: ArtifactSlot): ExternalStore<ArtifactView | undefined>;
   metrics(): BindingMetricsView;
   processorMetrics(): ProcessorMetricsView;
+}
+
+export interface MdstreamStore extends MdstreamStoreView {
+  applyChange(change: CanonicalChangeBytes): ReducerResult;
+  recoverSnapshot(snapshot: CanonicalSnapshotBytes): ReducerResult;
+  createRecoverySnapshot(): CanonicalSnapshotBytes | undefined;
   close(): void;
 }
 
@@ -156,6 +159,8 @@ const initialSnapshot: StoreSnapshot = Object.freeze({
   impact: emptyImpact,
 });
 
+const maxCachedMisses = 1_024;
+
 const bindingMetricFields = [
   "commands",
   "decoded_change_payloads",
@@ -204,13 +209,9 @@ export class RustBackedStore implements MdstreamStore {
   readonly #nodeCache = new Map<string, NodeView>();
   readonly #resourceCache = new Map<string, ResourceView>();
   readonly #artifactCache = new Map<string, ArtifactView>();
-  readonly #missingNodes = new Set<string>();
-  readonly #missingResources = new Set<string>();
-  readonly #missingArtifacts = new Set<string>();
-
-  readonly #nodeStores = new Map<string, ExternalStore<NodeView | undefined>>();
-  readonly #resourceStores = new Map<string, ExternalStore<ResourceView | undefined>>();
-  readonly #artifactStores = new Map<string, ExternalStore<ArtifactView | undefined>>();
+  readonly #missingNodes = new BoundedKeySet(maxCachedMisses);
+  readonly #missingResources = new BoundedKeySet(maxCachedMisses);
+  readonly #missingArtifacts = new BoundedKeySet(maxCachedMisses);
 
   constructor(session: WasmReducerSession, schema: string) {
     this.#session = session;
@@ -279,16 +280,10 @@ export class RustBackedStore implements MdstreamStore {
   }
 
   node(id: NodeId): ExternalStore<NodeView | undefined> {
-    const key = id as string;
-    let store = this.#nodeStores.get(key);
-    if (store === undefined) {
-      store = {
-        subscribe: (listener) => this.subscribeNode(id, listener),
-        getSnapshot: () => this.getNodeSnapshot(id),
-      };
-      this.#nodeStores.set(key, store);
-    }
-    return store;
+    return Object.freeze({
+      subscribe: (listener: StoreListener) => this.subscribeNode(id, listener),
+      getSnapshot: () => this.getNodeSnapshot(id),
+    });
   }
 
   getResourceSnapshot(id: ResourceId): ResourceView | undefined {
@@ -328,16 +323,10 @@ export class RustBackedStore implements MdstreamStore {
   }
 
   resource(id: ResourceId): ExternalStore<ResourceView | undefined> {
-    const key = id as string;
-    let store = this.#resourceStores.get(key);
-    if (store === undefined) {
-      store = {
-        subscribe: (listener) => this.subscribeResource(id, listener),
-        getSnapshot: () => this.getResourceSnapshot(id),
-      };
-      this.#resourceStores.set(key, store);
-    }
-    return store;
+    return Object.freeze({
+      subscribe: (listener: StoreListener) => this.subscribeResource(id, listener),
+      getSnapshot: () => this.getResourceSnapshot(id),
+    });
   }
 
   getArtifactSnapshot(slot: ArtifactSlot): ArtifactView | undefined {
@@ -370,16 +359,10 @@ export class RustBackedStore implements MdstreamStore {
   }
 
   artifact(slot: ArtifactSlot): ExternalStore<ArtifactView | undefined> {
-    const key = artifactSlotKey(slot);
-    let store = this.#artifactStores.get(key);
-    if (store === undefined) {
-      store = {
-        subscribe: (listener) => this.subscribeArtifact(slot, listener),
-        getSnapshot: () => this.getArtifactSnapshot(slot),
-      };
-      this.#artifactStores.set(key, store);
-    }
-    return store;
+    return Object.freeze({
+      subscribe: (listener: StoreListener) => this.subscribeArtifact(slot, listener),
+      getSnapshot: () => this.getArtifactSnapshot(slot),
+    });
   }
 
   beginProcessor(options: BeginProcessorOptions): ReducerResult {
@@ -478,6 +461,9 @@ export class RustBackedStore implements MdstreamStore {
     this.#nodeCache.clear();
     this.#resourceCache.clear();
     this.#artifactCache.clear();
+    this.#missingNodes.clear();
+    this.#missingResources.clear();
+    this.#missingArtifacts.clear();
     this.#session.free();
   }
 
@@ -611,13 +597,18 @@ export class RustBackedStore implements MdstreamStore {
     if (update.impact.fullReplace) {
       this.#nodeCache.clear();
       this.#resourceCache.clear();
+      this.#artifactCache.clear();
       this.#missingNodes.clear();
       this.#missingResources.clear();
+      this.#missingArtifacts.clear();
       for (const key of this.#nodeListeners.keys()) {
         notifications.nodes.add(key);
       }
       for (const key of this.#resourceListeners.keys()) {
         notifications.resources.add(key);
+      }
+      for (const key of this.#artifactListeners.keys()) {
+        notifications.artifacts.add(key);
       }
     }
 
@@ -682,6 +673,28 @@ export class RustBackedStore implements MdstreamStore {
       });
     }
   }
+}
+
+/** @internal */
+export function createStoreView(store: RustBackedStore): MdstreamStoreView {
+  return Object.freeze({
+    subscribe: (listener: StoreListener) => store.subscribe(listener),
+    getSnapshot: () => store.getSnapshot(),
+    getNodeSnapshot: (id: NodeId) => store.getNodeSnapshot(id),
+    subscribeNode: (id: NodeId, listener: StoreListener) =>
+      store.subscribeNode(id, listener),
+    node: (id: NodeId) => store.node(id),
+    getResourceSnapshot: (id: ResourceId) => store.getResourceSnapshot(id),
+    subscribeResource: (id: ResourceId, listener: StoreListener) =>
+      store.subscribeResource(id, listener),
+    resource: (id: ResourceId) => store.resource(id),
+    getArtifactSnapshot: (slot: ArtifactSlot) => store.getArtifactSnapshot(slot),
+    subscribeArtifact: (slot: ArtifactSlot, listener: StoreListener) =>
+      store.subscribeArtifact(slot, listener),
+    artifact: (slot: ArtifactSlot) => store.artifact(slot),
+    metrics: () => store.metrics(),
+    processorMetrics: () => store.processorMetrics(),
+  });
 }
 
 export function artifactSlotKey(slot: ArtifactSlot): string {
@@ -764,6 +777,40 @@ function notifyListeners(listeners: ReadonlySet<StoreListener>): void {
     } catch {
       // Subscriber failures cannot roll back an already-applied Rust update.
     }
+  }
+}
+
+class BoundedKeySet {
+  readonly #limit: number;
+  readonly #values = new Set<string>();
+
+  constructor(limit: number) {
+    this.#limit = limit;
+  }
+
+  has(value: string): boolean {
+    return this.#values.has(value);
+  }
+
+  add(value: string): void {
+    if (this.#values.has(value)) {
+      return;
+    }
+    this.#values.add(value);
+    if (this.#values.size > this.#limit) {
+      const oldest = this.#values.values().next().value;
+      if (oldest !== undefined) {
+        this.#values.delete(oldest);
+      }
+    }
+  }
+
+  delete(value: string): void {
+    this.#values.delete(value);
+  }
+
+  clear(): void {
+    this.#values.clear();
   }
 }
 

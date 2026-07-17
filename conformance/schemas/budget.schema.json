@@ -189,9 +189,14 @@
         "default_artifacts_allow_merman": { "const": false },
         "forbidden_default_dependencies": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 4,
           "uniqueItems": true,
-          "contains": { "const": "merman" },
+          "allOf": [
+            { "contains": { "const": "merman" } },
+            { "contains": { "const": "react" } },
+            { "contains": { "const": "streamdown" } },
+            { "contains": { "const": "incremark" } }
+          ],
           "items": { "type": "string", "minLength": 1 }
         }
       }

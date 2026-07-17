@@ -341,15 +341,17 @@ impl BindingBudgets {
         if self.policy.default_artifacts_allow_merman {
             return Err(invalid("default artifacts must not allow Merman"));
         }
-        if !self
-            .policy
-            .forbidden_default_dependencies
-            .iter()
-            .any(|dependency| dependency.eq_ignore_ascii_case("merman"))
-        {
-            return Err(invalid(
-                "forbidden_default_dependencies must include Merman",
-            ));
+        for required in ["merman", "react", "streamdown", "incremark"] {
+            if !self
+                .policy
+                .forbidden_default_dependencies
+                .iter()
+                .any(|dependency| dependency.eq_ignore_ascii_case(required))
+            {
+                return Err(invalid(format!(
+                    "forbidden_default_dependencies must include {required}"
+                )));
+            }
         }
 
         let mut actual = BTreeMap::new();
