@@ -5,6 +5,9 @@
 /mdstream-merman/Cargo.lock
 /node_modules
 **/node_modules
+**/.dart_tool
+**/coverage
+**/doc/api
 /bindings/typescript/dist
 /bindings/typescript/wasm
 *.tgz

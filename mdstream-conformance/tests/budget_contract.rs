@@ -274,6 +274,7 @@ fn implemented_binding_artifacts_are_measured_and_future_artifacts_remain_pendin
                 | BindingArtifact::WasmGzip
                 | BindingArtifact::WasmBrotli
                 | BindingArtifact::NpmPacked
+                | BindingArtifact::DartPacked
         );
         assert_eq!(
             artifact.status,

@@ -1,0 +1,11 @@
+.dart_tool/
+coverage/
+doc/api/
+test/
+tool/
+*.a
+*.dylib
+*.dll
+*.framework/
+*.lib
+*.so

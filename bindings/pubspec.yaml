@@ -1,0 +1,8 @@
+name: mdstream_bindings_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.8.0
+
+workspace:
+  - dart

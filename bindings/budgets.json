@@ -78,8 +78,12 @@
       "owner": "U16",
       "ceiling_bytes": 163840,
       "regression_percent": 20,
-      "status": "pending",
-      "measurement": null
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 24552,
+        "artifact_sha256": "fbadd4e871418c517524c7acb16554cef38702212e49bdab972b72d06ebab441",
+        "command": "cd bindings/dart && dart pub publish --to-archive=../../target/dart-package/mdstream-0.4.0.tar.gz"
+      }
     },
     {
       "artifact": "flutter_native_library",
