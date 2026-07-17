@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "mdstream",
+    "mdstream-bindings-core",
     "mdstream-conformance",
     "mdstream-processors",
     "mdstream-protocol",

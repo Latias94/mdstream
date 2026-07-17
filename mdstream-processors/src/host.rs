@@ -359,6 +359,10 @@ impl ArtifactHost {
             }
             Some(_) | None => self.begin_epoch(document_epoch)?,
         }
+        let metrics = self.store.metrics();
+        if metrics.slots == 0 && metrics.in_flight_jobs == 0 {
+            return Ok(());
+        }
         if impact.full_replace {
             self.store.clear(ArtifactReleaseReason::NodeChanged)?;
             return Ok(());
