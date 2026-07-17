@@ -14,7 +14,7 @@ token chunks
     -> StreamEngine
     -> ChangeSet batches
     -> canonical Reducer / Content IR
-    -> GPUI, egui, TUI, WASM, React, Flutter
+    -> GPUI, egui, TUI, WASM / TypeScript, Flutter
     -> optional code, math, citation, and Mermaid processors
 ```
 
@@ -113,6 +113,13 @@ cargo +1.88.0 run -p mdstream-tokio --example agent_tui
 The egui and GPUI examples are framework-neutral on purpose. They demonstrate
 the ownership and invalidation contract without adding UI framework dependencies
 to the core workspace.
+
+For web applications, `@mdstream/core` is the first-party integration surface.
+It exposes Rust/WASM-backed external stores, focused node/resource/artifact
+views, and explicit recovery without a renderer or UI-framework dependency.
+React consumers can bind these stores with `useSyncExternalStore`; mdstream does
+not ship React hooks, components, themes, or a competing Markdown renderer. See
+[`ADR 0004`](docs/ADR_0004_FRAMEWORK_NEUTRAL_WEB_BINDINGS.md) for the boundary.
 
 ## Migration From 0.3
 

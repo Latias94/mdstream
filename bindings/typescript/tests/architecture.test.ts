@@ -4,14 +4,22 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("framework-neutral package boundaries", () => {
-  it("has no renderer, UI framework, Merman, or parser production dependency", () => {
+  it("has no renderer, UI framework, Merman, or parser dependency", () => {
     const packageJson = JSON.parse(
       readFileSync(resolve(process.cwd(), "package.json"), "utf8"),
-    ) as { readonly dependencies?: Readonly<Record<string, string>> };
+    ) as Readonly<
+      Record<
+        "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies",
+        Readonly<Record<string, string>> | undefined
+      >
+    >;
     expect(packageJson.dependencies ?? {}).toEqual({});
 
     const forbidden = [
       "react",
+      "react-dom",
+      "@types/react",
+      "@types/react-dom",
       "streamdown",
       "incremark",
       "merman",
@@ -20,9 +28,23 @@ describe("framework-neutral package boundaries", () => {
       "remark",
       "unified",
     ];
-    for (const dependency of Object.keys(packageJson.dependencies ?? {})) {
-      expect(forbidden).not.toContain(dependency.toLowerCase());
+    const dependencyGroups = [
+      packageJson.dependencies,
+      packageJson.devDependencies,
+      packageJson.optionalDependencies,
+      packageJson.peerDependencies,
+    ];
+    for (const dependencies of dependencyGroups) {
+      for (const dependency of Object.keys(dependencies ?? {})) {
+        expect(forbidden).not.toContain(dependency.toLowerCase());
+      }
     }
+
+    const workspace = readFileSync(
+      resolve(process.cwd(), "../../pnpm-workspace.yaml"),
+      "utf8",
+    );
+    expect(workspace).not.toContain("bindings/react");
     expect(existsSync(resolve(process.cwd(), "../react"))).toBe(false);
   });
 
