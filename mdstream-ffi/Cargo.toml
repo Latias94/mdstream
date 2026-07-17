@@ -1,0 +1,26 @@
+[package]
+name = "mdstream-ffi"
+version = "0.4.0"
+description = "Stable C ABI transport for mdstream's stateful binding facade."
+edition = "2024"
+rust-version = "1.85"
+authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Latias94/mdstream"
+homepage = "https://github.com/Latias94/mdstream"
+readme = "README.md"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+mdstream-bindings-core = { path = "../mdstream-bindings-core", version = "0.4.0" }
+
+[dev-dependencies]
+cc = "=1.2.67"
+mdstream-conformance = { path = "../mdstream-conformance", version = "0.4.0" }
+mdstream-protocol = { path = "../mdstream-protocol", version = "0.4.0" }
+serde_json = "1.0.140"
+
+[package.metadata.docs.rs]
+all-features = true

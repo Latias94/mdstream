@@ -3,6 +3,7 @@ members = [
     "mdstream",
     "mdstream-bindings-core",
     "mdstream-conformance",
+    "mdstream-ffi",
     "mdstream-processors",
     "mdstream-protocol",
     "mdstream-tokio",
