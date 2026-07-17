@@ -8,6 +8,7 @@
 **/.dart_tool
 **/coverage
 **/doc/api
+/bindings/.flutter-plugins-dependencies
 /bindings/typescript/dist
 /bindings/typescript/wasm
 *.tgz

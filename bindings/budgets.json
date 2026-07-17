@@ -90,16 +90,24 @@
       "owner": "U17",
       "ceiling_bytes": 6291456,
       "regression_percent": 20,
-      "status": "pending",
-      "measurement": null
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 3005272,
+        "artifact_sha256": "b143a177e752aa2756cf844aada17ee5646e8c1384c993e12e5531f7bc1930de",
+        "command": "python3 bindings/flutter/tool/build_native.py android"
+      }
     },
     {
       "artifact": "platform_package_increment",
       "owner": "U17",
       "ceiling_bytes": 8388608,
       "regression_percent": 20,
-      "status": "pending",
-      "measurement": null
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 3006207,
+        "artifact_sha256": "821384e71cd47d4d11c68618b447a3b7aefa218f8dce2e320e911a0b6d096f3d",
+        "command": "python3 bindings/flutter/tool/package_smoke.py --skip-native-build --skip-runtime"
+      }
     }
   ]
 }

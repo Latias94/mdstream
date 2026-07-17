@@ -33,10 +33,12 @@ void main() {
         final recovery = source.createRecoverySnapshot()!;
 
         replica.applyChange(changes[0]);
+        final lastGoodDocument = replica.currentState.document;
         final lastGood = replica.currentState.document?.coordinate;
         final gap = replica.applyChange(changes[2]);
         expect(gap.updates.single.outcome.kind, 'recovery_required');
         expect(replica.currentState.status.kind, 'needs_snapshot');
+        expect(replica.currentState.document, same(lastGoodDocument));
         expect(
           replica.currentState.document?.coordinate.changeId,
           lastGood?.changeId,

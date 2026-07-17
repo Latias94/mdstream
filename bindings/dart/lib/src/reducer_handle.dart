@@ -501,7 +501,10 @@ final class MdstreamReducer {
 
     final previousDocument = _currentState.document;
     final incomingDocument = update.document;
-    final document = incomingDocument == null
+    final document =
+        update.outcome.kind == 'recovery_required' && previousDocument != null
+        ? previousDocument
+        : incomingDocument == null
         ? previousDocument
         : incomingDocument.roots != null || previousDocument == null
         ? incomingDocument

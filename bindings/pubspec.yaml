@@ -6,3 +6,4 @@ environment:
 
 workspace:
   - dart
+  - flutter

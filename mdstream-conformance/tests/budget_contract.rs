@@ -275,6 +275,8 @@ fn implemented_binding_artifacts_are_measured_and_future_artifacts_remain_pendin
                 | BindingArtifact::WasmBrotli
                 | BindingArtifact::NpmPacked
                 | BindingArtifact::DartPacked
+                | BindingArtifact::FlutterNativeLibrary
+                | BindingArtifact::PlatformPackageIncrement
         );
         assert_eq!(
             artifact.status,

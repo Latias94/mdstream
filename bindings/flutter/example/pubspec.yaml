@@ -1,0 +1,15 @@
+name: mdstream_flutter_example
+description: Minimal bundled-runtime example for mdstream_flutter.
+publish_to: none
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  mdstream_flutter:
+    path: ..
+
+flutter:
+  uses-material-design: true

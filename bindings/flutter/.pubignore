@@ -1,0 +1,14 @@
+.dart_tool/
+build/
+tool/
+test/
+integration_test/
+example/
+.gitignore
+analysis_options.yaml
+**/*.iml
+**/.gradle/
+**/build/
+
+# Native artifacts are intentionally not ignored here. Release assembly stages
+# them before `dart pub publish --to-archive`.
