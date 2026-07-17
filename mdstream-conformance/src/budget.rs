@@ -391,6 +391,23 @@ impl BindingBudgets {
                     )));
                 }
             }
+            let expected_regression_percent = match artifact.artifact {
+                BindingArtifact::WasmRaw
+                | BindingArtifact::WasmStripped
+                | BindingArtifact::WasmGzip
+                | BindingArtifact::WasmBrotli => 15,
+                BindingArtifact::NpmPacked
+                | BindingArtifact::DartPacked
+                | BindingArtifact::FlutterNativeLibrary
+                | BindingArtifact::PlatformPackageIncrement => 20,
+            };
+            if artifact.regression_percent != expected_regression_percent {
+                return Err(invalid(format!(
+                    "{} must retain its {}% advisory regression band",
+                    artifact.artifact.as_str(),
+                    expected_regression_percent
+                )));
+            }
         }
 
         for (artifact, ceiling_bytes, owner) in REQUIRED_BINDING_CEILINGS {
@@ -435,6 +452,7 @@ pub struct BindingArtifactBudget {
     pub artifact: BindingArtifact,
     pub owner: BudgetOwner,
     pub ceiling_bytes: u64,
+    pub regression_percent: u64,
     pub status: ArtifactStatus,
     #[serde(deserialize_with = "deserialize_required_option")]
     pub measurement: Option<ArtifactMeasurement>,

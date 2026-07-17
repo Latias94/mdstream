@@ -332,6 +332,33 @@ impl ReducerSession {
         Ok((request, output))
     }
 
+    pub fn begin_processor(
+        &mut self,
+        node_id: NodeId,
+        processor_id: String,
+        processor_version: String,
+        configuration_version: String,
+        accepts_provisional: bool,
+        allow_provisional: bool,
+    ) -> Result<BindingOutput, BindingError> {
+        let capabilities = if accepts_provisional {
+            ProcessorCapabilities::with_provisional()
+        } else {
+            ProcessorCapabilities::stable_only()
+        };
+        let descriptor = ProcessorDescriptor::new(processor_id, processor_version, capabilities)
+            .map_err(identifier_error)?;
+        let configuration =
+            ConfigurationVersion::new(configuration_version).map_err(identifier_error)?;
+        let (_, output) = self.begin_native_processor(
+            descriptor,
+            node_id,
+            configuration,
+            processing_policy(allow_provisional),
+        )?;
+        Ok(output)
+    }
+
     pub fn complete_native_processor(
         &mut self,
         result: ProcessorResult,
@@ -358,6 +385,62 @@ impl ReducerSession {
         Ok((outcome, output))
     }
 
+    pub fn complete_processor_text(
+        &mut self,
+        request_id: RequestGeneration,
+        protocol: String,
+        media_type: String,
+        text: String,
+    ) -> Result<BindingOutput, BindingError> {
+        self.complete_foreign_processor(
+            request_id,
+            ProcessorCompletion::Text {
+                protocol,
+                media_type,
+                text,
+            },
+        )
+    }
+
+    pub fn complete_processor_binary(
+        &mut self,
+        request_id: RequestGeneration,
+        protocol: String,
+        media_type: String,
+        bytes: Vec<u8>,
+    ) -> Result<BindingOutput, BindingError> {
+        self.complete_foreign_processor(
+            request_id,
+            ProcessorCompletion::Binary {
+                protocol,
+                media_type,
+                bytes,
+            },
+        )
+    }
+
+    pub fn fail_processor(
+        &mut self,
+        request_id: RequestGeneration,
+        code: ProcessorFailureCode,
+        message: String,
+    ) -> Result<BindingOutput, BindingError> {
+        self.complete_foreign_processor(
+            request_id,
+            ProcessorCompletion::Failure {
+                code: processor_failure_code_wire(code),
+                message,
+            },
+        )
+    }
+
+    pub fn cancel_processor(
+        &mut self,
+        request_id: RequestGeneration,
+    ) -> Result<BindingOutput, BindingError> {
+        self.cancel_foreign_processor(request_id)
+    }
+
     pub fn artifact_view(
         &mut self,
         slot: &ProcessorSlotKey,
@@ -375,6 +458,20 @@ impl ReducerSession {
             bytes,
         );
         Ok(output)
+    }
+
+    pub fn artifact_view_for(
+        &mut self,
+        epoch: mdstream_protocol::Epoch,
+        node_id: NodeId,
+        processor_id: String,
+    ) -> Result<BindingOutput, BindingError> {
+        let slot = ProcessorSlotKey::new(
+            epoch,
+            node_id,
+            ProcessorId::new(processor_id).map_err(identifier_error)?,
+        );
+        self.artifact_view(&slot)
     }
 
     pub fn execute(&mut self, command_json: &[u8]) -> Result<BindingOutput, BindingError> {
@@ -400,25 +497,14 @@ impl ReducerSession {
                 accepts_provisional,
                 allow_provisional,
                 ..
-            } => {
-                let capabilities = if accepts_provisional {
-                    ProcessorCapabilities::with_provisional()
-                } else {
-                    ProcessorCapabilities::stable_only()
-                };
-                let descriptor =
-                    ProcessorDescriptor::new(processor_id, processor_version, capabilities)
-                        .map_err(identifier_error)?;
-                let configuration =
-                    ConfigurationVersion::new(configuration_version).map_err(identifier_error)?;
-                let (_, output) = self.begin_native_processor(
-                    descriptor,
-                    parse_decimal_id(&node_id, "node_id")?,
-                    configuration,
-                    processing_policy(allow_provisional),
-                )?;
-                Ok(output)
-            }
+            } => self.begin_processor(
+                parse_decimal_id(&node_id, "node_id")?,
+                processor_id,
+                processor_version,
+                configuration_version,
+                accepts_provisional,
+                allow_provisional,
+            ),
             ReducerCommand::CompleteProcessor {
                 request_id,
                 outcome,
@@ -435,14 +521,11 @@ impl ReducerSession {
                 node_id,
                 processor_id,
                 ..
-            } => {
-                let slot = ProcessorSlotKey::new(
-                    parse_decimal_id(&epoch, "epoch")?,
-                    parse_decimal_id(&node_id, "node_id")?,
-                    ProcessorId::new(processor_id).map_err(identifier_error)?,
-                );
-                self.artifact_view(&slot)
-            }
+            } => self.artifact_view_for(
+                parse_decimal_id(&epoch, "epoch")?,
+                parse_decimal_id(&node_id, "node_id")?,
+                processor_id,
+            ),
         }
     }
 
@@ -661,5 +744,18 @@ const fn processor_failure_code(code: ProcessorFailureCodeWire) -> ProcessorFail
         ProcessorFailureCodeWire::UnresolvedContext => ProcessorFailureCode::UnresolvedContext,
         ProcessorFailureCodeWire::InvalidContext => ProcessorFailureCode::InvalidContext,
         ProcessorFailureCodeWire::ResourceLimit => ProcessorFailureCode::ResourceLimit,
+    }
+}
+
+const fn processor_failure_code_wire(code: ProcessorFailureCode) -> ProcessorFailureCodeWire {
+    match code {
+        ProcessorFailureCode::Processor => ProcessorFailureCodeWire::Processor,
+        ProcessorFailureCode::Panic => ProcessorFailureCodeWire::Panic,
+        ProcessorFailureCode::InvalidRequest => ProcessorFailureCodeWire::InvalidRequest,
+        ProcessorFailureCode::Cancelled => ProcessorFailureCodeWire::Cancelled,
+        ProcessorFailureCode::UnsupportedContent => ProcessorFailureCodeWire::UnsupportedContent,
+        ProcessorFailureCode::UnresolvedContext => ProcessorFailureCodeWire::UnresolvedContext,
+        ProcessorFailureCode::InvalidContext => ProcessorFailureCodeWire::InvalidContext,
+        ProcessorFailureCode::ResourceLimit => ProcessorFailureCodeWire::ResourceLimit,
     }
 }

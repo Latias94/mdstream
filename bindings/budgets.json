@@ -12,41 +12,67 @@
       "artifact": "wasm_raw",
       "owner": "U14",
       "ceiling_bytes": 1572864,
-      "status": "pending",
-      "measurement": null
+      "regression_percent": 15,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 1249229,
+        "artifact_sha256": "45da685ef65b73b62d948bd2ecddcf1d8b34ba0f34fbf14356a4b0c3b2ef582e",
+        "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
+      }
     },
     {
       "artifact": "wasm_stripped",
       "owner": "U14",
       "ceiling_bytes": 1310720,
-      "status": "pending",
-      "measurement": null
+      "regression_percent": 15,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 1249040,
+        "artifact_sha256": "e05fa8657d15208484da7a3f40a87f59aac247da9a6efa76dc68df039196e2f9",
+        "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
+      }
     },
     {
       "artifact": "wasm_gzip",
       "owner": "U14",
       "ceiling_bytes": 460800,
-      "status": "pending",
-      "measurement": null
+      "regression_percent": 15,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 450860,
+        "artifact_sha256": "27966f5277f9ab40a45b6e262d9c2583799fa9cc8299432de4b7f4fde85c188f",
+        "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
+      }
     },
     {
       "artifact": "wasm_brotli",
       "owner": "U14",
       "ceiling_bytes": 409600,
-      "status": "pending",
-      "measurement": null
+      "regression_percent": 15,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 339680,
+        "artifact_sha256": "24ded706195e82d482e7948af17943fb1131ad3dc0eb40e0ada0e8ecc8b38a0b",
+        "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
+      }
     },
     {
       "artifact": "npm_packed",
       "owner": "U14",
       "ceiling_bytes": 665600,
-      "status": "pending",
-      "measurement": null
+      "regression_percent": 20,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 477914,
+        "artifact_sha256": "f3c3146f1f63724e6d697db18a3dc68a954feebcdcab9fc813f1ebd44ead61c6",
+        "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
+      }
     },
     {
       "artifact": "dart_packed",
       "owner": "U16",
       "ceiling_bytes": 163840,
+      "regression_percent": 20,
       "status": "pending",
       "measurement": null
     },
@@ -54,6 +80,7 @@
       "artifact": "flutter_native_library",
       "owner": "U17",
       "ceiling_bytes": 6291456,
+      "regression_percent": 20,
       "status": "pending",
       "measurement": null
     },
@@ -61,6 +88,7 @@
       "artifact": "platform_package_increment",
       "owner": "U17",
       "ceiling_bytes": 8388608,
+      "regression_percent": 20,
       "status": "pending",
       "measurement": null
     }

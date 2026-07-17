@@ -212,7 +212,7 @@
     "bindingArtifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["artifact", "owner", "ceiling_bytes", "status", "measurement"],
+      "required": ["artifact", "owner", "ceiling_bytes", "regression_percent", "status", "measurement"],
       "properties": {
         "artifact": {
           "enum": [
@@ -228,6 +228,11 @@
         },
         "owner": { "enum": ["U14", "U16", "U17"] },
         "ceiling_bytes": { "$ref": "#/$defs/positiveInteger" },
+        "regression_percent": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
         "status": { "enum": ["pending", "measured"] },
         "measurement": {
           "oneOf": [
@@ -268,56 +273,64 @@
               "properties": {
                 "artifact": { "const": "wasm_raw" },
                 "owner": { "const": "U14" },
-                "ceiling_bytes": { "const": 1572864 }
+                "ceiling_bytes": { "const": 1572864 },
+                "regression_percent": { "const": 15 }
               }
             },
             {
               "properties": {
                 "artifact": { "const": "wasm_stripped" },
                 "owner": { "const": "U14" },
-                "ceiling_bytes": { "const": 1310720 }
+                "ceiling_bytes": { "const": 1310720 },
+                "regression_percent": { "const": 15 }
               }
             },
             {
               "properties": {
                 "artifact": { "const": "wasm_gzip" },
                 "owner": { "const": "U14" },
-                "ceiling_bytes": { "const": 460800 }
+                "ceiling_bytes": { "const": 460800 },
+                "regression_percent": { "const": 15 }
               }
             },
             {
               "properties": {
                 "artifact": { "const": "wasm_brotli" },
                 "owner": { "const": "U14" },
-                "ceiling_bytes": { "const": 409600 }
+                "ceiling_bytes": { "const": 409600 },
+                "regression_percent": { "const": 15 }
               }
             },
             {
               "properties": {
                 "artifact": { "const": "npm_packed" },
                 "owner": { "const": "U14" },
-                "ceiling_bytes": { "const": 665600 }
+                "ceiling_bytes": { "const": 665600 },
+                "regression_percent": { "const": 20 }
               }
             },
             {
               "properties": {
                 "artifact": { "const": "dart_packed" },
                 "owner": { "const": "U16" },
-                "ceiling_bytes": { "const": 163840 }
+                "ceiling_bytes": { "const": 163840 },
+                "regression_percent": { "const": 20 }
               }
             },
             {
               "properties": {
                 "artifact": { "const": "flutter_native_library" },
                 "owner": { "const": "U17" },
-                "ceiling_bytes": { "const": 6291456 }
+                "ceiling_bytes": { "const": 6291456 },
+                "regression_percent": { "const": 20 }
               }
             },
             {
               "properties": {
                 "artifact": { "const": "platform_package_increment" },
                 "owner": { "const": "U17" },
-                "ceiling_bytes": { "const": 8388608 }
+                "ceiling_bytes": { "const": 8388608 },
+                "regression_percent": { "const": 20 }
               }
             }
           ]

@@ -1,4 +1,10 @@
 /target
 /mdstream-merman/target
 /repo-ref
-Cargo.lock
+/fuzz/Cargo.lock
+/mdstream-merman/Cargo.lock
+/node_modules
+**/node_modules
+/bindings/typescript/dist
+/bindings/typescript/wasm
+*.tgz

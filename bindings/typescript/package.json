@@ -1,0 +1,44 @@
+{
+  "name": "@mdstream/core",
+  "version": "0.4.0",
+  "description": "Framework-neutral streaming content state engine backed by Rust and WebAssembly.",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "pretest": "pnpm --dir ../.. wasm:build:node",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "pnpm --dir ../.. wasm:build:web && node scripts/sync-wasm.mjs && tsc -p tsconfig.build.json && node scripts/smoke-package.mjs",
+    "prepack": "pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  },
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Latias94/mdstream.git",
+    "directory": "bindings/typescript"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

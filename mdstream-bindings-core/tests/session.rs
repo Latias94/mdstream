@@ -5,7 +5,8 @@ use mdstream_bindings_core::{
 use mdstream_conformance::load_fixture;
 use mdstream_processors::{
     CitationProcessor, CompletionOutcome, ConfigurationVersion, ContentProcessor, ProcessingPolicy,
-    ProcessorArtifact, ProcessorCapabilities, ProcessorDescriptor, ProcessorResult, run_catching,
+    ProcessorArtifact, ProcessorCapabilities, ProcessorDescriptor, ProcessorFailureCode,
+    ProcessorResult, run_catching,
 };
 use mdstream_protocol::{
     ApplyOutcome, ChangeId, ChangeSet, ChildList, ChildListOwner, ContentKind, ContentNode, Epoch,
@@ -531,6 +532,169 @@ fn native_and_generic_processor_results_use_a_separate_artifact_plane() {
     assert!(reducer.artifact_view(&generic_slot).unwrap().is_empty());
     let (outcome, _) = reducer.complete_native_processor(late_result).unwrap();
     assert_eq!(outcome, CompletionOutcome::Stale);
+}
+
+#[test]
+fn typed_foreign_processor_completion_reuses_the_canonical_lease_path() {
+    let mut reducer = ReducerSession::new(b"").unwrap();
+    let node_id = initialize_single_stable_node(&mut reducer);
+    let descriptor =
+        ProcessorDescriptor::new("test.typed", "v1", ProcessorCapabilities::stable_only()).unwrap();
+    let (request, _) = reducer
+        .begin_native_processor(
+            descriptor,
+            node_id,
+            ConfigurationVersion::new("test.typed.default").unwrap(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    let slot = request.key().slot().clone();
+
+    let invalid = reducer
+        .complete_processor_text(
+            request.key().generation(),
+            "invalid protocol".to_string(),
+            "text/plain".to_string(),
+            "retriable".to_string(),
+        )
+        .unwrap_err();
+    assert_eq!(invalid.status(), BindingStatus::InvalidArgument);
+    assert_eq!(reducer.metrics().pending_processor_requests, 1);
+    assert_eq!(reducer.processor_metrics().in_flight_jobs, 1);
+
+    let completed = reducer
+        .complete_processor_text(
+            request.key().generation(),
+            "test.typed/1".to_string(),
+            "text/plain".to_string(),
+            "typed completion".to_string(),
+        )
+        .unwrap();
+    let completion: serde_json::Value =
+        serde_json::from_slice(payload(&completed, BindingPayloadKind::ProcessorCompletion))
+            .unwrap();
+    assert_eq!(completion["outcome"], "applied");
+    assert_eq!(reducer.metrics().pending_processor_requests, 0);
+    assert_eq!(reducer.processor_metrics().in_flight_jobs, 0);
+
+    let artifact: serde_json::Value = serde_json::from_slice(payload(
+        &reducer.artifact_view(&slot).unwrap(),
+        BindingPayloadKind::ArtifactView,
+    ))
+    .unwrap();
+    assert_eq!(artifact["artifact"]["payload"]["text"], "typed completion");
+
+    let replay = reducer
+        .complete_processor_text(
+            request.key().generation(),
+            "test.typed/1".to_string(),
+            "text/plain".to_string(),
+            "late".to_string(),
+        )
+        .unwrap();
+    let replay: serde_json::Value =
+        serde_json::from_slice(payload(&replay, BindingPayloadKind::ProcessorCompletion)).unwrap();
+    assert_eq!(replay["outcome"], "stale");
+
+    let binary_descriptor = ProcessorDescriptor::new(
+        "test.typed.binary",
+        "v1",
+        ProcessorCapabilities::stable_only(),
+    )
+    .unwrap();
+    let (binary_request, _) = reducer
+        .begin_native_processor(
+            binary_descriptor,
+            node_id,
+            ConfigurationVersion::new("test.typed.binary.default").unwrap(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    let binary_slot = binary_request.key().slot().clone();
+    reducer
+        .complete_processor_binary(
+            binary_request.key().generation(),
+            "test.typed.binary/1".to_string(),
+            "application/octet-stream".to_string(),
+            vec![0, 127, 255],
+        )
+        .unwrap();
+    let binary_artifact: serde_json::Value = serde_json::from_slice(payload(
+        &reducer.artifact_view(&binary_slot).unwrap(),
+        BindingPayloadKind::ArtifactView,
+    ))
+    .unwrap();
+    assert_eq!(
+        binary_artifact["artifact"]["payload"]["bytes"],
+        serde_json::json!([0, 127, 255])
+    );
+
+    let failure_descriptor = ProcessorDescriptor::new(
+        "test.typed.failure",
+        "v1",
+        ProcessorCapabilities::stable_only(),
+    )
+    .unwrap();
+    let (failure_request, _) = reducer
+        .begin_native_processor(
+            failure_descriptor,
+            node_id,
+            ConfigurationVersion::new("test.typed.failure.default").unwrap(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    let failure_slot = failure_request.key().slot().clone();
+    reducer
+        .fail_processor(
+            failure_request.key().generation(),
+            ProcessorFailureCode::Panic,
+            "processor threw".to_string(),
+        )
+        .unwrap();
+    let failed_artifact: serde_json::Value = serde_json::from_slice(payload(
+        &reducer.artifact_view(&failure_slot).unwrap(),
+        BindingPayloadKind::ArtifactView,
+    ))
+    .unwrap();
+    assert_eq!(failed_artifact["state"], "failed");
+    assert_eq!(failed_artifact["failure"]["code"], "panic");
+    assert_eq!(failed_artifact["failure"]["message"], "processor threw");
+
+    let cancel_descriptor = ProcessorDescriptor::new(
+        "test.typed.cancel",
+        "v1",
+        ProcessorCapabilities::stable_only(),
+    )
+    .unwrap();
+    let (cancel_request, _) = reducer
+        .begin_native_processor(
+            cancel_descriptor,
+            node_id,
+            ConfigurationVersion::new("test.typed.cancel.default").unwrap(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    let cancel_slot = cancel_request.key().slot().clone();
+    let cancelled = reducer
+        .cancel_processor(cancel_request.key().generation())
+        .unwrap();
+    let cancelled: serde_json::Value =
+        serde_json::from_slice(payload(&cancelled, BindingPayloadKind::ProcessorCompletion))
+            .unwrap();
+    assert_eq!(cancelled["outcome"], "applied");
+    assert!(reducer.artifact_view(&cancel_slot).unwrap().is_empty());
+
+    let repeated_cancel = reducer
+        .cancel_processor(cancel_request.key().generation())
+        .unwrap();
+    let repeated_cancel: serde_json::Value = serde_json::from_slice(payload(
+        &repeated_cancel,
+        BindingPayloadKind::ProcessorCompletion,
+    ))
+    .unwrap();
+    assert_eq!(repeated_cancel["outcome"], "stale");
+    assert_eq!(reducer.metrics().pending_processor_requests, 0);
+    assert_eq!(reducer.processor_metrics().in_flight_jobs, 0);
 }
 
 #[test]

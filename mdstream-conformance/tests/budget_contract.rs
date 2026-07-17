@@ -4,8 +4,8 @@ use std::{
 };
 
 use mdstream_conformance::{
-    ArtifactStatus, BindingBudgets, StreamingBudget, U7_BASELINE_COMMIT, load_binding_budgets,
-    load_streaming_budget,
+    ArtifactStatus, BindingArtifact, BindingBudgets, StreamingBudget, U7_BASELINE_COMMIT,
+    load_binding_budgets, load_streaming_budget,
 };
 use serde_json::{Value, json};
 
@@ -83,6 +83,16 @@ fn budget_contract_rejects_relative_only_binding_limits() {
 
     assert!(!validator.is_valid(&value));
     assert!(serde_json::from_value::<BindingBudgets>(value).is_err());
+}
+
+#[test]
+fn budget_contract_rejects_drifted_advisory_regression_bands() {
+    let root = repository_root();
+    let schema = read_json(root.join("conformance/schemas/budget.schema.json"));
+    let mut value = read_json(root.join("bindings/budgets.json"));
+    value["artifacts"][0]["regression_percent"] = json!(16);
+
+    assert_binding_rejected(&schema, value, "drifted advisory regression band");
 }
 
 #[test]
@@ -232,14 +242,30 @@ fn deterministic_replay_comparison_ignores_host_provenance() {
 }
 
 #[test]
-fn future_binding_artifacts_remain_pending_without_fake_measurements() {
+fn implemented_binding_artifacts_are_measured_and_future_artifacts_remain_pending() {
     let root = repository_root();
     let contract = load_binding_budgets(root.join("bindings/budgets.json")).unwrap();
 
     assert_eq!(contract.artifacts.len(), 8);
-    assert!(contract.artifacts.iter().all(|artifact| {
-        artifact.status == ArtifactStatus::Pending && artifact.measurement.is_none()
-    }));
+    for artifact in &contract.artifacts {
+        let implemented = matches!(
+            artifact.artifact,
+            BindingArtifact::WasmRaw
+                | BindingArtifact::WasmStripped
+                | BindingArtifact::WasmGzip
+                | BindingArtifact::WasmBrotli
+                | BindingArtifact::NpmPacked
+        );
+        assert_eq!(
+            artifact.status,
+            if implemented {
+                ArtifactStatus::Measured
+            } else {
+                ArtifactStatus::Pending
+            }
+        );
+        assert_eq!(artifact.measurement.is_some(), implemented);
+    }
 }
 
 fn read_json(path: impl AsRef<Path>) -> Value {

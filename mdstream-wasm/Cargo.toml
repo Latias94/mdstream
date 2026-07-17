@@ -1,0 +1,35 @@
+[package]
+name = "mdstream-wasm"
+version = "0.4.0"
+description = "Thin WebAssembly transport for mdstream's stateful binding facade."
+edition = "2024"
+rust-version = "1.85"
+authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Latias94/mdstream"
+homepage = "https://github.com/Latias94/mdstream"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+panic-hook = ["dep:console_error_panic_hook"]
+
+[dependencies]
+console_error_panic_hook = { version = "0.1", optional = true }
+js-sys = "=0.3.94"
+mdstream-bindings-core = { path = "../mdstream-bindings-core", version = "0.4.0" }
+mdstream-protocol = { path = "../mdstream-protocol", version = "0.4.0" }
+wasm-bindgen = "=0.2.117"
+
+[dev-dependencies]
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+wasm-bindgen-test = "=0.3.67"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[package.metadata.wasm-pack.profile.custom]
+wasm-opt = ["-Oz", "--converge"]

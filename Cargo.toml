@@ -6,6 +6,14 @@ members = [
     "mdstream-processors",
     "mdstream-protocol",
     "mdstream-tokio",
+    "mdstream-wasm",
 ]
 exclude = ["fuzz", "mdstream-merman"]
 resolver = "2"
+
+[profile.wasm-size]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
