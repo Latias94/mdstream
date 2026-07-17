@@ -2614,7 +2614,7 @@ pub(crate) fn validate_snapshot(
     limits: ProtocolLimits,
 ) -> Result<ValidationStats, ProtocolError> {
     snapshot.schema().ensure_supported()?;
-    if snapshot.maturity() != ProtocolMaturity::Candidate {
+    if snapshot.maturity() != ProtocolMaturity::Final {
         return Err(ProtocolError::UnsupportedSchema(format!(
             "maturity {:?}",
             snapshot.maturity()

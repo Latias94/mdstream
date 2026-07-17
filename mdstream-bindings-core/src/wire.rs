@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::{BindingError, errors::protocol_error};
 
-pub const BINDING_SCHEMA: &str = "mdstream.bindings/0.4-candidate.1";
+pub const BINDING_SCHEMA: &str = "mdstream.bindings/0.4";
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

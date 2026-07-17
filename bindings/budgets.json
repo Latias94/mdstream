@@ -20,8 +20,8 @@
       "regression_percent": 15,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 1249043,
-        "artifact_sha256": "086a003d1054d65088ac65334863ba2efca3a15fd90cc6c4550b25cd79163ffe",
+        "measured_bytes": 1248983,
+        "artifact_sha256": "766c3d55aaedbb004e8bca8a7217c15281fcf9c9205841c4e8b993ce2c8c1192",
         "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
       }
     },
@@ -32,8 +32,8 @@
       "regression_percent": 15,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 1248854,
-        "artifact_sha256": "ed96bfbf45b6a5df30dfec7c08b2ed1362a946433b38ef8cf0f9e38cc7c6af27",
+        "measured_bytes": 1248794,
+        "artifact_sha256": "582df1f6ec72da91ef3fbab98c632c2c3921c42c3bc08bddae2b7572ed501a23",
         "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
       }
     },
@@ -44,8 +44,8 @@
       "regression_percent": 15,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 450833,
-        "artifact_sha256": "5752eb899e9a89d3726e44e46f2b048137853d29816744afdef6f5d938e3153f",
+        "measured_bytes": 450831,
+        "artifact_sha256": "d6a4b723cc4aedf8ad2b3780a454edf035d26d499807c30a6418bab3d375300f",
         "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
       }
     },
@@ -56,8 +56,8 @@
       "regression_percent": 15,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 339486,
-        "artifact_sha256": "ae93b1d54ef3abadfe40fe92e26000b3c9a34d2edd1f67822eebd4e8fd64dd01",
+        "measured_bytes": 339850,
+        "artifact_sha256": "20fc21738ab87b4883eb20c8bea60c84716507c0630c67f7b559dbeb2da95c10",
         "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
       }
     },
@@ -68,8 +68,8 @@
       "regression_percent": 20,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 478167,
-        "artifact_sha256": "ff45a315e56be22a01b0ea1cfbb879e8b17bfd0a803e49cba6895e3949b0b959",
+        "measured_bytes": 478290,
+        "artifact_sha256": "820b7d5c84a9a43d0c93c95ef1af6dbce287badd6475293d3be3fc98bebeb418",
         "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
       }
     },

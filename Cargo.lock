@@ -983,6 +983,7 @@ dependencies = [
  "mdstream-protocol",
  "proptest",
  "pulldown-cmark",
+ "serde_json",
  "trybuild",
  "unicase",
 ]

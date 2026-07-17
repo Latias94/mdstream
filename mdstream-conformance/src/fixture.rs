@@ -13,8 +13,8 @@ use crate::{
 };
 use mdstream_protocol::ProjectionOp;
 
-/// Current binding-candidate schema for checked-in conformance fixtures.
-pub const FIXTURE_SCHEMA: &str = "mdstream.conformance/0.4-candidate.1";
+/// Final 0.4 schema for checked-in conformance fixtures.
+pub const FIXTURE_SCHEMA: &str = "mdstream.conformance/0.4";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -699,27 +699,43 @@ pub fn load_fixture(path: impl AsRef<Path>) -> Result<Fixture, FixtureLoadError>
 }
 
 pub fn load_fixture_dir(path: impl AsRef<Path>) -> Result<Vec<Fixture>, FixtureLoadError> {
-    let path = path.as_ref();
+    fixture_paths(path)?.into_iter().map(load_fixture).collect()
+}
+
+/// Recursively discovers checked-in JSON fixtures in deterministic path order.
+pub fn fixture_paths(path: impl AsRef<Path>) -> Result<Vec<PathBuf>, FixtureLoadError> {
+    let mut paths = Vec::new();
+    collect_fixture_paths(path.as_ref(), &mut paths)?;
+    paths.sort();
+    Ok(paths)
+}
+
+fn collect_fixture_paths(path: &Path, paths: &mut Vec<PathBuf>) -> Result<(), FixtureLoadError> {
     let entries = fs::read_dir(path).map_err(|source| FixtureLoadError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    let mut paths = entries
-        .map(|entry| {
-            entry
-                .map(|entry| entry.path())
-                .map_err(|source| FixtureLoadError::Io {
-                    path: path.to_path_buf(),
-                    source,
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    paths.retain(|path| {
-        path.extension()
-            .is_some_and(|extension| extension == "json")
-    });
-    paths.sort();
-    paths.into_iter().map(load_fixture).collect()
+    for entry in entries {
+        let entry = entry.map_err(|source| FixtureLoadError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let entry_path = entry.path();
+        let file_type = entry.file_type().map_err(|source| FixtureLoadError::Io {
+            path: entry_path.clone(),
+            source,
+        })?;
+        if file_type.is_dir() {
+            collect_fixture_paths(&entry_path, paths)?;
+        } else if file_type.is_file()
+            && entry_path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        {
+            paths.push(entry_path);
+        }
+    }
+    Ok(())
 }
 
 fn validate_identifier(field: &'static str, value: &str) -> Result<(), FixtureError> {

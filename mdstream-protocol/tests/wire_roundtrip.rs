@@ -10,8 +10,8 @@ use mdstream_protocol::{
     decode_change_json, decode_snapshot_json, encode_change_json, encode_snapshot_json,
 };
 
-#[path = "wire_roundtrip/candidate_contract.rs"]
-mod candidate_contract;
+#[path = "wire_roundtrip/final_contract.rs"]
+mod final_contract;
 
 fn change_id(value: &str) -> ChangeId {
     ChangeId::new(value).unwrap()

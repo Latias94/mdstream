@@ -1,0 +1,1566 @@
+{
+  "schema": "mdstream.conformance/0.4",
+  "id": "adoption.headless-rich-content",
+  "description": "Production-shaped headless adoption across adversarial token chunks.",
+  "source": "# Adoption\n\nSee [@Engine] while this diagram streams.\n\n```mermaid\nflowchart LR\n  Token --> IR\n```\n\n[@engine]: https://mdstream.dev/engine \"mdstream\"\n",
+  "dialect": {
+    "id": "mdstream.canonical/0.4",
+    "extensions": [
+      "mdstream.citation/1"
+    ]
+  },
+  "profile": {
+    "id": "mdstream.adoption/0.4",
+    "claim_scope": [
+      "protocol_replay"
+    ],
+    "pipeline": [
+      "StreamEngine",
+      "Reducer",
+      "ArtifactHost"
+    ]
+  },
+  "provenance": {
+    "kind": "synthetic",
+    "generator": "mdstream adoption fixture generator",
+    "oracle_kind": "canonical_protocol"
+  },
+  "options": {},
+  "schedules": [
+    {
+      "id": "whole",
+      "schedule": {
+        "kind": "whole"
+      }
+    },
+    {
+      "id": "adversarial",
+      "schedule": {
+        "kind": "byte_cuts",
+        "cuts": [
+          17,
+          19,
+          23,
+          56,
+          57,
+          60,
+          63,
+          83,
+          88,
+          90,
+          100,
+          103,
+          107
+        ]
+      }
+    }
+  ],
+  "traces": [
+    {
+      "id": "whole",
+      "schedule": "whole",
+      "setup_changes": 0,
+      "input_events": [
+        {
+          "kind": "append",
+          "chunk": "# Adoption\n\nSee [@Engine] while this diagram streams.\n\n```mermaid\nflowchart LR\n  Token --> IR\n```\n\n[@engine]: https://mdstream.dev/engine \"mdstream\"\n",
+          "change_end": 1
+        },
+        {
+          "kind": "finish",
+          "change_end": 2
+        }
+      ],
+      "changes": [
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "0",
+          "change_id": "sha256:4293f520c87bcb27be984a4cc6b7809bbd29f661ca28a6ce53082f97ff0a0c21",
+          "epoch_start": {
+            "predecessor": null
+          },
+          "source": {
+            "expected_cursor": "0",
+            "suffix": "# Adoption\n\nSee [@Engine] while this diagram streams.\n\n```mermaid\nflowchart LR\n  Token --> IR\n```\n\n[@engine]: https://mdstream.dev/engine \"mdstream\"\n"
+          },
+          "operations": [
+            {
+              "kind": "insert_resource",
+              "resource": {
+                "id": "154582791709149689190109869243805354114",
+                "version": "sha256:a6dc8c59540dbe9df508610cc550af5092d8bd8aac8bb12b35243d2d986011ee",
+                "content": {
+                  "kind": "citation",
+                  "protocol": "mdstream.citation/1",
+                  "key": "engine",
+                  "destination": "https://mdstream.dev/engine",
+                  "title": "mdstream"
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "31705325778352836139328790500990906232",
+                "version": "sha256:79d214eb7ee33ece8a577714b72f93443eab8a91b6fcd5f2c64b8665bf2935f1",
+                "stability": "stable",
+                "source": {
+                  "start": "12",
+                  "end": "16"
+                },
+                "body": {
+                  "start": "12",
+                  "end": "16"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "97436993404181190931083532349247918148",
+                "version": "sha256:900dc9e79f33c3ef898bad669702d8ce11b7de46a6a5367be871627487996914",
+                "stability": "stable",
+                "source": {
+                  "start": "2",
+                  "end": "10"
+                },
+                "body": {
+                  "start": "2",
+                  "end": "10"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "143936600690443776575450734387865594914",
+                "version": "sha256:f5ce0733e8d48761db2703b81bacf99fb190208ac90cf3d42dbd8ece16921aae",
+                "stability": "stable",
+                "source": {
+                  "start": "16",
+                  "end": "25"
+                },
+                "body": {
+                  "start": "17",
+                  "end": "24"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "citation_reference",
+                  "key": "engine",
+                  "target": {
+                    "id": "154582791709149689190109869243805354114",
+                    "version": "sha256:a6dc8c59540dbe9df508610cc550af5092d8bd8aac8bb12b35243d2d986011ee"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "160950030468691726930902243010103924550",
+                "version": "sha256:5e020eddcfa3f653af88cceb887102866daba4d55463f209f6ec103a1296a2a3",
+                "stability": "stable",
+                "source": {
+                  "start": "17",
+                  "end": "24"
+                },
+                "body": {
+                  "start": "17",
+                  "end": "24"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "195953427059562946317314771290793284386",
+                "version": "sha256:c02cb34cd344e4c8ff20f43e27716bdbd3fdf3499dd75e9228a8feb335392a45",
+                "stability": "provisional",
+                "source": {
+                  "start": "99",
+                  "end": "148"
+                },
+                "body": {
+                  "start": "99",
+                  "end": "148"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "citation_definition",
+                  "key": "engine",
+                  "target": {
+                    "id": "154582791709149689190109869243805354114",
+                    "version": "sha256:a6dc8c59540dbe9df508610cc550af5092d8bd8aac8bb12b35243d2d986011ee"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "205878385918638799511319746301630253418",
+                "version": "sha256:b1facb44c17dfd54f7b6b4aab8199da88b7bcf36098ac93e945a3b5b8db9eb17",
+                "stability": "stable",
+                "source": {
+                  "start": "12",
+                  "end": "54"
+                },
+                "body": {
+                  "start": "12",
+                  "end": "53"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "paragraph"
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "215157159055805432069892866961677548931",
+                "version": "sha256:231eb2557458c8b049059f102441ddf095f8e3353d84feddfff556476138926c",
+                "stability": "stable",
+                "source": {
+                  "start": "0",
+                  "end": "10"
+                },
+                "body": {
+                  "start": "2",
+                  "end": "10"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "heading",
+                  "level": 1
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "309390385583024392830560755845452577039",
+                "version": "sha256:f253cb2278417d4728cb432e2b8e055b91867e2b588bc7f7315d03295f7dbe9d",
+                "stability": "stable",
+                "source": {
+                  "start": "55",
+                  "end": "97"
+                },
+                "body": {
+                  "start": "66",
+                  "end": "94"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "code_block",
+                  "syntax": {
+                    "kind": "fenced",
+                    "marker": "backtick",
+                    "length": 3
+                  },
+                  "info": "mermaid",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "327789594541816299661380508075563766396",
+                "version": "sha256:06e99ce0bd31408fb4ec8d95e19019a5c0c84351b06034c63f6d337fb003231a",
+                "stability": "stable",
+                "source": {
+                  "start": "25",
+                  "end": "53"
+                },
+                "body": {
+                  "start": "25",
+                  "end": "53"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "143936600690443776575450734387865594914"
+              },
+              "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+              "start": 0,
+              "delete_count": 0,
+              "insert": [
+                "160950030468691726930902243010103924550"
+              ],
+              "new_version": "sha256:d4a362e5bf9ef2cd7f10ef2e75a49ee4935678655a5820c70a35e77105c8c636"
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "205878385918638799511319746301630253418"
+              },
+              "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+              "start": 0,
+              "delete_count": 0,
+              "insert": [
+                "31705325778352836139328790500990906232",
+                "143936600690443776575450734387865594914",
+                "327789594541816299661380508075563766396"
+              ],
+              "new_version": "sha256:05aa3cc919763dccdb3f7b7774ba1fcb191055c746ab2d8f444c8554b2e2ce37"
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "215157159055805432069892866961677548931"
+              },
+              "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+              "start": 0,
+              "delete_count": 0,
+              "insert": [
+                "97436993404181190931083532349247918148"
+              ],
+              "new_version": "sha256:34b9025a98dc0f74ccaea2aff6f772328feea78a47180f9e211c016e8fe7a73c"
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "document"
+              },
+              "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+              "start": 0,
+              "delete_count": 0,
+              "insert": [
+                "215157159055805432069892866961677548931",
+                "205878385918638799511319746301630253418",
+                "309390385583024392830560755845452577039",
+                "195953427059562946317314771290793284386"
+              ],
+              "new_version": "sha256:811fd8d6ff079ed88118e44bc37c297e6ac2de5e4435f4925e959408bf7399f2"
+            },
+            {
+              "kind": "advance_projection",
+              "expected_cursor": "0",
+              "new_cursor": "149"
+            }
+          ]
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "1",
+          "change_id": "sha256:fe3deed8351643f469958f5d17dd9f9278bba48ee0b94555b43965b598df5764",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "149",
+            "suffix": ""
+          },
+          "operations": [
+            {
+              "kind": "stabilize_node",
+              "node_id": "195953427059562946317314771290793284386",
+              "expected_version": "sha256:c02cb34cd344e4c8ff20f43e27716bdbd3fdf3499dd75e9228a8feb335392a45",
+              "new_version": "sha256:0768be2db67fe1b592015e461453c2d7357ccdf44df50a7d4ee1d25214adef53"
+            },
+            {
+              "kind": "finish_document"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "adversarial",
+      "schedule": "adversarial",
+      "setup_changes": 0,
+      "input_events": [
+        {
+          "kind": "append",
+          "chunk": "# Adoption\n\nSee [",
+          "change_end": 1
+        },
+        {
+          "kind": "append",
+          "chunk": "@E",
+          "change_end": 2
+        },
+        {
+          "kind": "append",
+          "chunk": "ngin",
+          "change_end": 3
+        },
+        {
+          "kind": "append",
+          "chunk": "e] while this diagram streams.\n\n`",
+          "change_end": 4
+        },
+        {
+          "kind": "append",
+          "chunk": "`",
+          "change_end": 5
+        },
+        {
+          "kind": "append",
+          "chunk": "`me",
+          "change_end": 6
+        },
+        {
+          "kind": "append",
+          "chunk": "rma",
+          "change_end": 7
+        },
+        {
+          "kind": "append",
+          "chunk": "id\nflowchart LR\n  To",
+          "change_end": 8
+        },
+        {
+          "kind": "append",
+          "chunk": "ken -",
+          "change_end": 9
+        },
+        {
+          "kind": "append",
+          "chunk": "->",
+          "change_end": 10
+        },
+        {
+          "kind": "append",
+          "chunk": " IR\n```\n\n[",
+          "change_end": 11
+        },
+        {
+          "kind": "append",
+          "chunk": "@en",
+          "change_end": 12
+        },
+        {
+          "kind": "append",
+          "chunk": "gine",
+          "change_end": 13
+        },
+        {
+          "kind": "append",
+          "chunk": "]: https://mdstream.dev/engine \"mdstream\"\n",
+          "change_end": 14
+        },
+        {
+          "kind": "finish",
+          "change_end": 15
+        }
+      ],
+      "changes": [
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "0",
+          "change_id": "sha256:32300ed720196d7d6c9bddc21ac78903bd08a284408791de5319acfa88018938",
+          "epoch_start": {
+            "predecessor": null
+          },
+          "source": {
+            "expected_cursor": "0",
+            "suffix": "# Adoption\n\nSee ["
+          },
+          "operations": [
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "31705325778352836139328790500990906232",
+                "version": "sha256:c3254bfffb6b099129db149e788c065a423729e5ac3e938eac31ed0ce299c315",
+                "stability": "provisional",
+                "source": {
+                  "start": "12",
+                  "end": "17"
+                },
+                "body": {
+                  "start": "12",
+                  "end": "17"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "97436993404181190931083532349247918148",
+                "version": "sha256:900dc9e79f33c3ef898bad669702d8ce11b7de46a6a5367be871627487996914",
+                "stability": "stable",
+                "source": {
+                  "start": "2",
+                  "end": "10"
+                },
+                "body": {
+                  "start": "2",
+                  "end": "10"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "205878385918638799511319746301630253418",
+                "version": "sha256:099cd7e94290ac107b7f3c79b70c058a03840a3a897714d395d2f0dccc7bbfd9",
+                "stability": "provisional",
+                "source": {
+                  "start": "12",
+                  "end": "17"
+                },
+                "body": {
+                  "start": "12",
+                  "end": "17"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "paragraph"
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "215157159055805432069892866961677548931",
+                "version": "sha256:231eb2557458c8b049059f102441ddf095f8e3353d84feddfff556476138926c",
+                "stability": "stable",
+                "source": {
+                  "start": "0",
+                  "end": "10"
+                },
+                "body": {
+                  "start": "2",
+                  "end": "10"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "heading",
+                  "level": 1
+                }
+              }
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "205878385918638799511319746301630253418"
+              },
+              "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+              "start": 0,
+              "delete_count": 0,
+              "insert": [
+                "31705325778352836139328790500990906232"
+              ],
+              "new_version": "sha256:e9f7436733d4592750669833d601425ab4b569ae1ba7352252a69025c01f71ab"
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "215157159055805432069892866961677548931"
+              },
+              "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+              "start": 0,
+              "delete_count": 0,
+              "insert": [
+                "97436993404181190931083532349247918148"
+              ],
+              "new_version": "sha256:34b9025a98dc0f74ccaea2aff6f772328feea78a47180f9e211c016e8fe7a73c"
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "document"
+              },
+              "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+              "start": 0,
+              "delete_count": 0,
+              "insert": [
+                "215157159055805432069892866961677548931",
+                "205878385918638799511319746301630253418"
+              ],
+              "new_version": "sha256:dfa6d92a255dc1da174ec164dde13745c67272800391b6afae4b05e99ae352cf"
+            },
+            {
+              "kind": "advance_projection",
+              "expected_cursor": "0",
+              "new_cursor": "17"
+            }
+          ]
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "1",
+          "change_id": "sha256:3d683c2eef3f3394ea04d49a4e9df3749da23436705e5b1059a702164c8b8d1c",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "17",
+            "suffix": "@E"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "2",
+          "change_id": "sha256:debfe34c05fe418f7e6e78ac3b002fa368adc88c96c6c90e531cf71c1f0780d5",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "19",
+            "suffix": "ngin"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "3",
+          "change_id": "sha256:52d7dd2b145bccaf914a04a3fb2551a1733ac776185eceab1986bbf9fc695f42",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "23",
+            "suffix": "e] while this diagram streams.\n\n`"
+          },
+          "operations": [
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "1469793683596128351868875659483758014",
+                "version": "sha256:1edd03eac56e69e9414cc1d03813a5e0e057b5fed2a81652fc7eea059e6a9950",
+                "stability": "provisional",
+                "source": {
+                  "start": "55",
+                  "end": "56"
+                },
+                "body": {
+                  "start": "55",
+                  "end": "56"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "replace_node",
+              "node_id": "31705325778352836139328790500990906232",
+              "expected_version": "sha256:c3254bfffb6b099129db149e788c065a423729e5ac3e938eac31ed0ce299c315",
+              "projection": {
+                "version": "sha256:79d214eb7ee33ece8a577714b72f93443eab8a91b6fcd5f2c64b8665bf2935f1",
+                "stability": "stable",
+                "source": {
+                  "start": "12",
+                  "end": "16"
+                },
+                "body": {
+                  "start": "12",
+                  "end": "16"
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "143936600690443776575450734387865594914",
+                "version": "sha256:86986403b57c90faa9803f78dc73e0ce5302f0d4c2cefcb84868fd7ada98cf6e",
+                "stability": "stable",
+                "source": {
+                  "start": "16",
+                  "end": "25"
+                },
+                "body": {
+                  "start": "17",
+                  "end": "24"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "citation_reference",
+                  "key": "engine",
+                  "target": null
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "160950030468691726930902243010103924550",
+                "version": "sha256:5e020eddcfa3f653af88cceb887102866daba4d55463f209f6ec103a1296a2a3",
+                "stability": "stable",
+                "source": {
+                  "start": "17",
+                  "end": "24"
+                },
+                "body": {
+                  "start": "17",
+                  "end": "24"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "replace_node",
+              "node_id": "205878385918638799511319746301630253418",
+              "expected_version": "sha256:099cd7e94290ac107b7f3c79b70c058a03840a3a897714d395d2f0dccc7bbfd9",
+              "projection": {
+                "version": "sha256:b1facb44c17dfd54f7b6b4aab8199da88b7bcf36098ac93e945a3b5b8db9eb17",
+                "stability": "stable",
+                "source": {
+                  "start": "12",
+                  "end": "54"
+                },
+                "body": {
+                  "start": "12",
+                  "end": "53"
+                },
+                "content": {
+                  "kind": "paragraph"
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "309390385583024392830560755845452577039",
+                "version": "sha256:18a235ca91445dbcbd37f23b9eacb8a82e974bbb4426bce7daf4079d0a8a6d98",
+                "stability": "provisional",
+                "source": {
+                  "start": "55",
+                  "end": "56"
+                },
+                "body": {
+                  "start": "55",
+                  "end": "56"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "paragraph"
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "327789594541816299661380508075563766396",
+                "version": "sha256:06e99ce0bd31408fb4ec8d95e19019a5c0c84351b06034c63f6d337fb003231a",
+                "stability": "stable",
+                "source": {
+                  "start": "25",
+                  "end": "53"
+                },
+                "body": {
+                  "start": "25",
+                  "end": "53"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "143936600690443776575450734387865594914"
+              },
+              "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+              "start": 0,
+              "delete_count": 0,
+              "insert": [
+                "160950030468691726930902243010103924550"
+              ],
+              "new_version": "sha256:d4a362e5bf9ef2cd7f10ef2e75a49ee4935678655a5820c70a35e77105c8c636"
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "205878385918638799511319746301630253418"
+              },
+              "expected_version": "sha256:e9f7436733d4592750669833d601425ab4b569ae1ba7352252a69025c01f71ab",
+              "start": 1,
+              "delete_count": 0,
+              "insert": [
+                "143936600690443776575450734387865594914",
+                "327789594541816299661380508075563766396"
+              ],
+              "new_version": "sha256:05aa3cc919763dccdb3f7b7774ba1fcb191055c746ab2d8f444c8554b2e2ce37"
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "309390385583024392830560755845452577039"
+              },
+              "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+              "start": 0,
+              "delete_count": 0,
+              "insert": [
+                "1469793683596128351868875659483758014"
+              ],
+              "new_version": "sha256:0421c55c87622aa24bb44cd6e609473dd9f6e8c3cb535c91de353d876e6f9f60"
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "document"
+              },
+              "expected_version": "sha256:dfa6d92a255dc1da174ec164dde13745c67272800391b6afae4b05e99ae352cf",
+              "start": 2,
+              "delete_count": 0,
+              "insert": [
+                "309390385583024392830560755845452577039"
+              ],
+              "new_version": "sha256:8d4eed24e7dec42a60819957f264397c29ec06de843beff2b9223a3bfdb8c53e"
+            },
+            {
+              "kind": "advance_projection",
+              "expected_cursor": "17",
+              "new_cursor": "56"
+            }
+          ]
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "4",
+          "change_id": "sha256:0a4fe041324f44ce2784b1652648daa55cb8030c36b895bdd367fa9afe5dc67c",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "56",
+            "suffix": "`"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "5",
+          "change_id": "sha256:67be5658eda7b5ce1d630f05697e859af207cd5e85e3e13de386842f79ea7b89",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "57",
+            "suffix": "`me"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "6",
+          "change_id": "sha256:3d81d3960eeda8e827d49d4fe0d5ff7bb1f45e7d03d29d2e98251a44d0b30fbe",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "60",
+            "suffix": "rma"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "7",
+          "change_id": "sha256:83d1ca1348e8b43a09c6074bf696e92a82039ec052979b8368c1a4b5fb2e00bc",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "63",
+            "suffix": "id\nflowchart LR\n  To"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "8",
+          "change_id": "sha256:b2ee30f227379af6195392545efdaecab3f0bcb48034a5d124dc685722db7c37",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "83",
+            "suffix": "ken -"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "9",
+          "change_id": "sha256:f087be1dff401fb8ae68b5a74e330583a312d7bc854117615dabc2f3330cd66e",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "88",
+            "suffix": "->"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "10",
+          "change_id": "sha256:dd010b30c25cf02adba5178c25486b8f750f510ddd0f64124ff85783fa06ec45",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "90",
+            "suffix": " IR\n```\n\n["
+          },
+          "operations": [
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "68229797902479594855032111035110886014",
+                "version": "sha256:c372aa94a3f5397bd7f281de64892b27f87988e4888e76b77ffd4c7585987fe8",
+                "stability": "provisional",
+                "source": {
+                  "start": "99",
+                  "end": "100"
+                },
+                "body": {
+                  "start": "99",
+                  "end": "100"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "text",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "insert_node",
+              "node": {
+                "id": "195953427059562946317314771290793284386",
+                "version": "sha256:662910b8c0a80ed2144026ab667ef63f6c813108ebedb263b24dcf4f28b95ba8",
+                "stability": "provisional",
+                "source": {
+                  "start": "99",
+                  "end": "100"
+                },
+                "body": {
+                  "start": "99",
+                  "end": "100"
+                },
+                "children": {
+                  "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+                  "children": []
+                },
+                "content": {
+                  "kind": "paragraph"
+                }
+              }
+            },
+            {
+              "kind": "replace_node",
+              "node_id": "309390385583024392830560755845452577039",
+              "expected_version": "sha256:18a235ca91445dbcbd37f23b9eacb8a82e974bbb4426bce7daf4079d0a8a6d98",
+              "projection": {
+                "version": "sha256:f253cb2278417d4728cb432e2b8e055b91867e2b588bc7f7315d03295f7dbe9d",
+                "stability": "stable",
+                "source": {
+                  "start": "55",
+                  "end": "97"
+                },
+                "body": {
+                  "start": "66",
+                  "end": "94"
+                },
+                "content": {
+                  "kind": "code_block",
+                  "syntax": {
+                    "kind": "fenced",
+                    "marker": "backtick",
+                    "length": 3
+                  },
+                  "info": "mermaid",
+                  "text": {
+                    "kind": "source"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "195953427059562946317314771290793284386"
+              },
+              "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+              "start": 0,
+              "delete_count": 0,
+              "insert": [
+                "68229797902479594855032111035110886014"
+              ],
+              "new_version": "sha256:ba10aae4de048d1958707395a5b4bcdb90e5c58d06e1caea07ed8807558f5595"
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "309390385583024392830560755845452577039"
+              },
+              "expected_version": "sha256:0421c55c87622aa24bb44cd6e609473dd9f6e8c3cb535c91de353d876e6f9f60",
+              "start": 0,
+              "delete_count": 1,
+              "insert": [],
+              "new_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5"
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "document"
+              },
+              "expected_version": "sha256:8d4eed24e7dec42a60819957f264397c29ec06de843beff2b9223a3bfdb8c53e",
+              "start": 3,
+              "delete_count": 0,
+              "insert": [
+                "195953427059562946317314771290793284386"
+              ],
+              "new_version": "sha256:811fd8d6ff079ed88118e44bc37c297e6ac2de5e4435f4925e959408bf7399f2"
+            },
+            {
+              "kind": "remove_node",
+              "node_id": "1469793683596128351868875659483758014",
+              "expected_version": "sha256:1edd03eac56e69e9414cc1d03813a5e0e057b5fed2a81652fc7eea059e6a9950"
+            },
+            {
+              "kind": "advance_projection",
+              "expected_cursor": "56",
+              "new_cursor": "100"
+            }
+          ]
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "11",
+          "change_id": "sha256:6cae1b65fef0f1a5b90cc4223200ff611ca055bf5d98e8523f174b9363b6526e",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "100",
+            "suffix": "@en"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "12",
+          "change_id": "sha256:95af3173197175ac3f0d0fb99c14d2b0b184a1038ebd3295554a18001de916a4",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "103",
+            "suffix": "gine"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "13",
+          "change_id": "sha256:0d8983bd1acfbbecc6c862fc87befeae2fb0caa20da253fe54bbebb2f45ddbdb",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "107",
+            "suffix": "]: https://mdstream.dev/engine \"mdstream\"\n"
+          },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "14",
+          "change_id": "sha256:d033c60ee410ffb834a61b817f0d59a20418f06e13e777d3c80ce6940e346682",
+          "epoch_start": null,
+          "source": {
+            "expected_cursor": "149",
+            "suffix": ""
+          },
+          "operations": [
+            {
+              "kind": "insert_resource",
+              "resource": {
+                "id": "154582791709149689190109869243805354114",
+                "version": "sha256:a6dc8c59540dbe9df508610cc550af5092d8bd8aac8bb12b35243d2d986011ee",
+                "content": {
+                  "kind": "citation",
+                  "protocol": "mdstream.citation/1",
+                  "key": "engine",
+                  "destination": "https://mdstream.dev/engine",
+                  "title": "mdstream"
+                }
+              }
+            },
+            {
+              "kind": "replace_node",
+              "node_id": "143936600690443776575450734387865594914",
+              "expected_version": "sha256:86986403b57c90faa9803f78dc73e0ce5302f0d4c2cefcb84868fd7ada98cf6e",
+              "projection": {
+                "version": "sha256:f5ce0733e8d48761db2703b81bacf99fb190208ac90cf3d42dbd8ece16921aae",
+                "stability": "stable",
+                "source": {
+                  "start": "16",
+                  "end": "25"
+                },
+                "body": {
+                  "start": "17",
+                  "end": "24"
+                },
+                "content": {
+                  "kind": "citation_reference",
+                  "key": "engine",
+                  "target": {
+                    "id": "154582791709149689190109869243805354114",
+                    "version": "sha256:a6dc8c59540dbe9df508610cc550af5092d8bd8aac8bb12b35243d2d986011ee"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "replace_node",
+              "node_id": "195953427059562946317314771290793284386",
+              "expected_version": "sha256:662910b8c0a80ed2144026ab667ef63f6c813108ebedb263b24dcf4f28b95ba8",
+              "projection": {
+                "version": "sha256:0768be2db67fe1b592015e461453c2d7357ccdf44df50a7d4ee1d25214adef53",
+                "stability": "stable",
+                "source": {
+                  "start": "99",
+                  "end": "148"
+                },
+                "body": {
+                  "start": "99",
+                  "end": "148"
+                },
+                "content": {
+                  "kind": "citation_definition",
+                  "key": "engine",
+                  "target": {
+                    "id": "154582791709149689190109869243805354114",
+                    "version": "sha256:a6dc8c59540dbe9df508610cc550af5092d8bd8aac8bb12b35243d2d986011ee"
+                  }
+                }
+              }
+            },
+            {
+              "kind": "splice_children",
+              "owner": {
+                "kind": "node",
+                "node_id": "195953427059562946317314771290793284386"
+              },
+              "expected_version": "sha256:ba10aae4de048d1958707395a5b4bcdb90e5c58d06e1caea07ed8807558f5595",
+              "start": 0,
+              "delete_count": 1,
+              "insert": [],
+              "new_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5"
+            },
+            {
+              "kind": "remove_node",
+              "node_id": "68229797902479594855032111035110886014",
+              "expected_version": "sha256:c372aa94a3f5397bd7f281de64892b27f87988e4888e76b77ffd4c7585987fe8"
+            },
+            {
+              "kind": "advance_projection",
+              "expected_cursor": "100",
+              "new_cursor": "149"
+            },
+            {
+              "kind": "finish_document"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "normalized_snapshot": {
+      "schema": "mdstream.content/0.4",
+      "maturity": "final",
+      "epoch": "1",
+      "lifecycle": "finalized",
+      "source": "# Adoption\n\nSee [@Engine] while this diagram streams.\n\n```mermaid\nflowchart LR\n  Token --> IR\n```\n\n[@engine]: https://mdstream.dev/engine \"mdstream\"\n",
+      "projection_cursor": "149",
+      "roots": {
+        "version": "sha256:811fd8d6ff079ed88118e44bc37c297e6ac2de5e4435f4925e959408bf7399f2",
+        "children": [
+          "215157159055805432069892866961677548931",
+          "205878385918638799511319746301630253418",
+          "309390385583024392830560755845452577039",
+          "195953427059562946317314771290793284386"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "31705325778352836139328790500990906232",
+          "version": "sha256:79d214eb7ee33ece8a577714b72f93443eab8a91b6fcd5f2c64b8665bf2935f1",
+          "stability": "stable",
+          "source": {
+            "start": "12",
+            "end": "16"
+          },
+          "body": {
+            "start": "12",
+            "end": "16"
+          },
+          "children": {
+            "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+            "children": []
+          },
+          "content": {
+            "kind": "text",
+            "text": {
+              "kind": "source"
+            }
+          }
+        },
+        {
+          "id": "97436993404181190931083532349247918148",
+          "version": "sha256:900dc9e79f33c3ef898bad669702d8ce11b7de46a6a5367be871627487996914",
+          "stability": "stable",
+          "source": {
+            "start": "2",
+            "end": "10"
+          },
+          "body": {
+            "start": "2",
+            "end": "10"
+          },
+          "children": {
+            "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+            "children": []
+          },
+          "content": {
+            "kind": "text",
+            "text": {
+              "kind": "source"
+            }
+          }
+        },
+        {
+          "id": "143936600690443776575450734387865594914",
+          "version": "sha256:f5ce0733e8d48761db2703b81bacf99fb190208ac90cf3d42dbd8ece16921aae",
+          "stability": "stable",
+          "source": {
+            "start": "16",
+            "end": "25"
+          },
+          "body": {
+            "start": "17",
+            "end": "24"
+          },
+          "children": {
+            "version": "sha256:d4a362e5bf9ef2cd7f10ef2e75a49ee4935678655a5820c70a35e77105c8c636",
+            "children": [
+              "160950030468691726930902243010103924550"
+            ]
+          },
+          "content": {
+            "kind": "citation_reference",
+            "key": "engine",
+            "target": {
+              "id": "154582791709149689190109869243805354114",
+              "version": "sha256:a6dc8c59540dbe9df508610cc550af5092d8bd8aac8bb12b35243d2d986011ee"
+            }
+          }
+        },
+        {
+          "id": "160950030468691726930902243010103924550",
+          "version": "sha256:5e020eddcfa3f653af88cceb887102866daba4d55463f209f6ec103a1296a2a3",
+          "stability": "stable",
+          "source": {
+            "start": "17",
+            "end": "24"
+          },
+          "body": {
+            "start": "17",
+            "end": "24"
+          },
+          "children": {
+            "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+            "children": []
+          },
+          "content": {
+            "kind": "text",
+            "text": {
+              "kind": "source"
+            }
+          }
+        },
+        {
+          "id": "195953427059562946317314771290793284386",
+          "version": "sha256:0768be2db67fe1b592015e461453c2d7357ccdf44df50a7d4ee1d25214adef53",
+          "stability": "stable",
+          "source": {
+            "start": "99",
+            "end": "148"
+          },
+          "body": {
+            "start": "99",
+            "end": "148"
+          },
+          "children": {
+            "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+            "children": []
+          },
+          "content": {
+            "kind": "citation_definition",
+            "key": "engine",
+            "target": {
+              "id": "154582791709149689190109869243805354114",
+              "version": "sha256:a6dc8c59540dbe9df508610cc550af5092d8bd8aac8bb12b35243d2d986011ee"
+            }
+          }
+        },
+        {
+          "id": "205878385918638799511319746301630253418",
+          "version": "sha256:b1facb44c17dfd54f7b6b4aab8199da88b7bcf36098ac93e945a3b5b8db9eb17",
+          "stability": "stable",
+          "source": {
+            "start": "12",
+            "end": "54"
+          },
+          "body": {
+            "start": "12",
+            "end": "53"
+          },
+          "children": {
+            "version": "sha256:05aa3cc919763dccdb3f7b7774ba1fcb191055c746ab2d8f444c8554b2e2ce37",
+            "children": [
+              "31705325778352836139328790500990906232",
+              "143936600690443776575450734387865594914",
+              "327789594541816299661380508075563766396"
+            ]
+          },
+          "content": {
+            "kind": "paragraph"
+          }
+        },
+        {
+          "id": "215157159055805432069892866961677548931",
+          "version": "sha256:231eb2557458c8b049059f102441ddf095f8e3353d84feddfff556476138926c",
+          "stability": "stable",
+          "source": {
+            "start": "0",
+            "end": "10"
+          },
+          "body": {
+            "start": "2",
+            "end": "10"
+          },
+          "children": {
+            "version": "sha256:34b9025a98dc0f74ccaea2aff6f772328feea78a47180f9e211c016e8fe7a73c",
+            "children": [
+              "97436993404181190931083532349247918148"
+            ]
+          },
+          "content": {
+            "kind": "heading",
+            "level": 1
+          }
+        },
+        {
+          "id": "309390385583024392830560755845452577039",
+          "version": "sha256:f253cb2278417d4728cb432e2b8e055b91867e2b588bc7f7315d03295f7dbe9d",
+          "stability": "stable",
+          "source": {
+            "start": "55",
+            "end": "97"
+          },
+          "body": {
+            "start": "66",
+            "end": "94"
+          },
+          "children": {
+            "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+            "children": []
+          },
+          "content": {
+            "kind": "code_block",
+            "syntax": {
+              "kind": "fenced",
+              "marker": "backtick",
+              "length": 3
+            },
+            "info": "mermaid",
+            "text": {
+              "kind": "source"
+            }
+          }
+        },
+        {
+          "id": "327789594541816299661380508075563766396",
+          "version": "sha256:06e99ce0bd31408fb4ec8d95e19019a5c0c84351b06034c63f6d337fb003231a",
+          "stability": "stable",
+          "source": {
+            "start": "25",
+            "end": "53"
+          },
+          "body": {
+            "start": "25",
+            "end": "53"
+          },
+          "children": {
+            "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+            "children": []
+          },
+          "content": {
+            "kind": "text",
+            "text": {
+              "kind": "source"
+            }
+          }
+        }
+      ],
+      "resources": [
+        {
+          "id": "154582791709149689190109869243805354114",
+          "version": "sha256:a6dc8c59540dbe9df508610cc550af5092d8bd8aac8bb12b35243d2d986011ee",
+          "content": {
+            "kind": "citation",
+            "protocol": "mdstream.citation/1",
+            "key": "engine",
+            "destination": "https://mdstream.dev/engine",
+            "title": "mdstream"
+          }
+        }
+      ]
+    }
+  },
+  "required_checkpoints": []
+}

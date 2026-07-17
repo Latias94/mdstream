@@ -1,14 +1,14 @@
 {
-  "schema": "mdstream.conformance/0.4-candidate.1",
+  "schema": "mdstream.conformance/0.4",
   "id": "protocol.linear-source",
   "description": "Equivalent whole and character traces with different sequence histories.",
   "source": "abc",
   "dialect": {
-    "id": "mdstream.canonical/0.4-candidate.1",
+    "id": "mdstream.canonical/0.4",
     "extensions": []
   },
   "profile": {
-    "id": "mdstream.protocol/0.4-candidate.1",
+    "id": "mdstream.protocol/0.4",
     "claim_scope": ["protocol_replay"],
     "pipeline": []
   },
@@ -39,8 +39,8 @@
       ],
       "changes": [
         {
-          "schema": "mdstream.content/0.4-candidate.1",
-          "maturity": "candidate",
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
           "epoch": "1",
           "sequence": "0",
           "change_id": "whole:start",
@@ -49,8 +49,8 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-candidate.1",
-          "maturity": "candidate",
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
           "epoch": "1",
           "sequence": "1",
           "change_id": "whole:finish",
@@ -79,8 +79,8 @@
       ],
       "changes": [
         {
-          "schema": "mdstream.content/0.4-candidate.1",
-          "maturity": "candidate",
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
           "epoch": "1",
           "sequence": "0",
           "change_id": "chars:start",
@@ -89,8 +89,8 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-candidate.1",
-          "maturity": "candidate",
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
           "epoch": "1",
           "sequence": "1",
           "change_id": "chars:1",
@@ -99,8 +99,8 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-candidate.1",
-          "maturity": "candidate",
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
           "epoch": "1",
           "sequence": "2",
           "change_id": "chars:2",
@@ -109,8 +109,8 @@
           "operations": []
         },
         {
-          "schema": "mdstream.content/0.4-candidate.1",
-          "maturity": "candidate",
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
           "epoch": "1",
           "sequence": "3",
           "change_id": "chars:finish",
@@ -130,8 +130,8 @@
   ],
   "expected": {
     "normalized_snapshot": {
-      "schema": "mdstream.content/0.4-candidate.1",
-      "maturity": "candidate",
+      "schema": "mdstream.content/0.4",
+      "maturity": "final",
       "epoch": "1",
       "lifecycle": "finalized",
       "source": "abc",
@@ -152,8 +152,8 @@
       "lifecycle": "open",
       "source": "a",
       "normalized_snapshot": {
-        "schema": "mdstream.content/0.4-candidate.1",
-        "maturity": "candidate",
+        "schema": "mdstream.content/0.4",
+        "maturity": "final",
         "epoch": "1",
         "lifecycle": "open",
         "source": "a",

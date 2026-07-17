@@ -107,6 +107,7 @@ cargo run -p mdstream --example minimal
 cargo run -p mdstream --example custom_blocks
 cargo run -p mdstream --example egui_adapter
 cargo run -p mdstream --example gpui_adapter
+cargo run -p mdstream --example headless_state
 cargo +1.88.0 run -p mdstream-tokio --example agent_tui
 ```
 
@@ -120,6 +121,8 @@ views, and explicit recovery without a renderer or UI-framework dependency.
 React consumers can bind these stores with `useSyncExternalStore`; mdstream does
 not ship React hooks, components, themes, or a competing Markdown renderer. See
 [`ADR 0004`](docs/ADR_0004_FRAMEWORK_NEUTRAL_WEB_BINDINGS.md) for the boundary.
+The concrete state, recovery, and artifact responsibilities are documented in
+[`ADAPTERS.md`](docs/ADAPTERS.md).
 
 ## Migration From 0.3
 

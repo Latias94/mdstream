@@ -1,5 +1,5 @@
 {
-  "schema": "mdstream.conformance/0.4-candidate.1",
+  "schema": "mdstream.conformance/0.4",
   "id": "streamdown.footnote-framing",
   "description": "Pinned Streamdown characterization: a real numeric footnote keeps the document in one framing block.",
   "source": "Here is a footnote[^1].\n\n[^1]: This is the footnote content.\n",

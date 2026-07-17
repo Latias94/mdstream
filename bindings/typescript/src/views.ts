@@ -58,9 +58,13 @@ export type ApplyOutcomeView =
     };
 
 export interface ChangeImpactView {
+  /** Invalidated node keys, including every removed node key. */
   readonly changedNodeIds: readonly NodeId[];
+  /** Removed node keys; a subset of `changedNodeIds`. */
   readonly removedNodeIds: readonly NodeId[];
+  /** Invalidated resource keys, including every removed resource key. */
   readonly changedResourceIds: readonly ResourceId[];
+  /** Removed resource keys; a subset of `changedResourceIds`. */
   readonly removedResourceIds: readonly ResourceId[];
   readonly sourceChanged: boolean;
   readonly projectionChanged: boolean;

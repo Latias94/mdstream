@@ -5,10 +5,11 @@ use std::{
 };
 
 use mdstream_conformance::{
-    ChunkSchedule, FIXTURE_SCHEMA, ProtocolTrace, TraceInputEvent, assert_epoch_reset_isolation,
-    assert_fixture_protocol, assert_fork_snapshot_recovery, assert_gap_snapshot_recovery,
-    assert_last_retry_idempotent, assert_older_change_stale, exhaustive_utf8_partitions,
-    load_fixture_dir, replay_protocol_trace, source_only_trace,
+    ChunkSchedule, FIXTURE_SCHEMA, Fixture, ProtocolTrace, TraceInputEvent,
+    assert_epoch_reset_isolation, assert_fixture_protocol, assert_fork_snapshot_recovery,
+    assert_gap_snapshot_recovery, assert_last_retry_idempotent, assert_older_change_stale,
+    exhaustive_utf8_partitions, fixture_paths, load_fixture_dir, replay_protocol_trace,
+    source_only_trace,
 };
 use mdstream_protocol::{
     ApplyOutcome, BlockQuoteKind, ChangeId, ChangeSet, ChildList, ChildListOwner, CitationProtocol,
@@ -155,17 +156,10 @@ fn corpus_schema_is_valid_and_every_fixture_conforms() {
     let validator = jsonschema::validator_for(&schema).unwrap();
 
     let fixture_dir = root.join("fixtures");
-    let mut paths = fs::read_dir(&fixture_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "json")
-        })
-        .collect::<Vec<_>>();
-    paths.sort();
+    let paths = fixture_paths(&fixture_dir).unwrap();
     assert!(!paths.is_empty(), "conformance corpus must not be empty");
 
+    let mut fixtures = Vec::new();
     for path in paths {
         let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         let errors = validator
@@ -178,9 +172,11 @@ fn corpus_schema_is_valid_and_every_fixture_conforms() {
             path.display(),
             errors.join("\n")
         );
+        let fixture: Fixture = serde_json::from_value(value).unwrap();
+        fixture.validate().unwrap();
+        fixtures.push(fixture);
     }
 
-    let fixtures = load_fixture_dir(fixture_dir).unwrap();
     assert!(
         fixtures
             .iter()
@@ -198,6 +194,12 @@ fn checked_in_protocol_traces_replay_to_their_normalized_goldens() {
     assert!(
         protocol_fixtures.len() >= 2,
         "corpus must include linear and reset protocol fixtures"
+    );
+    assert!(
+        protocol_fixtures
+            .iter()
+            .any(|fixture| fixture.id == "adoption.headless-rich-content"),
+        "recursive corpus loading must include nested adoption fixtures"
     );
     for fixture in protocol_fixtures {
         assert_fixture_protocol(fixture).unwrap();

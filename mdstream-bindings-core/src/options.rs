@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::errors::{BindingError, engine_error, processor_limits_error};
 
-pub const BINDING_OPTIONS_SCHEMA: &str = "mdstream.bindings-options/0.4-candidate.1";
+pub const BINDING_OPTIONS_SCHEMA: &str = "mdstream.bindings-options/0.4";
 const MAX_OPTIONS_BYTES: usize = 64 * 1024;
 const JSON_ESCAPE_FACTOR: usize = 6;
 const BINDING_ENVELOPE_BYTES: usize = 4 * 1024;

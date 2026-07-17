@@ -483,7 +483,7 @@ fn ensure_schema(schema: &str) -> Result<(), BindingError> {
 mod tests {
     use super::*;
 
-    const SCHEMA: &str = "mdstream.bindings/0.4-candidate.1";
+    const SCHEMA: &str = "mdstream.bindings/0.4";
 
     #[test]
     fn reducer_commands_borrow_large_payload_fields_and_cover_every_variant() {

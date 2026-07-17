@@ -10,7 +10,7 @@ use crate::{
     ProtocolLimits, SemanticResource, SnapshotDigest,
 };
 
-pub const PROTOCOL_SCHEMA: &str = "mdstream.content/0.4-candidate.1";
+pub const PROTOCOL_SCHEMA: &str = "mdstream.content/0.4";
 
 /// Deserializes a nullable field while keeping its presence mandatory.
 pub(crate) fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -204,7 +204,7 @@ impl Snapshot {
             resources,
         } = parts;
         let schema = SchemaVersion::current();
-        let maturity = ProtocolMaturity::Candidate;
+        let maturity = ProtocolMaturity::Final;
         let digest = derive_snapshot_digest(SnapshotDigestView {
             schema: &schema,
             maturity,
@@ -262,7 +262,7 @@ pub fn encode_change_json(
     encode_bounded(value, max_encoded_bytes, "encoded_change")
 }
 
-/// Decodes and validates a binding-candidate change from canonical JSON.
+/// Decodes and validates a final 0.4 change from canonical JSON.
 pub fn decode_change_json(
     bytes: &[u8],
     max_encoded_bytes: usize,

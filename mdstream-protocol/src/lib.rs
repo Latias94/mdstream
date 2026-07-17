@@ -7,10 +7,9 @@
 //!
 //! # Stability
 //!
-//! `mdstream.content/0.4-candidate.1` is the current binding candidate. Its Rust
-//! and JSON surfaces may still change through breaking candidate revisions
-//! until adoption conformance promotes the contract to final 0.4. Renderer
-//! artifacts and parser-specific types intentionally do not belong here.
+//! `mdstream.content/0.4` is the final 0.4 contract validated by native Rust,
+//! TypeScript/WASM, and standalone Merman adoption suites. Renderer artifacts
+//! and parser-specific types intentionally do not belong here.
 
 mod delta;
 mod document;

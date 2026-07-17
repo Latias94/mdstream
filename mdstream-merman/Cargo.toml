@@ -18,6 +18,10 @@ merman = { version = "=0.8.0-alpha.3", default-features = false, features = [
     "render",
 ] }
 
+[dev-dependencies]
+mdstream = { path = "../mdstream" }
+mdstream-conformance = { path = "../mdstream-conformance" }
+
 [package.metadata.docs.rs]
 all-features = true
 

@@ -162,7 +162,7 @@ fn reducer_gap_recovers_only_through_an_explicit_snapshot() {
 #[test]
 fn invalid_options_commands_utf8_and_encoded_inputs_are_atomic() {
     let invalid_options = br#"{
-        "schema":"mdstream.bindings-options/0.4-candidate.1",
+        "schema":"mdstream.bindings-options/0.4",
         "unknown":true
     }"#;
     assert_eq!(

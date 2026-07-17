@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-fn envelope_has_explicit_candidate_schema_and_precise_operation_tags() {
+fn envelope_has_explicit_final_schema_and_precise_operation_tags() {
     let change = rooted_change(leaf(0, ContentKind::Paragraph {}));
     let value = serde_json::to_value(&change).unwrap();
-    assert_eq!(value["schema"], "mdstream.content/0.4-candidate.1");
-    assert_eq!(value["maturity"], "candidate");
+    assert_eq!(value["schema"], "mdstream.content/0.4");
+    assert_eq!(value["maturity"], "final");
     assert_eq!(value["epoch"], "9");
     assert_eq!(value["sequence"], "0");
     assert_eq!(value["operations"][0]["kind"], "insert_node");
@@ -15,9 +15,9 @@ fn envelope_has_explicit_candidate_schema_and_precise_operation_tags() {
 }
 
 #[test]
-fn candidate_gate_rejects_draft_and_final_envelopes_until_the_next_maturity_transition() {
+fn final_gate_rejects_draft_and_candidate_envelopes() {
     let change = rooted_change(leaf(0, ContentKind::Paragraph {}));
-    for maturity in ["draft", "final"] {
+    for maturity in ["draft", "candidate"] {
         let mut value = serde_json::to_value(&change).unwrap();
         value["maturity"] = serde_json::json!(maturity);
         let bytes = serde_json::to_vec(&value).unwrap();
@@ -34,7 +34,20 @@ fn candidate_gate_rejects_draft_and_final_envelopes_until_the_next_maturity_tran
 }
 
 #[test]
-fn candidate_gate_accepts_snapshot_and_rejects_digest_consistent_draft_and_final_snapshots() {
+fn final_gate_rejects_the_superseded_candidate_schema() {
+    let change = rooted_change(leaf(0, ContentKind::Paragraph {}));
+    let mut value = serde_json::to_value(change).unwrap();
+    value["schema"] = serde_json::json!("mdstream.content/0.4-candidate.1");
+    let bytes = serde_json::to_vec(&value).unwrap();
+    assert!(matches!(
+        decode_change_json(&bytes, bytes.len(), ProtocolLimits::default()),
+        Err(ProtocolError::UnsupportedSchema(schema))
+            if schema == "mdstream.content/0.4-candidate.1"
+    ));
+}
+
+#[test]
+fn final_gate_accepts_snapshot_and_rejects_digest_consistent_draft_and_candidate_snapshots() {
     let mut producer = Reducer::new();
     producer
         .apply(
@@ -50,13 +63,13 @@ fn candidate_gate_accepts_snapshot_and_rejects_digest_consistent_draft_and_final
         .unwrap();
     let snapshot = producer.document().unwrap().snapshot();
     let limits = ProtocolLimits::default();
-    let candidate_bytes = serde_json::to_vec(&snapshot).unwrap();
+    let final_bytes = serde_json::to_vec(&snapshot).unwrap();
     assert_eq!(
-        decode_snapshot_json(&candidate_bytes, candidate_bytes.len(), limits).unwrap(),
+        decode_snapshot_json(&final_bytes, final_bytes.len(), limits).unwrap(),
         snapshot
     );
 
-    for maturity in ["draft", "final"] {
+    for maturity in ["draft", "candidate"] {
         let mut value = serde_json::to_value(&snapshot).unwrap();
         value["maturity"] = serde_json::json!(maturity);
         refresh_snapshot_digest(&mut value);

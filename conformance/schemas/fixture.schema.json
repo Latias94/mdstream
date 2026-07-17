@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mdstream.dev/schemas/conformance/0.4-candidate.1/fixture.json",
+  "$id": "https://mdstream.dev/schemas/conformance/0.4/fixture.json",
   "title": "mdstream conformance fixture",
   "type": "object",
   "additionalProperties": false,
@@ -16,7 +16,7 @@
     "expected"
   ],
   "properties": {
-    "schema": { "const": "mdstream.conformance/0.4-candidate.1" },
+    "schema": { "const": "mdstream.conformance/0.4" },
     "id": { "$ref": "#/$defs/identifier" },
     "description": { "type": "string", "minLength": 1 },
     "source": { "type": "string" },
@@ -1065,8 +1065,8 @@
         "operations"
       ],
       "properties": {
-        "schema": { "const": "mdstream.content/0.4-candidate.1" },
-        "maturity": { "const": "candidate" },
+        "schema": { "const": "mdstream.content/0.4" },
+        "maturity": { "const": "final" },
         "epoch": { "$ref": "#/$defs/decimal" },
         "sequence": { "$ref": "#/$defs/decimal" },
         "change_id": { "$ref": "#/$defs/opaque" },
@@ -1194,8 +1194,8 @@
         "resources"
       ],
       "properties": {
-        "schema": { "const": "mdstream.content/0.4-candidate.1" },
-        "maturity": { "const": "candidate" },
+        "schema": { "const": "mdstream.content/0.4" },
+        "maturity": { "const": "final" },
         "epoch": { "$ref": "#/$defs/decimal" },
         "lifecycle": { "enum": ["open", "finalized"] },
         "source": { "type": "string" },

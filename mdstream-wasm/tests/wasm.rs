@@ -111,11 +111,8 @@ fn linear_fixture() -> Fixture {
 fn metadata_payload_kinds_and_consumption_are_stable() {
     assert_eq!(abi_version(), 1);
     assert_eq!(package_version(), "0.4.0");
-    assert_eq!(binding_schema(), "mdstream.bindings/0.4-candidate.1");
-    assert_eq!(
-        binding_options_schema(),
-        "mdstream.bindings-options/0.4-candidate.1"
-    );
+    assert_eq!(binding_schema(), "mdstream.bindings/0.4");
+    assert_eq!(binding_options_schema(), "mdstream.bindings-options/0.4");
     assert_eq!(MdstreamPayloadKind::Change as u32, 1);
     assert_eq!(MdstreamPayloadKind::ArtifactView as u32, 9);
 

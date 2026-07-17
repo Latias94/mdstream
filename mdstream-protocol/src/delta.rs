@@ -357,7 +357,7 @@ impl ChangeSet {
     ) -> Result<Self, ProtocolError> {
         let change = Self {
             schema: SchemaVersion::current(),
-            maturity: ProtocolMaturity::Candidate,
+            maturity: ProtocolMaturity::Final,
             epoch,
             sequence,
             change_id,
@@ -383,7 +383,7 @@ impl ChangeSet {
     ) -> Result<Self, ProtocolError> {
         let change = Self {
             schema: SchemaVersion::current(),
-            maturity: ProtocolMaturity::Candidate,
+            maturity: ProtocolMaturity::Final,
             epoch,
             sequence: Sequence::new(0),
             change_id,
@@ -452,7 +452,7 @@ impl ChangeSet {
 
     pub(crate) fn validate_envelope(&self) -> Result<(), ProtocolError> {
         self.schema.ensure_supported()?;
-        if self.maturity != ProtocolMaturity::Candidate {
+        if self.maturity != ProtocolMaturity::Final {
             return Err(ProtocolError::UnsupportedSchema(format!(
                 "maturity {:?}",
                 self.maturity
