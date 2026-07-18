@@ -10,12 +10,21 @@ import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from build_native import PLUGIN_ROOT, REPOSITORY_ROOT, REQUIRED_EXPORTS
+from package_metadata import PackageMetadataError, package_archive_path
+
+sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
+
+from archive_policy import (  # noqa: E402
+    ArchiveLimits,
+    ArchivePolicyError,
+    extraction_path,
+    read_archive,
+)
 
 
 BUDGET_PATH = REPOSITORY_ROOT / "bindings" / "budgets.json"
@@ -159,31 +168,18 @@ def _group_for_entry(name: str) -> tuple[str, str] | None:
     return None
 
 
-def _safe_archive_entries(path: Path) -> dict[str, bytes]:
-    entries: dict[str, bytes] = {}
+def _safe_archive_entries(
+    path: Path,
+    archive_limits: ArchiveLimits | dict[str, object] | None = None,
+) -> dict[str, bytes]:
     try:
-        with tarfile.open(path, "r:gz") as archive:
-            for member in archive.getmembers():
-                pure = PurePosixPath(member.name)
-                if pure.is_absolute() or ".." in pure.parts:
-                    raise PackageSmokeError(
-                        f"publish archive contains unsafe path: {member.name}"
-                    )
-                if member.issym() or member.islnk():
-                    raise PackageSmokeError(
-                        f"publish archive contains a link: {member.name}"
-                    )
-                if not member.isfile():
-                    continue
-                handle = archive.extractfile(member)
-                if handle is None:
-                    raise PackageSmokeError(
-                        f"failed to read publish archive entry: {member.name}"
-                    )
-                entries[member.name] = handle.read()
-    except (OSError, tarfile.TarError) as error:
-        raise PackageSmokeError(f"failed to read publish archive: {error}") from error
-    return entries
+        return {
+            entry.name: entry.data
+            for entry in read_archive(path, archive_limits)
+            if entry.data is not None
+        }
+    except ArchivePolicyError as error:
+        raise PackageSmokeError(str(error)) from error
 
 
 def inspect_package_archive(
@@ -193,10 +189,11 @@ def inspect_package_archive(
     native_ceiling_bytes: int,
     increment_ceiling_bytes: int,
     require_all_platforms: bool,
+    archive_limits: ArchiveLimits | dict[str, object] | None = None,
 ) -> ArchiveReport:
     if not archive.is_file():
         raise PackageSmokeError(f"publish archive does not exist: {archive}")
-    entries = _safe_archive_entries(archive)
+    entries = _safe_archive_entries(archive, archive_limits)
     pubspec = entries.get("pubspec.yaml")
     if pubspec is None:
         raise PackageSmokeError("publish archive does not contain pubspec.yaml")
@@ -365,7 +362,10 @@ def _dependency_graph() -> dict[str, object]:
 def _extract_archive(archive: Path, destination: Path) -> None:
     entries = _safe_archive_entries(archive)
     for name, data in entries.items():
-        path = destination.joinpath(*PurePosixPath(name).parts)
+        try:
+            path = extraction_path(destination, name)
+        except ArchivePolicyError as error:
+            raise PackageSmokeError(str(error)) from error
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
 
@@ -446,6 +446,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-runtime", action="store_true")
     parser.add_argument("--skip-archive", action="store_true")
     parser.add_argument("--keep-temporary", action="store_true")
+    parser.add_argument("--print-archive-path", action="store_true")
     return parser.parse_args()
 
 
@@ -459,6 +460,14 @@ def _host_platform() -> str:
 
 def main() -> int:
     args = _parse_args()
+    try:
+        default_archive = package_archive_path()
+    except PackageMetadataError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    if args.print_archive_path:
+        print(default_archive.relative_to(REPOSITORY_ROOT).as_posix())
+        return 0
     budget = _load_budget()
     forbidden = _forbidden_dependencies(budget)
     native_ceiling = _budget_ceiling(budget, "flutter_native_library")
@@ -476,12 +485,7 @@ def main() -> int:
         validate_dependency_graph(_dependency_graph(), forbidden)
 
         if archive is None and not args.skip_archive:
-            archive = (
-                REPOSITORY_ROOT
-                / "target"
-                / "flutter-package"
-                / "mdstream_flutter-0.4.0.tar.gz"
-            )
+            archive = default_archive
             _create_archive(archive)
         report: ArchiveReport | None = None
         if archive is not None:

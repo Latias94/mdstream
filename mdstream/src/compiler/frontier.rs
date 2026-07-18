@@ -39,22 +39,46 @@ pub(super) fn stable_root_prefix(
     } else {
         stable_before_last
     };
-    if table_can_absorb_incomplete_last_root(draft, source) {
+    if preceding_root_can_absorb_incomplete_line(draft, source) {
         stable_roots = stable_roots.min(draft.roots.len() - 2);
     }
     Ok(stable_roots.min(custom_stability_limit))
 }
 
-fn table_can_absorb_incomplete_last_root(draft: &DraftForest, source: &str) -> bool {
+fn preceding_root_can_absorb_incomplete_line(draft: &DraftForest, source: &str) -> bool {
     if source.ends_with('\n') || draft.roots.len() < 2 {
         return false;
     }
-    // Pulldown temporarily emits an unfinished table row as a sibling paragraph.
-    let table = &draft.roots[draft.roots.len() - 2];
+    let preceding = &draft.roots[draft.roots.len() - 2];
     let trailing = &draft.roots[draft.roots.len() - 1];
-    matches!(&table.content, DraftContentKind::Table { .. })
-        && matches!(&trailing.content, DraftContentKind::Paragraph)
-        && table.source.end == trailing.source.start
+    if preceding.source.end != trailing.source.start {
+        return false;
+    }
+
+    // An incomplete block marker may temporarily interrupt a paragraph and
+    // become ordinary continuation text once more bytes arrive. Tables have
+    // the same transient sibling shape for an unfinished row.
+    has_lazy_paragraph_tail(preceding)
+        || (matches!(&preceding.content, DraftContentKind::Table { .. })
+            && matches!(&trailing.content, DraftContentKind::Paragraph))
+}
+
+fn has_lazy_paragraph_tail(mut node: &DraftNode) -> bool {
+    loop {
+        match &node.content {
+            DraftContentKind::Paragraph => return true,
+            DraftContentKind::BlockQuote { .. }
+            | DraftContentKind::List { .. }
+            | DraftContentKind::ListItem { .. }
+            | DraftContentKind::FootnoteDefinition { .. } => {
+                let Some(last_child) = node.children.last() else {
+                    return false;
+                };
+                node = last_child;
+            }
+            _ => return false,
+        }
+    }
 }
 
 fn root_is_closed(

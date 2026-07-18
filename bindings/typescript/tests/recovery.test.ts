@@ -12,6 +12,49 @@ import {
 } from "./helpers.js";
 
 describe("Rust-backed external store recovery", () => {
+  it("materializes pending source on demand with stable external-store snapshots", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine();
+    engine.append("a *b");
+
+    const pending = engine.store.pendingSource();
+    expect(pending.getSnapshot()).toBeUndefined();
+    const listener = vi.fn();
+    const unsubscribe = pending.subscribe(listener);
+
+    engine.append("*");
+    expect(listener).toHaveBeenCalledTimes(1);
+    const view = pending.getSnapshot();
+    expect(view).toMatchObject({
+      kind: "pending_source_view",
+      range: { start: "4", end: "5" },
+      text: "*",
+    });
+    expect(pending.getSnapshot()).toBe(view);
+    expect(engine.store.metrics().materializedPendingSourceViews).toBe("1");
+
+    engine.append("é");
+    expect(listener).toHaveBeenCalledTimes(2);
+    const utf8View = pending.getSnapshot();
+    expect(utf8View).not.toBe(view);
+    expect(utf8View).toMatchObject({
+      range: { start: "4", end: "7" },
+      text: "*é",
+    });
+    expect(pending.getSnapshot()).toBe(utf8View);
+    expect(engine.store.metrics().materializedPendingSourceViews).toBe("2");
+
+    engine.append("");
+    expect(listener).toHaveBeenCalledTimes(2);
+    engine.finish();
+    expect(listener).toHaveBeenCalledTimes(3);
+    expect(pending.getSnapshot()).toBeUndefined();
+    expect(engine.store.metrics().materializedPendingSourceViews).toBe("2");
+
+    unsubscribe();
+    engine.close();
+  });
+
   it("does not notify or replace snapshots for idempotent retries", async () => {
     const runtime = await initMdstream({ loader: nodeWasmLoader });
     const trace = loadProtocolFixture().traces.find(({ id }) => id === "characters")!;
@@ -24,12 +67,17 @@ describe("Rust-backed external store recovery", () => {
 
     store.applyChange(encodeChange(trace.changes[0]));
     const first = store.getSnapshot();
+    const firstPending = store.getPendingSourceSnapshot();
+    const pendingListener = vi.fn();
+    store.subscribePendingSource(pendingListener);
     expect(listener).toHaveBeenCalledTimes(1);
 
     const retry = store.applyChange(encodeChange(trace.changes[0]));
     expect(retry.updates[0]?.outcome.kind).toBe("idempotent");
     expect(store.getSnapshot()).toBe(first);
+    expect(store.getPendingSourceSnapshot()).toBe(firstPending);
     expect(listener).toHaveBeenCalledTimes(1);
+    expect(pendingListener).not.toHaveBeenCalled();
     store.close();
   });
 
@@ -47,6 +95,9 @@ describe("Rust-backed external store recovery", () => {
     target.subscribe(listener);
     target.applyChange(encodeChange(trace.changes[0]));
     const lastGoodDocument = target.getSnapshot().document;
+    const lastGoodPending = target.getPendingSourceSnapshot();
+    const pendingListener = vi.fn();
+    target.subscribePendingSource(pendingListener);
 
     const gap = target.applyChange(encodeChange(trace.changes[2]));
     expect(gap.updates[0]?.outcome.kind).toBe("recovery_required");
@@ -54,6 +105,8 @@ describe("Rust-backed external store recovery", () => {
     expect(target.getSnapshot().document?.coordinate).toEqual(
       lastGoodDocument?.coordinate,
     );
+    expect(target.getPendingSourceSnapshot()).toBe(lastGoodPending);
+    expect(pendingListener).not.toHaveBeenCalled();
     expect(listener).toHaveBeenCalledTimes(2);
 
     expect(() => target.applyChange(encodeChange(trace.changes[3]))).toThrowError(
@@ -63,8 +116,14 @@ describe("Rust-backed external store recovery", () => {
 
     target.recoverSnapshot(recovery);
     expect(target.getSnapshot().status.kind).toBe("ready");
+    expect(pendingListener).toHaveBeenCalledTimes(1);
+    const recoveredPending = target.getPendingSourceSnapshot();
+    expect(recoveredPending).not.toBe(lastGoodPending);
+    expect(recoveredPending?.text).toBe("abc");
     target.applyChange(encodeChange(trace.changes[3]));
     expect(target.getSnapshot().document?.lifecycle).toBe("finalized");
+    expect(pendingListener).toHaveBeenCalledTimes(2);
+    expect(target.getPendingSourceSnapshot()).toBeUndefined();
     source.close();
     target.close();
   });

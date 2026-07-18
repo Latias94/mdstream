@@ -3,6 +3,7 @@ import {
   type ContentProcessor,
   type ProcessorErrorListener,
   type ProcessorRegistration,
+  type ProcessorSchedulerLimits,
 } from "./processors.js";
 import {
   createStoreView,
@@ -122,6 +123,23 @@ export interface BatchMetrics {
   readonly wasmAppendCalls: DecimalCounter;
 }
 
+export interface BatchedRecoverySnapshot {
+  readonly flushed: readonly EngineResult[];
+  readonly snapshot: CanonicalSnapshotBytes | undefined;
+}
+
+export class BatchOperationError extends Error {
+  readonly completedResults: readonly EngineResult[];
+
+  constructor(completedResults: readonly EngineResult[], cause: unknown) {
+    super("batch operation failed after committing earlier results", { cause });
+    this.name = "BatchOperationError";
+    this.completedResults = Object.freeze([...completedResults]);
+  }
+}
+
+const emptyEngineResults = Object.freeze([]) as readonly EngineResult[];
+
 const runtimes = new WeakMap<WasmModuleLoader, Promise<MdstreamRuntime>>();
 
 export async function initMdstream(
@@ -184,7 +202,11 @@ export class MdstreamRuntime {
         new this.#wasm.MdstreamReducerSession(optionsJson),
         this.bindingSchema,
       );
-      return MdstreamEngine.fromSessions(engine, store);
+      return MdstreamEngine.fromSessions(
+        engine,
+        store,
+        processorSchedulerLimits(options),
+      );
     } catch (error) {
       engine.free();
       throw MdstreamError.from(error);
@@ -199,11 +221,15 @@ export class MdstreamEngine {
   readonly #scheduler: ProcessorScheduler;
   #closed = false;
 
-  private constructor(engine: WasmEngineSession, store: RustBackedStore) {
+  private constructor(
+    engine: WasmEngineSession,
+    store: RustBackedStore,
+    schedulerLimits: ProcessorSchedulerLimits,
+  ) {
     this.#engine = engine;
     this.#rustStore = store;
     this.store = createStoreView(store);
-    this.#scheduler = new ProcessorScheduler(store);
+    this.#scheduler = new ProcessorScheduler(store, schedulerLimits);
     store.setEventSink((events) => this.#scheduler.handleStoreEvents(events));
   }
 
@@ -211,8 +237,9 @@ export class MdstreamEngine {
   static fromSessions(
     engine: WasmEngineSession,
     store: RustBackedStore,
+    schedulerLimits: ProcessorSchedulerLimits,
   ): MdstreamEngine {
-    return new MdstreamEngine(engine, store);
+    return new MdstreamEngine(engine, store, schedulerLimits);
   }
 
   append(chunk: string): EngineResult {
@@ -350,25 +377,37 @@ export class LosslessInputBatcher {
     this.#maxBatchBytes = maxBatchBytes;
   }
 
-  push(chunk: string): void {
+  push(chunk: string): readonly EngineResult[] {
+    let results: EngineResult[] | undefined;
     const bytes = utf8ByteLength(chunk);
     this.#inputChunks += 1n;
     this.#inputBytes += BigInt(bytes);
     if (bytes === 0) {
-      return;
+      return emptyEngineResults;
     }
     if (this.#pendingBytes > 0 && this.#pendingBytes + bytes > this.#maxBatchBytes) {
-      this.flush();
+      const flushed = this.flush();
+      if (flushed !== undefined) {
+        (results ??= []).push(flushed);
+      }
     }
     if (bytes > this.#maxBatchBytes) {
-      this.#forward(chunk, bytes);
-      return;
+      const forwarded = this.#afterCommitted(
+        results ?? emptyEngineResults,
+        () => this.#forward(chunk, bytes),
+      );
+      (results ??= []).push(forwarded);
+      return Object.freeze(results);
     }
     this.#chunks.push(chunk);
     this.#pendingBytes += bytes;
     if (this.#pendingBytes === this.#maxBatchBytes) {
-      this.flush();
+      const flushed = this.flush();
+      if (flushed !== undefined) {
+        (results ??= []).push(flushed);
+      }
     }
+    return results === undefined ? emptyEngineResults : Object.freeze(results);
   }
 
   flush(): EngineResult | undefined {
@@ -391,27 +430,32 @@ export class LosslessInputBatcher {
     return result;
   }
 
-  finish(): EngineResult {
-    this.flush();
-    const result = this.#engine.finish();
+  finish(): readonly EngineResult[] {
+    const results = this.#flushResults();
+    const result = this.#afterCommitted(results, () => this.#engine.finish());
     this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
-    return result;
+    results.push(result);
+    return Object.freeze(results);
   }
 
-  reset(): EngineResult {
-    this.flush();
-    const result = this.#engine.reset();
+  reset(): readonly EngineResult[] {
+    const results = this.#flushResults();
+    const result = this.#afterCommitted(results, () => this.#engine.reset());
     this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
-    return result;
+    results.push(result);
+    return Object.freeze(results);
   }
 
-  createRecoverySnapshot(): CanonicalSnapshotBytes | undefined {
-    this.flush();
-    const snapshot = this.#engine.createRecoverySnapshot();
+  createRecoverySnapshot(): BatchedRecoverySnapshot {
+    const flushed = this.#flushResults();
+    const snapshot = this.#afterCommitted(
+      flushed,
+      () => this.#engine.createRecoverySnapshot(),
+    );
     if (snapshot !== undefined) {
       this.#outputPayloadBytes += BigInt(snapshot.byteLength);
     }
-    return snapshot;
+    return Object.freeze({ flushed: Object.freeze(flushed), snapshot });
   }
 
   metrics(): BatchMetrics {
@@ -428,15 +472,39 @@ export class LosslessInputBatcher {
     };
   }
 
-  #forward(chunk: string, bytes: number): void {
+  #forward(chunk: string, bytes: number): EngineResult {
     const result = this.#engine.append(chunk);
     this.#recordForward(bytes, result);
+    return result;
   }
 
   #recordForward(bytes: number, result: EngineResult): void {
     this.#forwardedBytes += BigInt(bytes);
     this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
     this.#batchCount += 1n;
+  }
+
+  #flushResults(): EngineResult[] {
+    const results: EngineResult[] = [];
+    const flushed = this.flush();
+    if (flushed !== undefined) {
+      results.push(flushed);
+    }
+    return results;
+  }
+
+  #afterCommitted<Result>(
+    completedResults: readonly EngineResult[],
+    operation: () => Result,
+  ): Result {
+    try {
+      return operation();
+    } catch (error) {
+      if (completedResults.length === 0) {
+        throw error;
+      }
+      throw new BatchOperationError(completedResults, error);
+    }
   }
 }
 
@@ -468,7 +536,11 @@ export function utf8ByteLength(value: string): number {
 }
 
 async function createRuntime(loader: WasmModuleLoader): Promise<MdstreamRuntime> {
-  return MdstreamRuntime.fromWasm(await loadWasmBindings(loader));
+  try {
+    return MdstreamRuntime.fromWasm(await loadWasmBindings(loader));
+  } catch (error) {
+    throw MdstreamError.from(error);
+  }
 }
 
 function encodeSessionOptions(
@@ -483,6 +555,29 @@ function encodeSessionOptions(
     schema,
     ...normalized,
   });
+}
+
+function processorSchedulerLimits(
+  options: MdstreamSessionOptions | undefined,
+): ProcessorSchedulerLimits {
+  return {
+    maxInFlightJobs: schedulingLimit(
+      options?.processor?.maxInFlightJobs,
+      32,
+    ),
+    maxCandidates: schedulingLimit(options?.processor?.maxSlots, 256),
+  };
+}
+
+function schedulingLimit(value: DecimalInput | undefined, fallback: number): number {
+  const parsed = value === undefined
+    ? BigInt(fallback)
+    : typeof value === "bigint"
+      ? value
+      : BigInt(value);
+  return parsed > BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number.MAX_SAFE_INTEGER
+    : Number(parsed);
 }
 
 function normalizeOptions(value: unknown): unknown {

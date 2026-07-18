@@ -32,7 +32,11 @@ typedef ProcessorInputVersion = String;
 /// The Dart binding can copy and transport this value but deliberately exposes
 /// no canonical reducer operations.
 final class CanonicalChangeBytes {
-  CanonicalChangeBytes(List<int> bytes) : _bytes = _copyOctets(bytes);
+  CanonicalChangeBytes(List<int> bytes)
+    : _bytes = _copyOctets(bytes).asUnmodifiableView();
+
+  CanonicalChangeBytes._fromOwned(Uint8List bytes)
+    : _bytes = bytes.asUnmodifiableView();
 
   final Uint8List _bytes;
 
@@ -45,7 +49,11 @@ final class CanonicalChangeBytes {
 
 /// Opaque canonical recovery snapshot produced by native mdstream.
 final class CanonicalSnapshotBytes {
-  CanonicalSnapshotBytes(List<int> bytes) : _bytes = _copyOctets(bytes);
+  CanonicalSnapshotBytes(List<int> bytes)
+    : _bytes = _copyOctets(bytes).asUnmodifiableView();
+
+  CanonicalSnapshotBytes._fromOwned(Uint8List bytes)
+    : _bytes = bytes.asUnmodifiableView();
 
   final Uint8List _bytes;
 
@@ -55,6 +63,21 @@ final class CanonicalSnapshotBytes {
   /// Number of encoded bytes.
   int get byteLength => _bytes.length;
 }
+
+/// Package-internal ownership transfer for native binding payloads.
+CanonicalChangeBytes canonicalChangeBytesFromOwned(Uint8List bytes) =>
+    CanonicalChangeBytes._fromOwned(bytes);
+
+/// Package-internal readonly view used by synchronous FFI calls.
+Uint8List canonicalChangeBytesView(CanonicalChangeBytes value) => value._bytes;
+
+/// Package-internal ownership transfer for native snapshot payloads.
+CanonicalSnapshotBytes canonicalSnapshotBytesFromOwned(Uint8List bytes) =>
+    CanonicalSnapshotBytes._fromOwned(bytes);
+
+/// Package-internal readonly view used by synchronous FFI calls.
+Uint8List canonicalSnapshotBytesView(CanonicalSnapshotBytes value) =>
+    value._bytes;
 
 /// Payload discriminants frozen by `mdstream.h` ABI version 1.
 enum BindingPayloadKind {
@@ -66,7 +89,8 @@ enum BindingPayloadKind {
   processorRequest(6, 'processor_request'),
   processorCompletion(7, 'processor_completion'),
   artifactChange(8, 'artifact_change'),
-  artifactView(9, 'artifact_view');
+  artifactView(9, 'artifact_view'),
+  pendingSourceView(10, 'pending_source_view');
 
   const BindingPayloadKind(this.value, this.viewKind);
 
@@ -134,16 +158,51 @@ enum BindingStatus {
 }
 
 final _decimalPattern = RegExp(r'^(0|[1-9][0-9]*)$');
+const _maxU64 = '18446744073709551615';
+const _maxU128 = '340282366920938463463374607431768211455';
 
-/// Validates the canonical unsigned decimal representation used on the wire.
-String requireDecimalString(Object? value, String field) {
-  if (value is! String || !_decimalPattern.hasMatch(value)) {
-    throw invalidBindingPayload(
-      '$field must be a canonical unsigned decimal string',
+/// Validates a native-output decimal whose Rust domain is `u64`.
+String requireDecimalString(Object? value, String field) =>
+    decodeDecimalU64(value, field);
+
+String decodeDecimalU64(Object? value, String field) =>
+    _validateDecimal(value, field, _maxU64, invalidBindingPayload);
+
+String decodeDecimalU128(Object? value, String field) =>
+    _validateDecimal(value, field, _maxU128, invalidBindingPayload);
+
+String validateDecimalU64Input(Object? value, String field) =>
+    _validateDecimal(value, field, _maxU64, _invalidDecimalInput);
+
+String validateDecimalU128Input(Object? value, String field) =>
+    _validateDecimal(value, field, _maxU128, _invalidDecimalInput);
+
+String _validateDecimal(
+  Object? value,
+  String field,
+  String maximum,
+  MdstreamException Function(String message) error,
+) {
+  if (value is! String ||
+      !_decimalPattern.hasMatch(value) ||
+      _decimalExceeds(value, maximum)) {
+    throw error(
+      '$field must be a canonical unsigned decimal string within its supported range',
     );
   }
   return value;
 }
+
+bool _decimalExceeds(String value, String maximum) =>
+    value.length > maximum.length ||
+    (value.length == maximum.length && value.compareTo(maximum) > 0);
+
+MdstreamException _invalidDecimalInput(String message) => MdstreamException(
+  message,
+  status: BindingStatus.invalidArgument.value,
+  statusName: BindingStatus.invalidArgument.statusName,
+  detailCode: 'bindings.decimal_id',
+);
 
 /// Creates a consistently typed failure for malformed native binding output.
 MdstreamException invalidBindingPayload(String message, [Object? cause]) =>

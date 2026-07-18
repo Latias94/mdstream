@@ -16,7 +16,16 @@ export 'src/engine.dart'
         MdstreamInputBatcher;
 export 'src/errors.dart';
 export 'src/options.dart';
-export 'src/protocol.dart';
+export 'src/protocol.dart'
+    hide
+        canonicalChangeBytesFromOwned,
+        canonicalChangeBytesView,
+        canonicalSnapshotBytesFromOwned,
+        canonicalSnapshotBytesView,
+        decodeDecimalU128,
+        decodeDecimalU64,
+        validateDecimalU128Input,
+        validateDecimalU64Input;
 export 'src/reducer_handle.dart'
     show
         ArtifactSlot,

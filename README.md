@@ -31,6 +31,12 @@ The 0.4 API is intentionally breaking. The previous block splitter and its
 | `mdstream-conformance` | Chunk schedules, replay laws, fixtures, workload generators, and budget contracts |
 | `mdstream-tokio` | Lossless bounded channels and a `StreamEngine` actor |
 | `mdstream-merman` | Optional standalone Merman processor adapter on its own Rust toolchain lane |
+| `mdstream-bindings-core` | Safe stateful sessions and command envelopes shared by foreign-language transports |
+| `mdstream-wasm` | Thin WebAssembly transport over the safe bindings facade |
+| `mdstream-ffi` | Stable C ABI with opaque handles, owned buffers, and panic containment |
+| `@mdstream/core` | Framework-neutral TypeScript stores, views, recovery, batching, and processors |
+| Dart `mdstream` | Flutter-independent FFI wrapper using a host-supplied native library |
+| `mdstream_flutter` | Turnkey native library delivery and Flutter state controllers without widgets |
 
 ## Quick Start
 
@@ -117,12 +123,19 @@ to the core workspace.
 
 For web applications, `@mdstream/core` is the first-party integration surface.
 It exposes Rust/WASM-backed external stores, focused node/resource/artifact
-views, and explicit recovery without a renderer or UI-framework dependency.
+views, an on-demand pending-source store, and explicit recovery without a
+renderer or UI-framework dependency.
 React consumers can bind these stores with `useSyncExternalStore`; mdstream does
 not ship React hooks, components, themes, or a competing Markdown renderer. See
 [`ADR 0004`](docs/ADR_0004_FRAMEWORK_NEUTRAL_WEB_BINDINGS.md) for the boundary.
 The concrete state, recovery, and artifact responsibilities are documented in
 [`ADAPTERS.md`](docs/ADAPTERS.md).
+
+Flutter applications use `mdstream_flutter` for no-path native loading on
+Android, iOS, macOS, Linux, and Windows. Its controllers expose
+`ValueListenable` state and focused node/resource/artifact subscriptions; the
+package also exposes pending source as a lazy focused listenable and contains
+no Markdown widgets, themes, renderer, or default Merman binary.
 
 ## Migration From 0.3
 
@@ -134,7 +147,7 @@ The concrete state, recovery, and artifact responsibilities are documented in
 | `DocumentState` | `mdstream_protocol::Reducer` |
 | `AnalyzedStream`, `BlockAnalyzer` | typed Content IR plus external processors |
 | runtime boundary/transformer mutation | setup-only `CustomBlockSpec` and processor configuration |
-| pending Markdown repair helpers | `Document::pending_source()` plus host rendering policy |
+| pending Markdown repair helpers | canonical `pending_source` views plus raw host display policy |
 | mutable committed/cache access | `ChangeImpact`, stable IDs, and immutable document views |
 
 There are no deprecated aliases for the removed surface. Consumers must apply
@@ -152,9 +165,20 @@ last accepted document unchanged.
 The core engine is synchronous and runtime-independent. Tokio integration is
 lossless; lossy policies are not available for canonical document input.
 
+## Documentation
+
+- [Architecture and ownership](docs/ARCHITECTURE.md)
+- [State, lifecycle, and recovery](docs/STATE.md)
+- [Extensions and processors](docs/EXTENSIONS.md)
+- [Adapter contracts](docs/ADAPTERS.md)
+- [Compatibility profiles](docs/COMPATIBILITY.md)
+- [Performance and resource contracts](docs/PERFORMANCE.md)
+- [Cross-language usage](docs/USAGE.md)
+- [Roadmap and non-goals](docs/ROADMAP.md)
+
 ## Rust Versions and License
 
-- Core engine, protocol, conformance, and processor crates: Rust 1.85+
+- Core engine, protocol, processor, binding, WASM, and FFI crates: Rust 1.85+
 - `mdstream-tokio`: Rust 1.88+
 - Standalone `mdstream-merman`: Rust 1.95+
 

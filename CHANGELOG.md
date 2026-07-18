@@ -15,6 +15,14 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
   standalone Merman adapter.
 - Added framework-neutral egui and GPUI integration examples plus lossless Tokio
   change-set transport.
+- Added the Rust-backed WASM transport and framework-neutral `@mdstream/core`
+  external stores, batching, recovery, focused views, and processor scheduling.
+- Added a stable C ABI, standalone Dart wrapper, and turnkey
+  `mdstream_flutter` package with Android/iOS/macOS/Linux/Windows native loading
+  and state notifications without widgets or rendering policy.
+- Added multi-ecosystem package verification, explicit crates.io dependency
+  order, pinned Rust/WASM/Node/Dart/Flutter CI lanes, and absolute binding
+  artifact budgets.
 
 ### Breaking Changes
 
@@ -28,6 +36,8 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
   `ChangeSet` values applied by `mdstream_protocol::Reducer`.
 - Moved specialized content behavior out of the parser loop and into typed,
   version-checked processors whose artifacts are not canonical document state.
+- Kept web bindings framework-neutral: mdstream does not publish a first-party
+  React package, hooks, renderer, or theme.
 
 ### Migration
 

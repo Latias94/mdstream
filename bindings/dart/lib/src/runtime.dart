@@ -94,9 +94,6 @@ final class MdstreamRuntime {
   /// Binding session-options schema.
   String get bindingOptionsSchema => _bindings.optionsSchema;
 
-  /// Alias matching the shorter terminology used by native hosts.
-  String get optionsSchema => bindingOptionsSchema;
-
   /// Creates an independent canonical reducer session.
   MdstreamReducer createReducer({MdstreamSessionOptions? options}) {
     final bytes = _encodeOptions(options);

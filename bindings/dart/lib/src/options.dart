@@ -4,8 +4,8 @@ final class MdstreamCustomBlock {
   const MdstreamCustomBlock({
     required this.namespace,
     required this.name,
-    this.opaque = false,
-    this.caseInsensitive = false,
+    this.opaque,
+    this.caseInsensitive,
   });
 
   /// Namespace used to avoid collisions between host extensions.
@@ -15,10 +15,10 @@ final class MdstreamCustomBlock {
   final String name;
 
   /// Whether the parser must leave the block body opaque.
-  final bool opaque;
+  final bool? opaque;
 
   /// Whether block-name matching is case insensitive.
-  final bool caseInsensitive;
+  final bool? caseInsensitive;
 
   Map<String, Object> _toJson() {
     if (namespace.isEmpty || name.isEmpty) {
@@ -27,8 +27,8 @@ final class MdstreamCustomBlock {
     return {
       'namespace': namespace,
       'name': name,
-      'opaque': opaque,
-      'case_insensitive': caseInsensitive,
+      if (opaque != null) 'opaque': opaque!,
+      if (caseInsensitive != null) 'case_insensitive': caseInsensitive!,
     };
   }
 }

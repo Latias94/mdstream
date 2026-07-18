@@ -30,6 +30,9 @@ impl From<String> for ActorCommand {
 pub type ActorResult = Result<Vec<ChangeSet>, EngineError>;
 
 /// Output and completion handle for a spawned stream-engine actor.
+///
+/// Results can be consumed incrementally with [`Self::recv`]. After closing the
+/// input, [`Self::join`] drains and returns any results that remain unread.
 pub struct StreamEngineActor {
     output: mpsc::Receiver<ActorResult>,
     task: JoinHandle<()>,
@@ -41,6 +44,8 @@ impl StreamEngineActor {
     }
 
     /// Stop accepting actor output. The actor observes this as cancellation.
+    ///
+    /// Use this only when discarding pending input and output is intentional.
     pub fn close_output(&mut self) {
         self.output.close();
     }
@@ -49,9 +54,18 @@ impl StreamEngineActor {
         self.task.is_finished()
     }
 
-    /// Wait for the actor task after its input closed or output was cancelled.
-    pub async fn join(self) -> Result<(), JoinError> {
-        self.task.await
+    /// Drain unread results and wait for the actor task to exit.
+    ///
+    /// Close the input first to let the actor process every accepted command,
+    /// or call [`Self::close_output`] to cancel it. Results already returned by
+    /// [`Self::recv`] are not included.
+    pub async fn join(mut self) -> Result<Vec<ActorResult>, JoinError> {
+        let mut unread = Vec::new();
+        while let Some(result) = self.output.recv().await {
+            unread.push(result);
+        }
+        self.task.await?;
+        Ok(unread)
     }
 }
 
@@ -60,7 +74,9 @@ impl StreamEngineActor {
 /// Adjacent [`ActorCommand::Append`] commands are losslessly coalesced. Reset and
 /// finish commands are ordering barriers: buffered content is applied before the
 /// command. Closing the input finishes an open document exactly once. Closing
-/// the output cancels the actor and drops its input receiver.
+/// the output cancels the actor and drops its input receiver. After closing the
+/// input, [`StreamEngineActor::join`] returns any output not consumed with
+/// [`StreamEngineActor::recv`].
 pub fn spawn_stream_engine_actor(
     mut engine: StreamEngine,
     input: mpsc::Receiver<ActorCommand>,

@@ -51,9 +51,23 @@ pub(crate) enum ReducerCommand<'a> {
         schema: String,
         resource_id: String,
     },
+    PendingSourceView {
+        schema: String,
+    },
     BeginProcessor {
         schema: String,
         node_id: String,
+        processor_id: String,
+        processor_version: String,
+        configuration_version: String,
+        accepts_provisional: bool,
+        allow_provisional: bool,
+    },
+    BeginProcessorIfCurrent {
+        schema: String,
+        expected_epoch: String,
+        node_id: String,
+        expected_node_version: String,
         processor_id: String,
         processor_version: String,
         configuration_version: String,
@@ -91,6 +105,8 @@ const FIELD_ALLOW_PROVISIONAL: u32 = 1 << 10;
 const FIELD_REQUEST_ID: u32 = 1 << 11;
 const FIELD_OUTCOME: u32 = 1 << 12;
 const FIELD_EPOCH: u32 = 1 << 13;
+const FIELD_EXPECTED_EPOCH: u32 = 1 << 14;
+const FIELD_EXPECTED_NODE_VERSION: u32 = 1 << 15;
 const COMMON_FIELDS: u32 = FIELD_SCHEMA | FIELD_KIND;
 
 #[derive(Deserialize)]
@@ -110,6 +126,8 @@ enum ReducerField {
     RequestId,
     Outcome,
     Epoch,
+    ExpectedEpoch,
+    ExpectedNodeVersion,
     #[serde(other)]
     Unknown,
 }
@@ -151,6 +169,8 @@ impl<'de> Visitor<'de> for ReducerCommandVisitor {
         let mut request_id = None;
         let mut outcome = None;
         let mut epoch = None;
+        let mut expected_epoch = None;
+        let mut expected_node_version = None;
 
         while let Some(field) = map.next_key()? {
             match field {
@@ -226,6 +246,18 @@ impl<'de> Visitor<'de> for ReducerCommandVisitor {
                     mark_field::<A::Error>(&mut seen, FIELD_EPOCH, "epoch")?;
                     epoch = Some(map.next_value()?);
                 }
+                ReducerField::ExpectedEpoch => {
+                    mark_field::<A::Error>(&mut seen, FIELD_EXPECTED_EPOCH, "expected_epoch")?;
+                    expected_epoch = Some(map.next_value()?);
+                }
+                ReducerField::ExpectedNodeVersion => {
+                    mark_field::<A::Error>(
+                        &mut seen,
+                        FIELD_EXPECTED_NODE_VERSION,
+                        "expected_node_version",
+                    )?;
+                    expected_node_version = Some(map.next_value()?);
+                }
                 ReducerField::Unknown => {
                     return Err(de::Error::custom("unknown reducer command field"));
                 }
@@ -268,6 +300,10 @@ impl<'de> Visitor<'de> for ReducerCommandVisitor {
                         .ok_or_else(|| de::Error::missing_field("resource_id"))?,
                 })
             }
+            "pending_source_view" => {
+                ensure_fields::<A::Error>(seen, COMMON_FIELDS, &kind)?;
+                Ok(ReducerCommand::PendingSourceView { schema })
+            }
             "begin_processor" => {
                 let required = COMMON_FIELDS
                     | FIELD_NODE_ID
@@ -282,6 +318,37 @@ impl<'de> Visitor<'de> for ReducerCommandVisitor {
                 Ok(ReducerCommand::BeginProcessor {
                     schema,
                     node_id: required_field(node_id, "node_id")?,
+                    processor_id: required_field(processor_id, "processor_id")?,
+                    processor_version: required_field(processor_version, "processor_version")?,
+                    configuration_version: required_field(
+                        configuration_version,
+                        "configuration_version",
+                    )?,
+                    accepts_provisional: accepts_provisional.unwrap_or(false),
+                    allow_provisional: allow_provisional.unwrap_or(false),
+                })
+            }
+            "begin_processor_if_current" => {
+                let required = COMMON_FIELDS
+                    | FIELD_EXPECTED_EPOCH
+                    | FIELD_NODE_ID
+                    | FIELD_EXPECTED_NODE_VERSION
+                    | FIELD_PROCESSOR_ID
+                    | FIELD_PROCESSOR_VERSION
+                    | FIELD_CONFIGURATION_VERSION;
+                ensure_fields::<A::Error>(
+                    seen,
+                    required | FIELD_ACCEPTS_PROVISIONAL | FIELD_ALLOW_PROVISIONAL,
+                    &kind,
+                )?;
+                Ok(ReducerCommand::BeginProcessorIfCurrent {
+                    schema,
+                    expected_epoch: required_field(expected_epoch, "expected_epoch")?,
+                    node_id: required_field(node_id, "node_id")?,
+                    expected_node_version: required_field(
+                        expected_node_version,
+                        "expected_node_version",
+                    )?,
                     processor_id: required_field(processor_id, "processor_id")?,
                     processor_version: required_field(processor_version, "processor_version")?,
                     configuration_version: required_field(
@@ -326,7 +393,9 @@ impl<'de> Visitor<'de> for ReducerCommandVisitor {
                     "snapshot",
                     "node_view",
                     "resource_view",
+                    "pending_source_view",
                     "begin_processor",
+                    "begin_processor_if_current",
                     "complete_processor",
                     "cancel_processor",
                     "artifact_view",
@@ -367,7 +436,9 @@ impl ReducerCommand<'_> {
             | Self::Snapshot { schema }
             | Self::NodeView { schema, .. }
             | Self::ResourceView { schema, .. }
+            | Self::PendingSourceView { schema }
             | Self::BeginProcessor { schema, .. }
+            | Self::BeginProcessorIfCurrent { schema, .. }
             | Self::CompleteProcessor { schema, .. }
             | Self::CancelProcessor { schema, .. }
             | Self::ArtifactView { schema, .. } => schema,
@@ -451,7 +522,11 @@ where
                 "must be a canonical unsigned decimal string"
             }
         };
-        BindingError::command(format!("{field} {requirement}"))
+        BindingError::new(
+            BindingStatus::InvalidArgument,
+            "bindings.decimal_id",
+            format!("{field} {requirement}"),
+        )
     })
 }
 
@@ -509,8 +584,12 @@ mod tests {
             format!(r#"{{"schema":"{SCHEMA}","kind":"snapshot"}}"#),
             format!(r#"{{"schema":"{SCHEMA}","kind":"node_view","node_id":"1"}}"#),
             format!(r#"{{"schema":"{SCHEMA}","kind":"resource_view","resource_id":"2"}}"#),
+            format!(r#"{{"schema":"{SCHEMA}","kind":"pending_source_view"}}"#),
             format!(
                 r#"{{"schema":"{SCHEMA}","kind":"begin_processor","node_id":"1","processor_id":"test.echo","processor_version":"v1","configuration_version":"default"}}"#
+            ),
+            format!(
+                r#"{{"schema":"{SCHEMA}","kind":"begin_processor_if_current","expected_epoch":"1","node_id":"1","expected_node_version":"node:v1","processor_id":"test.echo","processor_version":"v1","configuration_version":"default"}}"#
             ),
             format!(
                 r#"{{"schema":"{SCHEMA}","kind":"complete_processor","request_id":"1","outcome":{{"kind":"failure","code":"cancelled","message":"stop"}}}}"#

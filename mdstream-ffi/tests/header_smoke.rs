@@ -23,6 +23,7 @@ _Static_assert(MDSTREAM_OK == 0, "status drift");
 _Static_assert(MDSTREAM_PANIC == 13, "status drift");
 _Static_assert(MDSTREAM_PAYLOAD_CHANGE == 1, "payload drift");
 _Static_assert(MDSTREAM_PAYLOAD_ARTIFACT_VIEW == 9, "payload drift");
+_Static_assert(MDSTREAM_PAYLOAD_PENDING_SOURCE_VIEW == 10, "payload drift");
 
 int mdstream_header_smoke(void) {
     MdstreamBuffer buffer = {0};

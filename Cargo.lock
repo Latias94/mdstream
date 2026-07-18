@@ -975,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "mdstream"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "mdstream-conformance",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "mdstream-tokio"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "crossterm",
  "mdstream",

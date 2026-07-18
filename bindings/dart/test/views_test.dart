@@ -31,6 +31,11 @@ void main() {
           ArtifactChangeView,
         ),
         (BindingPayloadKind.artifactView, _artifactView(), ArtifactView),
+        (
+          BindingPayloadKind.pendingSourceView,
+          _pendingSourceView(),
+          PendingSourceView,
+        ),
       ];
 
       for (final (kind, payload, type) in cases) {
@@ -64,11 +69,12 @@ void main() {
       expect(node.node.id, '7');
       expect(node.node.source.start, '0');
       expect(node.node.children.children, <String>['8']);
-      expect(node.node.content['kind'], 'heading');
+      expect(node.node.content, isA<HeadingContentView>());
+      expect((node.node.content as HeadingContentView).level, 1);
       expect(node.bodyText, 'Title');
     });
 
-    test('recursively freezes raw JSON and opaque content maps', () {
+    test('recursively freezes raw JSON', () {
       final view =
           decodeBindingView(
                 BindingPayloadKind.nodeView,
@@ -78,13 +84,62 @@ void main() {
               as NodeView;
 
       expect(() => view.raw['new'] = true, throwsA(isA<UnsupportedError>()));
+      final rawNode = view.raw['node']! as Map<String, Object?>;
+      final rawContent = rawNode['content']! as Map<String, Object?>;
       expect(
-        () => view.node.content['kind'] = 'paragraph',
+        () => rawContent['kind'] = 'paragraph',
         throwsA(isA<UnsupportedError>()),
       );
-      final metadata = view.node.content['metadata']! as Map<String, Object?>;
-      final tags = metadata['tags']! as List<Object?>;
-      expect(() => tags.add('mutable'), throwsA(isA<UnsupportedError>()));
+      final rawChildren = rawNode['children']! as Map<String, Object?>;
+      final children = rawChildren['children']! as List<Object?>;
+      expect(() => children.add('mutable'), throwsA(isA<UnsupportedError>()));
+    });
+
+    test('decodes pending source with UTF-8 byte cursors', () {
+      final view =
+          decodeBindingView(
+                BindingPayloadKind.pendingSourceView,
+                _bytes(_pendingSourceView()),
+                schema,
+              )
+              as PendingSourceView;
+
+      expect(view.range.start, '0');
+      expect(view.range.end, '3');
+      expect(view.text, 'aé');
+      expect(utf8.encode(view.text), hasLength(3));
+
+      final rawRange = view.raw['range']! as Map<String, Object?>;
+      expect(() => rawRange['start'] = '1', throwsA(isA<UnsupportedError>()));
+    });
+
+    test('rejects malformed pending source ranges', () {
+      final numericStart = _pendingSourceView();
+      (numericStart['range']! as Map<String, Object?>)['start'] = 0;
+      final nonCanonicalEnd = _pendingSourceView();
+      (nonCanonicalEnd['range']! as Map<String, Object?>)['end'] = '03';
+      final nonRecordRange = _pendingSourceView()..['range'] = '0..3';
+
+      for (final payload in <Map<String, Object?>>[
+        numericStart,
+        nonCanonicalEnd,
+        nonRecordRange,
+      ]) {
+        expect(
+          () => decodeBindingView(
+            BindingPayloadKind.pendingSourceView,
+            _bytes(payload),
+            schema,
+          ),
+          throwsA(
+            isA<MdstreamException>().having(
+              (error) => error.detailCode,
+              'detailCode',
+              'bindings.invalid_payload',
+            ),
+          ),
+        );
+      }
     });
 
     test('validates schema, kind, UTF-8, and decimal fields', () {
@@ -186,13 +241,7 @@ Map<String, Object?> _node() => <String, Object?>{
     'version': 'sha256:children',
     'children': <Object?>['8'],
   },
-  'content': <String, Object?>{
-    'kind': 'heading',
-    'level': 1,
-    'metadata': <String, Object?>{
-      'tags': <Object?>['streaming', 'dart'],
-    },
-  },
+  'content': <String, Object?>{'kind': 'heading', 'level': 1},
 };
 
 Map<String, Object?> _nodeView() => <String, Object?>{
@@ -206,8 +255,9 @@ Map<String, Object?> _resource() => <String, Object?>{
   'id': '9',
   'version': 'sha256:resource',
   'content': <String, Object?>{
-    'kind': 'link_definition',
+    'kind': 'link',
     'destination': 'https://example.com',
+    'title': null,
   },
 };
 
@@ -265,4 +315,11 @@ Map<String, Object?> _artifactView() => <String, Object?>{
     'payload': <String, Object?>{'kind': 'text', 'text': '<svg />'},
   },
   'failure': null,
+};
+
+Map<String, Object?> _pendingSourceView() => <String, Object?>{
+  'schema': schema,
+  'kind': 'pending_source_view',
+  'range': <String, Object?>{'start': '0', 'end': '3'},
+  'text': 'aé',
 };

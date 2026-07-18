@@ -7,6 +7,49 @@ void main() {
   final libraryPath = nativeLibraryPath();
 
   test(
+    'pending source is a lazy focused listenable with byte-accurate ranges',
+    () {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(runtime);
+      try {
+        controller.append('a *b');
+        final pending = controller.pendingSource;
+        expect(controller.pendingSource, same(pending));
+        expect(pending.value, isNull);
+        var notifications = 0;
+        pending.addListener(() => notifications += 1);
+
+        controller.append('*');
+        expect(notifications, 1);
+        final first = pending.value;
+        expect(first?.range.start, '4');
+        expect(first?.range.end, '5');
+        expect(first?.text, '*');
+        expect(controller.pendingSourceView(), same(first));
+
+        controller.append('é');
+        expect(notifications, 2);
+        expect(pending.value, isNot(same(first)));
+        expect(pending.value?.range.start, '4');
+        expect(pending.value?.range.end, '7');
+        expect(pending.value?.text, '*é');
+
+        controller.append('');
+        expect(notifications, 2);
+        controller.finish();
+        expect(notifications, 3);
+        expect(pending.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
     'local controller preserves stable node keys and notifies only changed views',
     () {
       final runtime = MdstreamRuntime.openPath(libraryPath!);
@@ -142,7 +185,10 @@ void main() {
         expect(result.updates.single.impact.changedResourceIds, <ResourceId>[
           resourceId,
         ]);
-        expect(resource.value?.resource.content['kind'], 'citation');
+        expect(
+          resource.value?.resource.content,
+          isA<CitationResourceContentView>(),
+        );
         expect(resourceNotifications, 1);
         expect(unrelatedNotifications, 0);
       } finally {

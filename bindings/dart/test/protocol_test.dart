@@ -11,6 +11,15 @@ void main() {
       expect(BindingPayloadKind.snapshot.value, 2);
       expect(BindingPayloadKind.reducerUpdate.value, 3);
       expect(BindingPayloadKind.artifactView.value, 9);
+      expect(BindingPayloadKind.pendingSourceView.value, 10);
+      expect(
+        BindingPayloadKind.pendingSourceView.viewKind,
+        'pending_source_view',
+      );
+      expect(
+        BindingPayloadKind.fromValue(10),
+        BindingPayloadKind.pendingSourceView,
+      );
       expect(
         BindingPayloadKind.fromValue(6),
         BindingPayloadKind.processorRequest,
@@ -70,6 +79,25 @@ void main() {
       expect(exposed, <int>[1, 9, 3]);
       expect(change.bytes, <int>[1, 2, 3]);
     });
+
+    test(
+      'internal canonical bytes adopt owned native buffers without copying',
+      () {
+        final changeSource = Uint8List.fromList(<int>[1, 2, 3]);
+        final snapshotSource = Uint8List.fromList(<int>[4, 5, 6]);
+        final change = canonicalChangeBytesFromOwned(changeSource);
+        final snapshot = canonicalSnapshotBytesFromOwned(snapshotSource);
+        final changeView = canonicalChangeBytesView(change);
+        final snapshotView = canonicalSnapshotBytesView(snapshot);
+
+        changeSource[0] = 7;
+        snapshotSource[0] = 8;
+        expect(changeView, <int>[7, 2, 3]);
+        expect(snapshotView, <int>[8, 5, 6]);
+        expect(() => changeView[0] = 9, throwsUnsupportedError);
+        expect(() => snapshotView[0] = 9, throwsUnsupportedError);
+      },
+    );
 
     test('rejects non-octets in canonical byte wrappers', () {
       expect(() => CanonicalChangeBytes(<int>[-1]), throwsRangeError);

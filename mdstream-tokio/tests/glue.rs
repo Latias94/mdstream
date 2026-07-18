@@ -132,7 +132,8 @@ async fn stream_engine_actor_closes_with_one_replayable_finalization() {
     let document = reducer.document().expect("actor should start an epoch");
     assert_eq!(document.source(), "Hello");
     assert_eq!(document.lifecycle(), DocumentLifecycle::Finalized);
-    output.join().await.expect("actor task should exit cleanly");
+    let unread = output.join().await.expect("actor task should exit cleanly");
+    assert!(unread.is_empty());
 }
 
 #[tokio::test]
@@ -180,7 +181,8 @@ async fn stream_engine_actor_reports_terminal_errors_and_reset_changes_in_order(
     let document = reducer.document().expect("reset epoch should exist");
     assert_eq!(document.source(), "new");
     assert_eq!(document.lifecycle(), DocumentLifecycle::Finalized);
-    output.join().await.expect("actor task should exit cleanly");
+    let unread = output.join().await.expect("actor task should exit cleanly");
+    assert!(unread.is_empty());
 }
 
 #[tokio::test]
@@ -189,10 +191,11 @@ async fn closing_actor_output_cancels_and_releases_input_without_panic() {
     let mut actor = spawn_stream_engine_actor(StreamEngine::new(), rx, test_options());
 
     actor.close_output();
-    tokio::time::timeout(Duration::from_secs(1), actor.join())
+    let unread = tokio::time::timeout(Duration::from_secs(1), actor.join())
         .await
         .expect("actor task must not leak after output cancellation")
         .expect("actor task must not panic");
+    assert!(unread.is_empty());
 
     assert!(tx.is_closed());
     assert!(
@@ -200,6 +203,55 @@ async fn closing_actor_output_cancels_and_releases_input_without_panic() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn actor_join_drains_more_than_output_capacity_without_deadlock() {
+    // One more command than the actor's 64-slot output channel.
+    const COMMAND_COUNT: usize = 65;
+
+    let (tx, rx) = mpsc::channel(COMMAND_COUNT);
+    let actor = spawn_stream_engine_actor(StreamEngine::new(), rx, test_options());
+    for _ in 0..COMMAND_COUNT {
+        tx.send(ActorCommand::Reset).await.unwrap();
+    }
+    drop(tx);
+
+    let unread = tokio::time::timeout(Duration::from_secs(1), actor.join())
+        .await
+        .expect("join must consume unread actor output while waiting")
+        .expect("actor task should exit cleanly");
+
+    assert_eq!(unread.len(), COMMAND_COUNT + 1);
+    let changes: Vec<_> = unread
+        .into_iter()
+        .flat_map(|result| result.expect("reset and finalization should succeed"))
+        .collect();
+    assert_eq!(changes.len(), COMMAND_COUNT + 1);
+    assert_eq!(
+        changes
+            .iter()
+            .filter(|change| change.epoch_start().is_some())
+            .count(),
+        COMMAND_COUNT
+    );
+    assert_eq!(
+        changes
+            .iter()
+            .flat_map(|change| change.operations())
+            .filter(|operation| matches!(operation, ProjectionOp::FinishDocument))
+            .count(),
+        1
+    );
+
+    let mut reducer = Reducer::new();
+    for change in changes {
+        reducer
+            .apply(change)
+            .expect("joined actor trace should replay");
+    }
+    let document = reducer.document().expect("actor should start an epoch");
+    assert_eq!(document.lifecycle(), DocumentLifecycle::Finalized);
 }
 
 #[tokio::test]
@@ -234,7 +286,8 @@ async fn actor_source(chunks: Vec<String>) -> String {
         }
     }
     producer.await.expect("producer task should not panic");
-    actor.join().await.expect("actor task should exit cleanly");
+    let unread = actor.join().await.expect("actor task should exit cleanly");
+    assert!(unread.is_empty());
     let document = reducer.document().expect("actor should start an epoch");
     assert_eq!(document.lifecycle(), DocumentLifecycle::Finalized);
     document.source().to_string()

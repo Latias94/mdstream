@@ -1,6 +1,7 @@
 mod support;
 
-use mdstream_conformance::ChunkSchedule;
+use mdstream::StreamEngine;
+use mdstream_conformance::{ChunkSchedule, NormalizedSnapshot, exhaustive_utf8_partitions};
 
 fn assert_invariant(case: &str, source: &str) {
     let expected = support::replay(support::chunk_whole(source));
@@ -21,6 +22,37 @@ fn assert_invariant(case: &str, source: &str) {
             .map(str::to_string);
         assert_eq!(support::replay(chunks), expected, "case={case}");
     }
+}
+
+fn assert_cut_invariant(source: &str, cuts: Vec<usize>) {
+    let chunks = ChunkSchedule::ByteCuts { cuts: cuts.clone() }
+        .slices(source)
+        .unwrap()
+        .into_iter()
+        .map(str::to_string);
+    assert_eq!(
+        support::replay(chunks),
+        support::replay(support::chunk_whole(source)),
+        "cuts={cuts:?}"
+    );
+}
+
+fn assert_schedule_invariant(
+    case: &str,
+    source: &str,
+    schedule: &ChunkSchedule,
+    expected: &NormalizedSnapshot,
+) {
+    let chunks = schedule
+        .slices(source)
+        .unwrap()
+        .into_iter()
+        .map(str::to_string);
+    assert_eq!(
+        &support::replay(chunks),
+        expected,
+        "case={case} schedule={schedule:?}"
+    );
 }
 
 #[test]
@@ -62,26 +94,59 @@ fn reference_documents_are_chunk_invariant_under_the_canonical_engine() {
 #[test]
 fn split_crlf_and_ambiguous_table_text_are_chunk_invariant() {
     let source = "A\r\n\r\nB\r\n";
-    assert_eq!(
-        support::replay([
-            "A\r".to_string(),
-            "\n\r".to_string(),
-            "\nB\r".to_string(),
-            "\n".to_string(),
-        ]),
-        support::replay(support::chunk_whole(source))
-    );
+    assert_cut_invariant(source, vec![2, 4, 7]);
     assert_invariant("ambiguous-table", "a# Heading\n|# Heading\n-->\n");
+}
+
+#[test]
+fn bounded_short_sources_are_invariant_under_every_utf8_partition() {
+    for (case, source) in [
+        ("ascii", "A\nB"),
+        ("split-crlf", "A\r\nB"),
+        ("unicode", "中é🙂"),
+        ("ambiguous-setext", "a\n---\n"),
+    ] {
+        let expected = support::replay(support::chunk_whole(source));
+        for schedule in exhaustive_utf8_partitions(source).unwrap() {
+            assert_schedule_invariant(case, source, &schedule, &expected);
+        }
+    }
 }
 
 #[test]
 fn an_incomplete_line_after_a_table_remains_in_the_mutable_frontier() {
     let source = "$$\n| A | B |\n|---|---|\n| 1 | 2 |\n";
-    assert_eq!(
-        support::replay([
-            "$$\n| A | B |\n|---|---|\n|".to_string(),
-            " 1 | 2 |\n".to_string(),
-        ]),
-        support::replay(support::chunk_whole(source))
-    );
+    assert_cut_invariant(source, vec!["$$\n| A | B |\n|---|---|\n|".len()]);
+}
+
+#[test]
+fn incomplete_lazy_block_quote_continuations_keep_the_container_frontier() {
+    let source = "> quoted line\n-->\n";
+    assert_cut_invariant(source, vec!["> quoted line\n-".len()]);
+}
+
+#[test]
+fn a_partial_heading_marker_can_become_a_lazy_block_quote_continuation() {
+    let source = "> quoted line\n#x\n";
+    assert_cut_invariant(source, vec!["> quoted line\n#".len()]);
+}
+
+#[test]
+fn partial_block_markers_can_return_to_paragraph_and_list_continuations() {
+    for (prefix, suffix) in [
+        ("plain line\n#", "x\n"),
+        ("- listed line\n#", "x\n"),
+        ("> - nested line\n#", "x\n"),
+    ] {
+        let source = format!("{prefix}{suffix}");
+        assert_cut_invariant(&source, vec![prefix.len()]);
+    }
+}
+
+#[test]
+fn a_closed_non_paragraph_container_tail_is_not_retained() {
+    let mut engine = StreamEngine::new();
+    engine.append("> # heading\n#").unwrap();
+
+    assert_eq!(engine.metrics().compiler.frontier_bytes, 1);
 }

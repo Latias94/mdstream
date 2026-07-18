@@ -34,15 +34,24 @@ void main() {
 
         replica.applyChange(changes[0]);
         final lastGood = replica.value.document;
+        final pending = replica.pendingSource;
+        final lastGoodPending = pending.value;
+        var pendingNotifications = 0;
+        pending.addListener(() => pendingNotifications += 1);
+        expect(lastGoodPending?.text, 'a');
         expect(rootNotifications, 1);
 
         replica.applyChange(changes[0]);
         expect(rootNotifications, 1);
+        expect(pendingNotifications, 0);
+        expect(pending.value, same(lastGoodPending));
 
         replica.applyChange(changes[2]);
         expect(replica.value.needsSnapshot, isTrue);
         expect(replica.value.document, same(lastGood));
         expect(rootNotifications, 2);
+        expect(pendingNotifications, 0);
+        expect(pending.value, same(lastGoodPending));
 
         final missingResource = replica.resource('999');
         var resourceNotifications = 0;
@@ -53,8 +62,13 @@ void main() {
         expect(replica.value.impact.fullReplace, isTrue);
         expect(resourceNotifications, 1);
         expect(rootNotifications, 3);
+        expect(pendingNotifications, 1);
+        expect(pending.value, isNot(same(lastGoodPending)));
+        expect(pending.value?.text, 'abc');
         replica.applyChange(changes[3]);
         expect(replica.value.document?.lifecycle, 'finalized');
+        expect(pendingNotifications, 2);
+        expect(pending.value, isNull);
       } finally {
         replica.dispose();
         source.close();

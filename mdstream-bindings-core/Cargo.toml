@@ -10,7 +10,7 @@ repository = "https://github.com/Latias94/mdstream"
 homepage = "https://github.com/Latias94/mdstream"
 
 [dependencies]
-mdstream = { path = "../mdstream", version = "0.3.0" }
+mdstream = { path = "../mdstream", version = "0.4.0" }
 mdstream-processors = { path = "../mdstream-processors", version = "0.4.0" }
 mdstream-protocol = { path = "../mdstream-protocol", version = "0.4.0" }
 serde = { version = "1.0.219", features = ["derive"] }

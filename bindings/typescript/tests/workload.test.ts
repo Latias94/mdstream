@@ -37,6 +37,20 @@ describe("large Rust-backed TypeScript workload", () => {
       expect(engine.store.metrics().materializedNodeViews).toBe("16");
       expect(engine.store.metrics().snapshotPayloads).toBe("0");
       engine.close();
+
+      const pendingEngine = runtime.createEngine();
+      pendingEngine.append("a *b");
+      pendingEngine.append("*");
+      expect(pendingEngine.store.metrics().materializedPendingSourceViews).toBe("0");
+      const pending = pendingEngine.store.getPendingSourceSnapshot();
+      let pendingReferenceStable = true;
+      for (let index = 0; index < 100_000; index += 1) {
+        pendingReferenceStable &&=
+          pendingEngine.store.getPendingSourceSnapshot() === pending;
+      }
+      expect(pendingReferenceStable).toBe(true);
+      expect(pendingEngine.store.metrics().materializedPendingSourceViews).toBe("1");
+      pendingEngine.close();
     },
   );
 });

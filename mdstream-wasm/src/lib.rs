@@ -6,10 +6,10 @@ use std::str::FromStr;
 
 use mdstream_bindings_core::{
     BINDING_OPTIONS_SCHEMA, BINDING_SCHEMA, BindingError, BindingMetrics, BindingOutput,
-    BindingPayload, BindingPayloadKind, BindingStatus, EngineSession, ProcessorFailureCode,
-    ReducerSession, error_payload_json_bytes,
+    BindingPayload, BindingPayloadKind, BindingStatus, EngineSession, ProcessorExpectation,
+    ProcessorFailureCode, ReducerSession, error_payload_json_bytes,
 };
-use mdstream_protocol::{DecimalIdError, RequestGeneration};
+use mdstream_protocol::{DecimalIdError, NodeVersion, RequestGeneration};
 use wasm_bindgen::prelude::*;
 
 const WASM_ABI_VERSION: u32 = 1;
@@ -56,6 +56,7 @@ pub enum MdstreamPayloadKind {
     ProcessorCompletion = 7,
     ArtifactChange = 8,
     ArtifactView = 9,
+    PendingSourceView = 10,
 }
 
 #[wasm_bindgen]
@@ -194,6 +195,11 @@ impl MdstreamReducerSession {
         )
     }
 
+    #[wasm_bindgen(js_name = pendingSourceView)]
+    pub fn pending_source_view(&mut self) -> Result<MdstreamOutput, JsValue> {
+        binding_output(self.inner.pending_source_view())
+    }
+
     #[wasm_bindgen(js_name = beginProcessor)]
     pub fn begin_processor(
         &mut self,
@@ -206,6 +212,40 @@ impl MdstreamReducerSession {
     ) -> Result<MdstreamOutput, JsValue> {
         binding_output(self.inner.begin_processor(
             parse_decimal_id(node_id, "node_id")?,
+            processor_id.to_string(),
+            processor_version.to_string(),
+            configuration_version.to_string(),
+            accepts_provisional,
+            allow_provisional,
+        ))
+    }
+
+    #[wasm_bindgen(js_name = beginProcessorIfCurrent)]
+    // Keep the generated WASM transport ABI flat; the Rust core uses ProcessorExpectation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_processor_if_current(
+        &mut self,
+        expected_epoch: &str,
+        node_id: &str,
+        expected_node_version: &str,
+        processor_id: &str,
+        processor_version: &str,
+        configuration_version: &str,
+        accepts_provisional: bool,
+        allow_provisional: bool,
+    ) -> Result<MdstreamOutput, JsValue> {
+        binding_output(self.inner.begin_processor_if_current(
+            ProcessorExpectation::new(
+                parse_decimal_id(expected_epoch, "expected_epoch")?,
+                parse_decimal_id(node_id, "node_id")?,
+                NodeVersion::new(expected_node_version).map_err(|error| {
+                    binding_error_to_js(BindingError::new(
+                        BindingStatus::InvalidArgument,
+                        "processor.invalid_node_version",
+                        error.to_string(),
+                    ))
+                })?,
+            ),
             processor_id.to_string(),
             processor_version.to_string(),
             configuration_version.to_string(),
@@ -337,6 +377,7 @@ fn binding_metrics_bytes(metrics: BindingMetrics) -> Vec<u8> {
             metrics.materialized_resource_views,
             metrics.encoded_payload_bytes,
             metrics.pending_processor_requests,
+            metrics.materialized_pending_source_views,
         ],
     )
 }
@@ -369,6 +410,7 @@ const fn payload_kind(kind: BindingPayloadKind) -> MdstreamPayloadKind {
         BindingPayloadKind::ProcessorCompletion => MdstreamPayloadKind::ProcessorCompletion,
         BindingPayloadKind::ArtifactChange => MdstreamPayloadKind::ArtifactChange,
         BindingPayloadKind::ArtifactView => MdstreamPayloadKind::ArtifactView,
+        BindingPayloadKind::PendingSourceView => MdstreamPayloadKind::PendingSourceView,
     }
 }
 

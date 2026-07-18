@@ -15,3 +15,10 @@ An engine owns its synchronized reducer and exposes a read-only `engine.store`
 facade. Use `runtime.createStore()` only when applying a replicated change
 stream and recovering it from an explicit snapshot. Both surfaces use the final
 `mdstream.content/0.4` protocol implemented by Rust.
+
+When accepted source temporarily runs ahead of typed Content IR,
+`engine.store.pendingSource()` exposes a focused external store for the exact
+uncovered UTF-8 byte range and text. The view is materialized only when read,
+retains object identity until source or projection coverage changes, and is
+`undefined` when the projection is current. Consumers may render that text as
+pending content, but must not parse it into competing Markdown semantics.

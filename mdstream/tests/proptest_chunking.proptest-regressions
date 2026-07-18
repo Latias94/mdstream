@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 89f7d32e6a60ad4d4117cbfc6f42d0b907051e2e824a6973a06a119260960254 # shrinks to markdown = "\n[^note]: footnote body\n\n\n", seed = 0, max_bytes = 1
 cc 9123c2ebe44a8f7e17247303a17a8d1f5bff670a6227d58ef98f81421d0fec38 # shrinks to markdown = "$$\n| A | B |\n|---|---|\n| 1 | 2 |\n", seed = 786879945669958893, max_bytes = 24
+cc 0642aeac1bd102c3ce0013d74ac94fc0a6511b1c115f1dfb8dd53963a38921cd # shrinks to markdown = "> quoted line\n-->\n", seed = 2972823474383434714, max_bytes = 21

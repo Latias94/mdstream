@@ -1,4 +1,4 @@
-use mdstream_protocol::{ChangeImpact, Document, Epoch, NodeId, RequestGeneration};
+use mdstream_protocol::{ChangeImpact, Document, Epoch, NodeId, NodeVersion, RequestGeneration};
 
 use crate::{
     ArtifactChange, ArtifactChangeKind, ArtifactReleaseReason, CompletionError, CompletionOutcome,
@@ -7,7 +7,7 @@ use crate::{
     ProcessorMetrics, ProcessorRequest, ProcessorRequestKey, ProcessorResult, ProcessorSlotKey,
     ProcessorSlotState,
     limits::check_limit,
-    request::{CancellationToken, ProcessorInput, provisional_allowed},
+    request::{CancellationToken, ProcessorInput, ProcessorInputView, provisional_allowed},
     store::ArtifactStore,
 };
 
@@ -23,6 +23,24 @@ pub struct ArtifactHost {
     epoch: Option<Epoch>,
     next_generation: u64,
     store: ArtifactStore,
+}
+
+/// Canonical coordinates observed before a host-language processor match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessorExpectation {
+    epoch: Epoch,
+    node_id: NodeId,
+    node_version: NodeVersion,
+}
+
+impl ProcessorExpectation {
+    pub fn new(epoch: Epoch, node_id: NodeId, node_version: NodeVersion) -> Self {
+        Self {
+            epoch,
+            node_id,
+            node_version,
+        }
+    }
 }
 
 impl ArtifactHost {
@@ -67,18 +85,24 @@ impl ArtifactHost {
         policy: ProcessingPolicy,
     ) -> Result<ProcessorRequest, HostError> {
         let document_epoch = document.coordinate().epoch;
-        let current = self.epoch.ok_or(HostError::EpochNotInitialized)?;
-        if current != document_epoch {
-            return Err(HostError::EpochMismatch {
-                current,
-                received: document_epoch,
-            });
-        }
+        self.validate_document_epoch(document_epoch)?;
         let input = ProcessorInput::view_document(document, node_id)?;
+        self.begin_view(document_epoch, input, descriptor, configuration, policy)
+    }
+
+    fn begin_view(
+        &mut self,
+        document_epoch: Epoch,
+        input: ProcessorInputView<'_>,
+        descriptor: ProcessorDescriptor,
+        configuration: ConfigurationVersion,
+        policy: ProcessingPolicy,
+    ) -> Result<ProcessorRequest, HostError> {
+        let node_id = input.node().id;
         if !provisional_allowed(input.node().stability, descriptor.capabilities(), policy) {
             return Err(HostError::ProvisionalProcessingDisabled(node_id));
         }
-        let slot = ProcessorSlotKey::new(document_epoch, input.node().id, descriptor.id().clone());
+        let slot = ProcessorSlotKey::new(document_epoch, node_id, descriptor.id().clone());
         self.check_begin_limits(input.byte_len(), &slot)?;
         let generation = RequestGeneration::new(self.next_generation);
         let next_generation = self
@@ -101,6 +125,46 @@ impl ArtifactHost {
             .commit_pending(reservation, key, request.input().byte_len(), cancellation);
         self.next_generation = next_generation;
         Ok(request)
+    }
+
+    fn validate_document_epoch(&self, document_epoch: Epoch) -> Result<(), HostError> {
+        let current = self.epoch.ok_or(HostError::EpochNotInitialized)?;
+        if current != document_epoch {
+            return Err(HostError::EpochMismatch {
+                current,
+                received: document_epoch,
+            });
+        }
+        Ok(())
+    }
+
+    /// Begins a processor lease only when the matched node is still current.
+    ///
+    /// The expectation check and lease creation share one synchronous host
+    /// transaction. A stale epoch, removed node, or changed node version returns
+    /// `Ok(None)` without consuming request generation or artifact capacity.
+    pub fn begin_if_current(
+        &mut self,
+        document: &Document,
+        expectation: ProcessorExpectation,
+        descriptor: ProcessorDescriptor,
+        configuration: ConfigurationVersion,
+        policy: ProcessingPolicy,
+    ) -> Result<Option<ProcessorRequest>, HostError> {
+        let document_epoch = document.coordinate().epoch;
+        if document_epoch != expectation.epoch {
+            return Ok(None);
+        }
+        let Some(node) = document.node(expectation.node_id) else {
+            return Ok(None);
+        };
+        if node.version != expectation.node_version {
+            return Ok(None);
+        }
+        self.validate_document_epoch(document_epoch)?;
+        let input = ProcessorInput::view_document_node(document, node)?;
+        self.begin_view(document_epoch, input, descriptor, configuration, policy)
+            .map(Some)
     }
 
     #[cfg(test)]

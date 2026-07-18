@@ -27,6 +27,7 @@ pub enum BindingPayloadKind {
     ProcessorCompletion = 7,
     ArtifactChange = 8,
     ArtifactView = 9,
+    PendingSourceView = 10,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +98,7 @@ pub struct BindingMetrics {
     pub artifact_view_payloads: u64,
     pub materialized_node_views: u64,
     pub materialized_resource_views: u64,
+    pub materialized_pending_source_views: u64,
     pub encoded_payload_bytes: u64,
     pub pending_processor_requests: u64,
 }
@@ -129,6 +131,10 @@ impl BindingMetrics {
             BindingPayloadKind::ResourceView => {
                 self.materialized_resource_views =
                     self.materialized_resource_views.saturating_add(1)
+            }
+            BindingPayloadKind::PendingSourceView => {
+                self.materialized_pending_source_views =
+                    self.materialized_pending_source_views.saturating_add(1)
             }
             BindingPayloadKind::ArtifactView => {
                 self.artifact_view_payloads = self.artifact_view_payloads.saturating_add(1)
@@ -207,6 +213,22 @@ pub(crate) fn encode_resource_view(
         },
         max_bytes,
         "bindings.resource_view_bytes",
+    )
+}
+
+pub(crate) fn encode_pending_source_view(
+    document: &Document,
+    max_bytes: usize,
+) -> Result<Vec<u8>, BindingError> {
+    encode_json_bounded(
+        &PendingSourceView {
+            schema: BINDING_SCHEMA,
+            kind: "pending_source_view",
+            range: document.pending_source_range(),
+            text: document.pending_source(),
+        },
+        max_bytes,
+        "bindings.pending_source_view_bytes",
     )
 }
 
@@ -482,6 +504,14 @@ struct ResourceView<'a> {
     schema: &'static str,
     kind: &'static str,
     resource: &'a SemanticResource,
+}
+
+#[derive(Serialize)]
+struct PendingSourceView<'a> {
+    schema: &'static str,
+    kind: &'static str,
+    range: mdstream_protocol::SourceRange,
+    text: &'a str,
 }
 
 #[derive(Serialize)]

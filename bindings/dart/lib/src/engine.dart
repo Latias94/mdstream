@@ -180,7 +180,7 @@ final class MdstreamEngine {
       }
       _snapshotPayloads += 1;
       _outputPayloadBytes += payload.bytes.length;
-      snapshot = CanonicalSnapshotBytes(payload.bytes);
+      snapshot = canonicalSnapshotBytesFromOwned(payload.bytes);
     }
     return snapshot;
   }
@@ -199,6 +199,26 @@ final class MdstreamEngine {
     bool allowProvisional = false,
   }) => _reducer.beginProcessor(
     nodeId: nodeId,
+    processorId: processorId,
+    processorVersion: processorVersion,
+    configurationVersion: configurationVersion,
+    acceptsProvisional: acceptsProvisional,
+    allowProvisional: allowProvisional,
+  );
+
+  ReducerResult beginProcessorIfCurrent({
+    required Epoch expectedEpoch,
+    required NodeId nodeId,
+    required NodeVersion expectedNodeVersion,
+    required String processorId,
+    required String processorVersion,
+    required String configurationVersion,
+    bool acceptsProvisional = false,
+    bool allowProvisional = false,
+  }) => _reducer.beginProcessorIfCurrent(
+    expectedEpoch: expectedEpoch,
+    nodeId: nodeId,
+    expectedNodeVersion: expectedNodeVersion,
     processorId: processorId,
     processorVersion: processorVersion,
     configurationVersion: configurationVersion,
@@ -265,7 +285,7 @@ final class MdstreamEngine {
       _changePayloads += 1;
       _outputPayloadBytes += payload.bytes.length;
       outputBytes += payload.bytes.length;
-      final change = CanonicalChangeBytes(payload.bytes);
+      final change = canonicalChangeBytesFromOwned(payload.bytes);
       changes.add(change);
       final reduced = _reducer.applyChange(change);
       reducerResults.add(reduced);

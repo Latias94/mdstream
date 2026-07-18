@@ -3,6 +3,7 @@ import {
   asCanonicalSnapshotBytes,
   decodeBindingView,
   decodeMetricsPayload,
+  invalidPayload,
   MdstreamError,
   type ArtifactChangeView,
   type ArtifactView,
@@ -13,7 +14,9 @@ import {
   type DocumentSummaryView,
   type Epoch,
   type NodeId,
+  type NodeVersion,
   type NodeView,
+  type PendingSourceView,
   type ProcessorCompletionView,
   type ProcessorFailureCode,
   type ProcessorRequestView,
@@ -70,6 +73,7 @@ export interface BindingMetricsView {
   readonly artifactViewPayloads: DecimalCounter;
   readonly materializedNodeViews: DecimalCounter;
   readonly materializedResourceViews: DecimalCounter;
+  readonly materializedPendingSourceViews: DecimalCounter;
   readonly encodedPayloadBytes: DecimalCounter;
   readonly pendingProcessorRequests: DecimalCounter;
 }
@@ -91,6 +95,9 @@ export interface ProcessorMetricsView {
 }
 
 export interface MdstreamStoreView extends ExternalStore<StoreSnapshot> {
+  getPendingSourceSnapshot(): PendingSourceView | undefined;
+  subscribePendingSource(listener: StoreListener): () => void;
+  pendingSource(): ExternalStore<PendingSourceView | undefined>;
   getNodeSnapshot(id: NodeId): NodeView | undefined;
   subscribeNode(id: NodeId, listener: StoreListener): () => void;
   node(id: NodeId): ExternalStore<NodeView | undefined>;
@@ -113,7 +120,9 @@ export interface MdstreamStore extends MdstreamStoreView {
 
 /** @internal */
 export interface BeginProcessorOptions {
+  readonly expectedEpoch: Epoch;
   readonly nodeId: NodeId;
+  readonly expectedNodeVersion: NodeVersion;
   readonly processorId: string;
   readonly processorVersion: string;
   readonly configurationVersion: string;
@@ -129,6 +138,7 @@ export interface InternalStoreEvents {
 
 interface Notifications {
   root: boolean;
+  pendingSource: boolean;
   readonly nodes: Set<string>;
   readonly resources: Set<string>;
   readonly artifacts: Set<string>;
@@ -138,6 +148,7 @@ interface ConsumedOutput extends ReducerResult {
   readonly snapshots: readonly CanonicalSnapshotBytes[];
   readonly nodeViews: readonly NodeView[];
   readonly resourceViews: readonly ResourceView[];
+  readonly pendingSourceViews: readonly PendingSourceView[];
   readonly artifactViews: readonly ArtifactView[];
 }
 
@@ -176,6 +187,7 @@ const bindingMetricFields = [
   "materialized_resource_views",
   "encoded_payload_bytes",
   "pending_processor_requests",
+  "materialized_pending_source_views",
 ] as const;
 const processorMetricFields = [
   "slots",
@@ -202,6 +214,7 @@ export class RustBackedStore implements MdstreamStore {
   #eventSink: ((events: InternalStoreEvents) => void) | undefined;
 
   readonly #listeners = new Set<StoreListener>();
+  readonly #pendingSourceListeners = new Set<StoreListener>();
   readonly #nodeListeners = new Map<string, Set<StoreListener>>();
   readonly #resourceListeners = new Map<string, Set<StoreListener>>();
   readonly #artifactListeners = new Map<string, Set<StoreListener>>();
@@ -212,6 +225,8 @@ export class RustBackedStore implements MdstreamStore {
   readonly #missingNodes = new BoundedKeySet(maxCachedMisses);
   readonly #missingResources = new BoundedKeySet(maxCachedMisses);
   readonly #missingArtifacts = new BoundedKeySet(maxCachedMisses);
+  #pendingSourceCache: PendingSourceView | undefined;
+  #pendingSourceLoaded = false;
 
   constructor(session: WasmReducerSession, schema: string) {
     this.#session = session;
@@ -246,6 +261,33 @@ export class RustBackedStore implements MdstreamStore {
     this.#assertOpen();
     const output = this.#invoke(() => this.#session.snapshot());
     return output.snapshots[0];
+  }
+
+  getPendingSourceSnapshot(): PendingSourceView | undefined {
+    if (this.#pendingSourceLoaded) {
+      return this.#pendingSourceCache;
+    }
+    this.#assertOpen();
+    const output = this.#invoke(() => this.#session.pendingSourceView());
+    if (output.pendingSourceViews.length > 1) {
+      throw invalidPayload("pending source view returned more than one payload");
+    }
+    this.#pendingSourceCache = output.pendingSourceViews[0];
+    this.#pendingSourceLoaded = true;
+    return this.#pendingSourceCache;
+  }
+
+  subscribePendingSource(listener: StoreListener): () => void {
+    this.#assertOpen();
+    this.#pendingSourceListeners.add(listener);
+    return () => this.#pendingSourceListeners.delete(listener);
+  }
+
+  pendingSource(): ExternalStore<PendingSourceView | undefined> {
+    return Object.freeze({
+      subscribe: (listener: StoreListener) => this.subscribePendingSource(listener),
+      getSnapshot: () => this.getPendingSourceSnapshot(),
+    });
   }
 
   getNodeSnapshot(id: NodeId): NodeView | undefined {
@@ -368,8 +410,10 @@ export class RustBackedStore implements MdstreamStore {
   beginProcessor(options: BeginProcessorOptions): ReducerResult {
     this.#assertOpen();
     return this.#publicResult(this.#invoke(() =>
-      this.#session.beginProcessor(
+      this.#session.beginProcessorIfCurrent(
+        options.expectedEpoch,
         options.nodeId,
+        options.expectedNodeVersion,
         options.processorId,
         options.processorVersion,
         options.configurationVersion,
@@ -455,6 +499,7 @@ export class RustBackedStore implements MdstreamStore {
     this.#closed = true;
     this.#eventSink = undefined;
     this.#listeners.clear();
+    this.#pendingSourceListeners.clear();
     this.#nodeListeners.clear();
     this.#resourceListeners.clear();
     this.#artifactListeners.clear();
@@ -464,6 +509,8 @@ export class RustBackedStore implements MdstreamStore {
     this.#missingNodes.clear();
     this.#missingResources.clear();
     this.#missingArtifacts.clear();
+    this.#pendingSourceCache = undefined;
+    this.#pendingSourceLoaded = false;
     this.#session.free();
   }
 
@@ -486,6 +533,7 @@ export class RustBackedStore implements MdstreamStore {
     const snapshots: CanonicalSnapshotBytes[] = [];
     const nodeViews: NodeView[] = [];
     const resourceViews: ResourceView[] = [];
+    const pendingSourceViews: PendingSourceView[] = [];
     const artifactViews: ArtifactView[] = [];
 
     for (const payload of drained.payloads) {
@@ -508,6 +556,9 @@ export class RustBackedStore implements MdstreamStore {
         case "resource_view":
           resourceViews.push(view);
           break;
+        case "pending_source_view":
+          pendingSourceViews.push(view);
+          break;
         case "processor_request":
           processorRequests.push(view);
           break;
@@ -525,6 +576,7 @@ export class RustBackedStore implements MdstreamStore {
 
     const notifications: Notifications = {
       root: false,
+      pendingSource: false,
       nodes: new Set(),
       resources: new Set(),
       artifacts: new Set(),
@@ -562,6 +614,7 @@ export class RustBackedStore implements MdstreamStore {
       snapshots,
       nodeViews,
       resourceViews,
+      pendingSourceViews,
       artifactViews,
       outputPayloadBytes: counter(drained.payloadBytes.toString()),
     };
@@ -593,6 +646,16 @@ export class RustBackedStore implements MdstreamStore {
       impact: update.impact,
     });
     notifications.root = true;
+
+    if (
+      update.impact.sourceChanged ||
+      update.impact.projectionChanged ||
+      update.impact.fullReplace
+    ) {
+      this.#pendingSourceCache = undefined;
+      this.#pendingSourceLoaded = false;
+      notifications.pendingSource = true;
+    }
 
     if (update.impact.fullReplace) {
       this.#nodeCache.clear();
@@ -649,6 +712,9 @@ export class RustBackedStore implements MdstreamStore {
     if (notifications.root) {
       notifyListeners(this.#listeners);
     }
+    if (notifications.pendingSource) {
+      notifyListeners(this.#pendingSourceListeners);
+    }
     notifyKeyed(this.#nodeListeners, notifications.nodes);
     notifyKeyed(this.#resourceListeners, notifications.resources);
     notifyKeyed(this.#artifactListeners, notifications.artifacts);
@@ -680,6 +746,10 @@ export function createStoreView(store: RustBackedStore): MdstreamStoreView {
   return Object.freeze({
     subscribe: (listener: StoreListener) => store.subscribe(listener),
     getSnapshot: () => store.getSnapshot(),
+    getPendingSourceSnapshot: () => store.getPendingSourceSnapshot(),
+    subscribePendingSource: (listener: StoreListener) =>
+      store.subscribePendingSource(listener),
+    pendingSource: () => store.pendingSource(),
     getNodeSnapshot: (id: NodeId) => store.getNodeSnapshot(id),
     subscribeNode: (id: NodeId, listener: StoreListener) =>
       store.subscribeNode(id, listener),
@@ -721,6 +791,10 @@ export function readBindingMetrics(
     materializedResourceViews: metric(metrics, "materialized_resource_views"),
     encodedPayloadBytes: metric(metrics, "encoded_payload_bytes"),
     pendingProcessorRequests: metric(metrics, "pending_processor_requests"),
+    materializedPendingSourceViews: metric(
+      metrics,
+      "materialized_pending_source_views",
+    ),
   };
 }
 
@@ -771,6 +845,9 @@ function notifyKeyed(
 }
 
 function notifyListeners(listeners: ReadonlySet<StoreListener>): void {
+  if (listeners.size === 0) {
+    return;
+  }
   for (const listener of [...listeners]) {
     try {
       listener();
@@ -824,11 +901,7 @@ function metric(
 ): DecimalCounter {
   const value = metrics[name];
   if (value === undefined) {
-    throw new MdstreamError(`metrics payload omitted ${name}`, {
-      status: 12,
-      statusName: "MDSTREAM_INTERNAL_ERROR",
-      detailCode: "bindings.invalid_payload",
-    });
+    throw invalidPayload(`metrics payload omitted ${name}`);
   }
   return value;
 }

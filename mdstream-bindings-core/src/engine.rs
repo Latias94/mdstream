@@ -7,12 +7,13 @@ use mdstream::{EngineOutput, StreamEngine};
 use mdstream_processors::{
     ArtifactChange, ArtifactChangeKind, ArtifactHost, ArtifactReleaseReason, CompletionOutcome,
     ConfigurationVersion, ProcessingPolicy, ProcessorArtifact, ProcessorCapabilities,
-    ProcessorDescriptor, ProcessorFailure, ProcessorFailureCode, ProcessorId, ProcessorRequest,
-    ProcessorRequestKey, ProcessorResult, ProcessorSlotKey,
+    ProcessorDescriptor, ProcessorExpectation, ProcessorFailure, ProcessorFailureCode, ProcessorId,
+    ProcessorRequest, ProcessorRequestKey, ProcessorResult, ProcessorSlotKey,
 };
 use mdstream_protocol::{
-    ApplyOutcome, ChangeImpact, NodeId, ProtocolLimits, Reducer, ReducerStatus, RequestGeneration,
-    ResourceId, decode_change_json, decode_snapshot_json, encode_change_json, encode_snapshot_json,
+    ApplyOutcome, ChangeImpact, NodeId, NodeVersion, ProtocolLimits, Reducer, ReducerStatus,
+    RequestGeneration, ResourceId, decode_change_json, decode_snapshot_json, encode_change_json,
+    encode_snapshot_json,
 };
 
 use crate::{
@@ -24,7 +25,7 @@ use crate::{
     errors::{check_size, engine_error, host_error, identifier_error, protocol_error},
     options::{BindingOptions, WireLimits},
     wire::{
-        encode_artifact_change, encode_artifact_view, encode_node_view,
+        encode_artifact_change, encode_artifact_view, encode_node_view, encode_pending_source_view,
         encode_processor_completion, encode_processor_request, encode_reducer_update,
         encode_resource_view, push_recorded,
     },
@@ -290,6 +291,25 @@ impl ReducerSession {
         Ok(output)
     }
 
+    pub fn pending_source_view(&mut self) -> Result<BindingOutput, BindingError> {
+        self.metrics.commands = self.metrics.commands.saturating_add(1);
+        let Some(document) = self.reducer.document() else {
+            return Ok(BindingOutput::default());
+        };
+        if document.pending_source().is_empty() {
+            return Ok(BindingOutput::default());
+        }
+        let bytes = encode_pending_source_view(document, self.wire_limits.max_view_bytes)?;
+        let mut output = BindingOutput::default();
+        push_recorded(
+            &mut output,
+            &mut self.metrics,
+            BindingPayloadKind::PendingSourceView,
+            bytes,
+        );
+        Ok(output)
+    }
+
     pub fn begin_native_processor(
         &mut self,
         descriptor: ProcessorDescriptor,
@@ -309,6 +329,40 @@ impl ReducerSession {
             .host
             .begin(document, descriptor, node_id, configuration, policy)
             .map_err(host_error)?;
+        let output = self.record_begun_processor(&request)?;
+        Ok((request, output))
+    }
+
+    pub fn begin_native_processor_if_current(
+        &mut self,
+        expectation: ProcessorExpectation,
+        descriptor: ProcessorDescriptor,
+        configuration: ConfigurationVersion,
+        policy: ProcessingPolicy,
+    ) -> Result<(Option<ProcessorRequest>, BindingOutput), BindingError> {
+        self.metrics.commands = self.metrics.commands.saturating_add(1);
+        let document = self.reducer.document().ok_or_else(|| {
+            BindingError::new(
+                BindingStatus::Processor,
+                "processor.epoch_not_initialized",
+                "processor document is not initialized",
+            )
+        })?;
+        let Some(request) = self
+            .host
+            .begin_if_current(document, expectation, descriptor, configuration, policy)
+            .map_err(host_error)?
+        else {
+            return Ok((None, BindingOutput::default()));
+        };
+        let output = self.record_begun_processor(&request)?;
+        Ok((Some(request), output))
+    }
+
+    fn record_begun_processor(
+        &mut self,
+        request: &ProcessorRequest,
+    ) -> Result<BindingOutput, BindingError> {
         let generation = request.key().generation();
         self.pending_requests
             .insert(generation, request.key().clone());
@@ -319,7 +373,7 @@ impl ReducerSession {
         );
 
         let request_bytes =
-            encode_processor_request(&request, self.wire_limits.max_processor_payload_bytes)?;
+            encode_processor_request(request, self.wire_limits.max_processor_payload_bytes)?;
         let mut output = BindingOutput::default();
         push_recorded(
             &mut output,
@@ -328,7 +382,7 @@ impl ReducerSession {
             request_bytes,
         );
         output.extend(self.drain_artifact_changes()?);
-        Ok((request, output))
+        Ok(output)
     }
 
     pub fn begin_processor(
@@ -352,6 +406,33 @@ impl ReducerSession {
         let (_, output) = self.begin_native_processor(
             descriptor,
             node_id,
+            configuration,
+            processing_policy(allow_provisional),
+        )?;
+        Ok(output)
+    }
+
+    pub fn begin_processor_if_current(
+        &mut self,
+        expectation: ProcessorExpectation,
+        processor_id: String,
+        processor_version: String,
+        configuration_version: String,
+        accepts_provisional: bool,
+        allow_provisional: bool,
+    ) -> Result<BindingOutput, BindingError> {
+        let capabilities = if accepts_provisional {
+            ProcessorCapabilities::with_provisional()
+        } else {
+            ProcessorCapabilities::stable_only()
+        };
+        let descriptor = ProcessorDescriptor::new(processor_id, processor_version, capabilities)
+            .map_err(identifier_error)?;
+        let configuration =
+            ConfigurationVersion::new(configuration_version).map_err(identifier_error)?;
+        let (_, output) = self.begin_native_processor_if_current(
+            expectation,
+            descriptor,
             configuration,
             processing_policy(allow_provisional),
         )?;
@@ -482,6 +563,7 @@ impl ReducerSession {
             ReducerCommand::ResourceView { resource_id, .. } => {
                 self.resource_view(parse_decimal_id(&resource_id, "resource_id")?)
             }
+            ReducerCommand::PendingSourceView { .. } => self.pending_source_view(),
             ReducerCommand::BeginProcessor {
                 node_id,
                 processor_id,
@@ -492,6 +574,34 @@ impl ReducerSession {
                 ..
             } => self.begin_processor(
                 parse_decimal_id(&node_id, "node_id")?,
+                processor_id,
+                processor_version,
+                configuration_version,
+                accepts_provisional,
+                allow_provisional,
+            ),
+            ReducerCommand::BeginProcessorIfCurrent {
+                expected_epoch,
+                node_id,
+                expected_node_version,
+                processor_id,
+                processor_version,
+                configuration_version,
+                accepts_provisional,
+                allow_provisional,
+                ..
+            } => self.begin_processor_if_current(
+                ProcessorExpectation::new(
+                    parse_decimal_id(&expected_epoch, "expected_epoch")?,
+                    parse_decimal_id(&node_id, "node_id")?,
+                    NodeVersion::new(expected_node_version).map_err(|error| {
+                        BindingError::new(
+                            BindingStatus::InvalidArgument,
+                            "processor.invalid_node_version",
+                            error.to_string(),
+                        )
+                    })?,
+                ),
                 processor_id,
                 processor_version,
                 configuration_version,

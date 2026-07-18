@@ -135,6 +135,7 @@ final class _DirectedValueListenable<T> extends ChangeNotifier
 
   T _value;
   bool _disposed = false;
+  int _activeNotificationDepth = 0;
 
   @override
   T get value => _value;
@@ -151,7 +152,15 @@ final class _DirectedValueListenable<T> extends ChangeNotifier
     if (_disposed) {
       return;
     }
-    notifyListeners();
+    _activeNotificationDepth += 1;
+    try {
+      notifyListeners();
+    } finally {
+      _activeNotificationDepth -= 1;
+      if (_disposed && _activeNotificationDepth == 0) {
+        super.dispose();
+      }
+    }
   }
 
   void update(T next, {bool force = false}) {
@@ -166,7 +175,9 @@ final class _DirectedValueListenable<T> extends ChangeNotifier
       return;
     }
     _disposed = true;
-    super.dispose();
+    if (_activeNotificationDepth == 0) {
+      super.dispose();
+    }
   }
 }
 

@@ -28,6 +28,13 @@ fn error_status(error: &JsValue) -> f64 {
         .unwrap()
 }
 
+fn error_detail_code(error: &JsValue) -> String {
+    js_sys::Reflect::get(error, &JsValue::from_str("detail_code"))
+        .unwrap()
+        .as_string()
+        .unwrap()
+}
+
 fn json_payload(output: &mut MdstreamOutput, kind: MdstreamPayloadKind) -> serde_json::Value {
     serde_json::from_slice(&take(output, kind)).unwrap()
 }
@@ -115,6 +122,7 @@ fn metadata_payload_kinds_and_consumption_are_stable() {
     assert_eq!(binding_options_schema(), "mdstream.bindings-options/0.4");
     assert_eq!(MdstreamPayloadKind::Change as u32, 1);
     assert_eq!(MdstreamPayloadKind::ArtifactView as u32, 9);
+    assert_eq!(MdstreamPayloadKind::PendingSourceView as u32, 10);
 
     let mut engine = MdstreamEngineSession::new(None).unwrap();
     let mut output = engine.append("owned").unwrap();
@@ -130,6 +138,36 @@ fn metadata_payload_kinds_and_consumption_are_stable() {
     }
     let change: ChangeSet = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(change.sequence().get(), 0);
+}
+
+#[wasm_bindgen_test]
+fn pending_source_view_is_an_on_demand_reducer_payload() {
+    let mut reducer = MdstreamReducerSession::new(None).unwrap();
+    assert_eq!(
+        reducer
+            .pending_source_view()
+            .unwrap()
+            .count(MdstreamPayloadKind::PendingSourceView),
+        0
+    );
+
+    let change = ChangeSet::start_epoch(
+        Epoch::new(1),
+        ChangeId::new("wasm:pending-source:start").unwrap(),
+        None,
+        SourceDelta::append(SourceCursor::new(0), "abc".to_string()),
+        Vec::new(),
+    )
+    .unwrap();
+    reducer.apply_change(&encode(&change)).unwrap();
+
+    let mut output = reducer.pending_source_view().unwrap();
+    assert_eq!(output.count(MdstreamPayloadKind::PendingSourceView), 1);
+    let view = json_payload(&mut output, MdstreamPayloadKind::PendingSourceView);
+    assert_eq!(view["kind"], "pending_source_view");
+    assert_eq!(view["range"]["start"], "0");
+    assert_eq!(view["range"]["end"], "3");
+    assert_eq!(view["text"], "abc");
 }
 
 #[wasm_bindgen_test]
@@ -318,6 +356,22 @@ fn maximum_decimal_ids_and_opaque_versions_survive_js_transport() {
             .unwrap()
             .starts_with("sha256:")
     );
+}
+
+#[wasm_bindgen_test]
+fn malformed_decimal_inputs_share_the_invalid_argument_contract() {
+    let mut reducer = MdstreamReducerSession::new(None).unwrap();
+    for value in ["", "-1", "1.0", "18446744073709551616"] {
+        let error = reducer.cancel_processor(value).unwrap_err();
+        assert_eq!(error_status(&error), 1.0);
+        assert_eq!(error_detail_code(&error), "bindings.decimal_id");
+    }
+
+    let error = reducer
+        .node_view("340282366920938463463374607431768211456")
+        .unwrap_err();
+    assert_eq!(error_status(&error), 1.0);
+    assert_eq!(error_detail_code(&error), "bindings.decimal_id");
 }
 
 #[wasm_bindgen_test]

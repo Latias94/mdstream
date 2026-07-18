@@ -60,8 +60,9 @@ fn c_abi_metadata_errors_outputs_and_stateful_roundtrip_match_the_frozen_contrac
             BindingPayloadKind::ProcessorCompletion as u32,
             BindingPayloadKind::ArtifactChange as u32,
             BindingPayloadKind::ArtifactView as u32,
+            BindingPayloadKind::PendingSourceView as u32,
         ],
-        [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     );
     assert_eq!(mdstream_abi_version(), MDSTREAM_ABI_VERSION);
     assert_eq!(

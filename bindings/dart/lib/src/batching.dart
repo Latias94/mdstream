@@ -27,9 +27,6 @@ final class BatchMetrics {
   final String batchCount;
   final String appendCalls;
 
-  /// Alias that names the native boundary counted by [appendCalls].
-  String get nativeAppendCalls => appendCalls;
-
   /// Returns a read-only JSON-compatible metrics object.
   Map<String, String> toJson() =>
       Map<String, String>.unmodifiable(<String, String>{

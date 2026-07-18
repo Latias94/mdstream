@@ -29,12 +29,7 @@ void main() {
       'schema': 'mdstream.bindings-options/0.4',
       'protocol': {'max_nodes': '1024'},
       'custom_blocks': [
-        {
-          'namespace': 'app',
-          'name': 'panel',
-          'opaque': false,
-          'case_insensitive': false,
-        },
+        {'namespace': 'app', 'name': 'panel'},
       ],
     });
     expect(

@@ -1,10 +1,11 @@
-/target
-/mdstream-merman/target
+target/
 /repo-ref
 /fuzz/Cargo.lock
 /mdstream-merman/Cargo.lock
 /node_modules
 **/node_modules
+**/__pycache__
+**/*.pyc
 **/.dart_tool
 **/coverage
 **/doc/api

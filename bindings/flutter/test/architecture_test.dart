@@ -14,6 +14,7 @@ void main() {
         'react:',
         'streamdown:',
         'incremark:',
+        'markdown:',
       ]) {
         expect(manifest.toLowerCase(), isNot(contains(forbidden)));
       }
@@ -36,6 +37,7 @@ void main() {
         'package:react',
         'package:streamdown',
         'package:incremark',
+        'package:markdown',
       ]) {
         expect(source, isNot(contains(forbidden)));
       }

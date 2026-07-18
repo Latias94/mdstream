@@ -42,14 +42,18 @@ final class _EngineBackend implements _ControllerBackend {
 
   @override
   ReducerResult beginProcessor({
+    required Epoch expectedEpoch,
     required NodeId nodeId,
+    required NodeVersion expectedNodeVersion,
     required String processorId,
     required String processorVersion,
     required String configurationVersion,
     required bool acceptsProvisional,
     required bool allowProvisional,
-  }) => engine.beginProcessor(
+  }) => engine.beginProcessorIfCurrent(
+    expectedEpoch: expectedEpoch,
     nodeId: nodeId,
+    expectedNodeVersion: expectedNodeVersion,
     processorId: processorId,
     processorVersion: processorVersion,
     configurationVersion: configurationVersion,
@@ -112,14 +116,18 @@ final class _ReducerBackend implements _ControllerBackend {
 
   @override
   ReducerResult beginProcessor({
+    required Epoch expectedEpoch,
     required NodeId nodeId,
+    required NodeVersion expectedNodeVersion,
     required String processorId,
     required String processorVersion,
     required String configurationVersion,
     required bool acceptsProvisional,
     required bool allowProvisional,
-  }) => reducer.beginProcessor(
+  }) => reducer.beginProcessorIfCurrent(
+    expectedEpoch: expectedEpoch,
     nodeId: nodeId,
+    expectedNodeVersion: expectedNodeVersion,
     processorId: processorId,
     processorVersion: processorVersion,
     configurationVersion: configurationVersion,
@@ -187,6 +195,7 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
   final _ControllerBackend _backend;
   MdstreamControllerState _value;
   bool _disposed = false;
+  int _activeNotificationDepth = 0;
 
   final Map<NodeId, _DirectedValueListenable<NodeView?>> _nodes =
       <NodeId, _DirectedValueListenable<NodeView?>>{};
@@ -194,6 +203,7 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
       <ResourceId, _DirectedValueListenable<ResourceView?>>{};
   final Map<ArtifactSlot, _DirectedValueListenable<ArtifactView?>> _artifacts =
       <ArtifactSlot, _DirectedValueListenable<ArtifactView?>>{};
+  _DirectedValueListenable<PendingSourceView?>? _pendingSource;
   final Map<MdstreamNodeKey, MdstreamNodeKey> _nodeKeys =
       <MdstreamNodeKey, MdstreamNodeKey>{};
 
@@ -208,6 +218,20 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
   /// Most recent host-side processor failure.
   ValueListenable<ProcessorErrorEvent?> get processorErrors =>
       _processors.errors;
+
+  /// Returns the current source suffix not yet represented by Content IR.
+  PendingSourceView? pendingSourceView() {
+    _assertOpen();
+    return _backend.state.pendingSourceView();
+  }
+
+  /// Returns a stable listenable for the on-demand pending source view.
+  ValueListenable<PendingSourceView?> get pendingSource {
+    _assertOpen();
+    return _pendingSource ??= _DirectedValueListenable<PendingSourceView?>(
+      _backend.state.pendingSourceView(),
+    );
+  }
 
   /// Returns the current materialized node view.
   NodeView? nodeView(NodeId id) {
@@ -327,8 +351,14 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
       );
     }
     _updateFocusedViews(impact, artifactSlots);
+    if (_disposed) {
+      return;
+    }
     if (controllerChanged) {
-      notifyListeners();
+      _notifyControllerListeners();
+      if (_disposed) {
+        return;
+      }
     }
     _processors.handleResults(results);
   }
@@ -337,10 +367,22 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     MdstreamNotificationImpact impact,
     Set<ArtifactSlot> artifactSlots,
   ) {
+    final notifications = <VoidCallback>[];
     if (impact.fullReplace) {
       _nodeKeys.clear();
     }
-    final notifications = <VoidCallback>[];
+    final pendingSource = _pendingSource;
+    if (pendingSource != null &&
+        (impact.sourceChanged ||
+            impact.projectionChanged ||
+            impact.fullReplace) &&
+        pendingSource.replace(
+          _backend.state.pendingSourceView(),
+          force: impact.fullReplace,
+        )) {
+      notifications.add(pendingSource.emit);
+    }
+
     final nodeIds = impact.fullReplace
         ? _nodes.keys.toList(growable: false)
         : impact.changedNodeIds;
@@ -383,7 +425,13 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
       }
     }
     for (final notify in notifications) {
+      if (_disposed) {
+        return;
+      }
       notify();
+      if (_disposed) {
+        return;
+      }
     }
   }
 
@@ -410,7 +458,22 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
         stackTrace: stackTrace,
       ),
     );
-    notifyListeners();
+    _notifyControllerListeners();
+  }
+
+  void _notifyControllerListeners() {
+    if (_disposed) {
+      return;
+    }
+    _activeNotificationDepth += 1;
+    try {
+      notifyListeners();
+    } finally {
+      _activeNotificationDepth -= 1;
+      if (_disposed && _activeNotificationDepth == 0) {
+        super.dispose();
+      }
+    }
   }
 
   void _assertOpen() {
@@ -427,6 +490,8 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     _disposed = true;
     _processors.close();
     _backend.close();
+    _pendingSource?.dispose();
+    _pendingSource = null;
     for (final listenable in _nodes.values) {
       listenable.dispose();
     }
@@ -440,7 +505,9 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     _resources.clear();
     _artifacts.clear();
     _nodeKeys.clear();
-    super.dispose();
+    if (_activeNotificationDepth == 0) {
+      super.dispose();
+    }
   }
 }
 

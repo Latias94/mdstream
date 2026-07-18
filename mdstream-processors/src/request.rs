@@ -159,7 +159,17 @@ impl ProcessorInput {
         document: &Document,
         node_id: NodeId,
     ) -> Result<ProcessorInputView<'_>, HostError> {
-        let (node, body, resource) = document_parts(document, node_id)?;
+        let node = document
+            .node(node_id)
+            .ok_or(HostError::NodeNotFound(node_id))?;
+        Self::view_document_node(document, node)
+    }
+
+    pub(crate) fn view_document_node<'a>(
+        document: &'a Document,
+        node: &'a ContentNode,
+    ) -> Result<ProcessorInputView<'a>, HostError> {
+        let (body, resource) = document_context(document, node)?;
         let (version, byte_len) = node
             .checked_processor_input_version_and_byte_len_with_context(body, resource)
             .ok_or(HostError::CounterOverflow("processor.input_bytes"))?;
@@ -201,13 +211,11 @@ impl ProcessorInput {
     }
 }
 
-fn document_parts(
-    document: &Document,
-    node_id: NodeId,
-) -> Result<(&ContentNode, &str, Option<&SemanticResource>), HostError> {
-    let node = document
-        .node(node_id)
-        .ok_or(HostError::NodeNotFound(node_id))?;
+fn document_context<'a>(
+    document: &'a Document,
+    node: &'a ContentNode,
+) -> Result<(&'a str, Option<&'a SemanticResource>), HostError> {
+    let node_id = node.id;
     let start =
         usize::try_from(node.body.start.get()).map_err(|_| HostError::InvalidBodyRange(node_id))?;
     let end =
@@ -220,7 +228,7 @@ fn document_parts(
         .content
         .referenced_resource()
         .and_then(|resource_id| document.resource(resource_id));
-    Ok((node, body, resource))
+    Ok((body, resource))
 }
 
 #[derive(Debug, Clone)]

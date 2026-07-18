@@ -86,12 +86,17 @@ fn canonical_pending_benchmarks(criterion: &mut Criterion) {
 
     for scenario in CanonicalPendingScenario::ALL {
         let source = scenario.source();
+        let chunks = characters(&source);
         group.throughput(Throughput::Bytes(source.len() as u64));
         group.bench_with_input(
             BenchmarkId::new(scenario.shape().id(), scenario.target_bytes()),
-            &source,
-            |bench, source| {
-                bench.iter(|| black_box(run_engine_reducer(&characters(black_box(source)))));
+            &chunks,
+            |bench, chunks| {
+                bench.iter_batched(
+                    || chunks.clone(),
+                    |chunks| black_box(run_engine_reducer(black_box(&chunks))),
+                    BatchSize::SmallInput,
+                );
             },
         );
     }

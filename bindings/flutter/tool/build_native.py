@@ -18,9 +18,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from package_metadata import (
+    PLUGIN_ROOT,
+    REPOSITORY_ROOT,
+    PackageMetadataError,
+    package_version,
+)
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
 BUDGET_PATH = REPOSITORY_ROOT / "bindings" / "budgets.json"
 HEADER_PATH = REPOSITORY_ROOT / "mdstream-ffi" / "include" / "mdstream.h"
 FRAMEWORK_NAME = "MdstreamFFI"
@@ -497,6 +502,10 @@ def _write_framework_metadata(
         "}\n",
         encoding="utf-8",
     )
+    try:
+        version = package_version()
+    except PackageMetadataError as error:
+        raise PackagingError(str(error)) from error
     plist = {
         "CFBundleDevelopmentRegion": "en",
         "CFBundleExecutable": FRAMEWORK_NAME,
@@ -504,8 +513,8 @@ def _write_framework_metadata(
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundleName": FRAMEWORK_NAME,
         "CFBundlePackageType": "FMWK",
-        "CFBundleShortVersionString": "0.4.0",
-        "CFBundleVersion": "0.4.0",
+        "CFBundleShortVersionString": version,
+        "CFBundleVersion": version,
         "MinimumOSVersion": minimum_version,
         "CFBundleSupportedPlatforms": [platform_name],
     }

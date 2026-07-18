@@ -160,6 +160,54 @@ fn reducer_gap_recovers_only_through_an_explicit_snapshot() {
 }
 
 #[test]
+fn pending_source_view_is_bounded_on_demand_and_empty_when_covered() {
+    let mut reducer = ReducerSession::new(b"").unwrap();
+    assert!(reducer.pending_source_view().unwrap().is_empty());
+
+    let pending = ChangeSet::start_epoch(
+        Epoch::new(1),
+        ChangeId::new("bindings:pending-source:start").unwrap(),
+        None,
+        SourceDelta::append(SourceCursor::new(0), "aé".to_string()),
+        Vec::new(),
+    )
+    .unwrap();
+    let encoded = encode_change_json(&pending, usize::MAX, ProtocolLimits::default()).unwrap();
+    reducer.apply_change(&encoded).unwrap();
+
+    let command = serde_json::json!({
+        "schema": BINDING_SCHEMA,
+        "kind": "pending_source_view"
+    });
+    let output = reducer
+        .execute(&serde_json::to_vec(&command).unwrap())
+        .unwrap();
+    assert_eq!(output.count(BindingPayloadKind::PendingSourceView), 1);
+    let view: serde_json::Value =
+        serde_json::from_slice(payload(&output, BindingPayloadKind::PendingSourceView)).unwrap();
+    assert_eq!(view["schema"], BINDING_SCHEMA);
+    assert_eq!(view["kind"], "pending_source_view");
+    assert_eq!(view["range"]["start"], "0");
+    assert_eq!(view["range"]["end"], "3");
+    assert_eq!(view["text"], "aé");
+
+    let covered = ChangeSet::new(
+        Epoch::new(1),
+        Sequence::new(1),
+        ChangeId::new("bindings:pending-source:covered").unwrap(),
+        SourceDelta::unchanged(SourceCursor::new(3)),
+        vec![ProjectionOp::AdvanceProjection {
+            expected_cursor: SourceCursor::new(0),
+            new_cursor: SourceCursor::new(3),
+        }],
+    )
+    .unwrap();
+    let encoded = encode_change_json(&covered, usize::MAX, ProtocolLimits::default()).unwrap();
+    reducer.apply_change(&encoded).unwrap();
+    assert!(reducer.pending_source_view().unwrap().is_empty());
+}
+
+#[test]
 fn invalid_options_commands_utf8_and_encoded_inputs_are_atomic() {
     let invalid_options = br#"{
         "schema":"mdstream.bindings-options/0.4",
@@ -532,6 +580,52 @@ fn native_and_generic_processor_results_use_a_separate_artifact_plane() {
     assert!(reducer.artifact_view(&generic_slot).unwrap().is_empty());
     let (outcome, _) = reducer.complete_native_processor(late_result).unwrap();
     assert_eq!(outcome, CompletionOutcome::Stale);
+}
+
+#[test]
+fn conditional_processor_begin_rejects_stale_coordinates_without_a_lease() {
+    let mut reducer = ReducerSession::new(b"").unwrap();
+    let node_id = initialize_single_stable_node(&mut reducer);
+    let node: serde_json::Value = serde_json::from_slice(payload(
+        &reducer.node_view(node_id).unwrap(),
+        BindingPayloadKind::NodeView,
+    ))
+    .unwrap();
+    let node_version = node["node"]["version"].as_str().unwrap();
+
+    let stale = serde_json::json!({
+        "schema": BINDING_SCHEMA,
+        "kind": "begin_processor_if_current",
+        "expected_epoch": "2",
+        "node_id": node_id.get().to_string(),
+        "expected_node_version": node_version,
+        "processor_id": "test.conditional",
+        "processor_version": "v1",
+        "configuration_version": "test.conditional.default"
+    });
+    let output = reducer
+        .execute(&serde_json::to_vec(&stale).unwrap())
+        .unwrap();
+    assert!(output.is_empty());
+    assert_eq!(reducer.metrics().pending_processor_requests, 0);
+    assert_eq!(reducer.processor_metrics().issued_requests, 0);
+
+    let current = serde_json::json!({
+        "schema": BINDING_SCHEMA,
+        "kind": "begin_processor_if_current",
+        "expected_epoch": "1",
+        "node_id": node_id.get().to_string(),
+        "expected_node_version": node_version,
+        "processor_id": "test.conditional",
+        "processor_version": "v1",
+        "configuration_version": "test.conditional.default"
+    });
+    let output = reducer
+        .execute(&serde_json::to_vec(&current).unwrap())
+        .unwrap();
+    assert_eq!(output.count(BindingPayloadKind::ProcessorRequest), 1);
+    assert_eq!(reducer.metrics().pending_processor_requests, 1);
+    assert_eq!(reducer.processor_metrics().issued_requests, 1);
 }
 
 #[test]

@@ -42,6 +42,12 @@ The controller itself is a `ValueListenable<MdstreamControllerState>`. Use
 one stable identity. A full snapshot replacement notifies every materialized
 focused listenable; ordinary deltas notify only their changed IDs.
 
+`pendingSource` is a lazy focused `ValueListenable<PendingSourceView?>` for the
+source suffix not yet covered by typed Content IR. It is absent from the root
+controller state, remains last-good through a recovery-required gap, and
+refreshes when source/projection coverage or a full replacement changes.
+Applications may display its text as pending content but must not reparse it.
+
 Processor artifacts remain outside canonical snapshots. Registered processors
 run after native transitions, receive cancellation when their input becomes
 stale, and settle through the Rust request-generation checks. Await

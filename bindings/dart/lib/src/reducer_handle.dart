@@ -92,6 +92,7 @@ final class ReducerTransportMetrics {
     required this.processorCompletionPayloads,
     required this.artifactChangePayloads,
     required this.artifactViewPayloads,
+    required this.pendingSourceViewPayloads,
   });
 
   final DecimalCounter commands;
@@ -105,6 +106,7 @@ final class ReducerTransportMetrics {
   final DecimalCounter processorCompletionPayloads;
   final DecimalCounter artifactChangePayloads;
   final DecimalCounter artifactViewPayloads;
+  final DecimalCounter pendingSourceViewPayloads;
 
   DecimalCounter payloadCount(BindingPayloadKind kind) => switch (kind) {
     BindingPayloadKind.change => changePayloads,
@@ -116,6 +118,7 @@ final class ReducerTransportMetrics {
     BindingPayloadKind.processorCompletion => processorCompletionPayloads,
     BindingPayloadKind.artifactChange => artifactChangePayloads,
     BindingPayloadKind.artifactView => artifactViewPayloads,
+    BindingPayloadKind.pendingSourceView => pendingSourceViewPayloads,
   };
 }
 
@@ -130,6 +133,8 @@ final class MdstreamStateView {
   NodeView? nodeView(NodeId id) => _owner.nodeView(id);
 
   ResourceView? resourceView(ResourceId id) => _owner.resourceView(id);
+
+  PendingSourceView? pendingSourceView() => _owner.pendingSourceView();
 
   ArtifactView? artifactView(ArtifactSlot slot) => _owner.artifactView(slot);
 }
@@ -153,6 +158,8 @@ final class MdstreamReducer {
   final _BoundedKeySet<NodeId> _missingNodes = _BoundedKeySet(1024);
   final _BoundedKeySet<ResourceId> _missingResources = _BoundedKeySet(1024);
   final _BoundedKeySet<String> _missingArtifacts = _BoundedKeySet(1024);
+  PendingSourceView? _pendingSourceCache;
+  bool _pendingSourceLoaded = false;
   final Map<BindingPayloadKind, int> _payloadCounts = {
     for (final kind in BindingPayloadKind.values) kind: 0,
   };
@@ -165,12 +172,16 @@ final class MdstreamReducer {
 
   ReducerResult applyChange(CanonicalChangeBytes change) {
     _commands += 1;
-    return _publicResult(_consume(_handle.apply(change.bytes)));
+    return _publicResult(
+      _consume(_handle.apply(canonicalChangeBytesView(change))),
+    );
   }
 
   ReducerResult recoverSnapshot(CanonicalSnapshotBytes snapshot) {
     _commands += 1;
-    return _publicResult(_consume(_handle.recover(snapshot.bytes)));
+    return _publicResult(
+      _consume(_handle.recover(canonicalSnapshotBytesView(snapshot))),
+    );
   }
 
   CanonicalSnapshotBytes? createRecoverySnapshot() {
@@ -182,8 +193,26 @@ final class MdstreamReducer {
     return output.snapshots.firstOrNull;
   }
 
+  PendingSourceView? pendingSourceView() {
+    if (_pendingSourceLoaded) {
+      return _pendingSourceCache;
+    }
+    final output = _execute({'schema': _schema, 'kind': 'pending_source_view'});
+    _expectOnly(output, {
+      BindingPayloadKind.pendingSourceView,
+    }, 'pending source view');
+    if (output.pendingSourceViews.length > 1) {
+      throw _unexpectedPayload(
+        'pending source view returned multiple payloads',
+      );
+    }
+    _pendingSourceCache = output.pendingSourceViews.firstOrNull;
+    _pendingSourceLoaded = true;
+    return _pendingSourceCache;
+  }
+
   NodeView? nodeView(NodeId id) {
-    requireDecimalString(id, 'node_id');
+    validateDecimalU128Input(id, 'node_id');
     final cached = _nodeCache[id];
     if (cached != null) {
       return cached;
@@ -220,7 +249,7 @@ final class MdstreamReducer {
   }
 
   ResourceView? resourceView(ResourceId id) {
-    requireDecimalString(id, 'resource_id');
+    validateDecimalU128Input(id, 'resource_id');
     final cached = _resourceCache[id];
     if (cached != null) {
       return cached;
@@ -258,8 +287,8 @@ final class MdstreamReducer {
   }
 
   ArtifactView? artifactView(ArtifactSlot slot) {
-    requireDecimalString(slot.epoch, 'epoch');
-    requireDecimalString(slot.nodeId, 'node_id');
+    validateDecimalU64Input(slot.epoch, 'epoch');
+    validateDecimalU128Input(slot.nodeId, 'node_id');
     final key = slot._cacheKey;
     final cached = _artifactCache[key];
     if (cached != null) {
@@ -305,7 +334,34 @@ final class MdstreamReducer {
     _execute({
       'schema': _schema,
       'kind': 'begin_processor',
-      'node_id': requireDecimalString(nodeId, 'node_id'),
+      'node_id': validateDecimalU128Input(nodeId, 'node_id'),
+      'processor_id': processorId,
+      'processor_version': processorVersion,
+      'configuration_version': configurationVersion,
+      'accepts_provisional': acceptsProvisional,
+      'allow_provisional': allowProvisional,
+    }),
+  );
+
+  ReducerResult beginProcessorIfCurrent({
+    required Epoch expectedEpoch,
+    required NodeId nodeId,
+    required NodeVersion expectedNodeVersion,
+    required String processorId,
+    required String processorVersion,
+    required String configurationVersion,
+    bool acceptsProvisional = false,
+    bool allowProvisional = false,
+  }) => _publicResult(
+    _execute({
+      'schema': _schema,
+      'kind': 'begin_processor_if_current',
+      'expected_epoch': validateDecimalU64Input(
+        expectedEpoch,
+        'expected_epoch',
+      ),
+      'node_id': validateDecimalU128Input(nodeId, 'node_id'),
+      'expected_node_version': expectedNodeVersion,
       'processor_id': processorId,
       'processor_version': processorVersion,
       'configuration_version': configurationVersion,
@@ -352,7 +408,7 @@ final class MdstreamReducer {
     _execute({
       'schema': _schema,
       'kind': 'cancel_processor',
-      'request_id': requireDecimalString(requestId, 'request_id'),
+      'request_id': validateDecimalU64Input(requestId, 'request_id'),
     }),
   );
 
@@ -368,6 +424,7 @@ final class MdstreamReducer {
     processorCompletionPayloads: _count(BindingPayloadKind.processorCompletion),
     artifactChangePayloads: _count(BindingPayloadKind.artifactChange),
     artifactViewPayloads: _count(BindingPayloadKind.artifactView),
+    pendingSourceViewPayloads: _count(BindingPayloadKind.pendingSourceView),
   );
 
   void close() {
@@ -381,6 +438,7 @@ final class MdstreamReducer {
     _missingNodes.clear();
     _missingResources.clear();
     _missingArtifacts.clear();
+    _invalidatePendingSource();
   }
 
   ReducerResult _completeProcessor(
@@ -390,7 +448,7 @@ final class MdstreamReducer {
     _execute({
       'schema': _schema,
       'kind': 'complete_processor',
-      'request_id': requireDecimalString(requestId, 'request_id'),
+      'request_id': validateDecimalU64Input(requestId, 'request_id'),
       'outcome': outcome,
     }),
   );
@@ -413,7 +471,7 @@ final class MdstreamReducer {
         case BindingPayloadKind.change:
           throw _unexpectedPayload('reducer returned a canonical change');
         case BindingPayloadKind.snapshot:
-          output.snapshots.add(CanonicalSnapshotBytes(payload.bytes));
+          output.snapshots.add(canonicalSnapshotBytesFromOwned(payload.bytes));
         case BindingPayloadKind.reducerUpdate:
           output.updates.add(
             decodeBindingView(kind, payload.bytes, _schema)
@@ -446,6 +504,11 @@ final class MdstreamReducer {
           output.artifactViews.add(
             decodeBindingView(kind, payload.bytes, _schema) as ArtifactView,
           );
+        case BindingPayloadKind.pendingSourceView:
+          output.pendingSourceViews.add(
+            decodeBindingView(kind, payload.bytes, _schema)
+                as PendingSourceView,
+          );
       }
     }
     for (final update in output.updates) {
@@ -476,6 +539,11 @@ final class MdstreamReducer {
       return;
     }
     final impact = update.impact;
+    if (impact.sourceChanged ||
+        impact.projectionChanged ||
+        impact.fullReplace) {
+      _invalidatePendingSource();
+    }
     if (impact.fullReplace) {
       _nodeCache.clear();
       _resourceCache.clear();
@@ -554,6 +622,11 @@ final class MdstreamReducer {
 
   String _count(BindingPayloadKind kind) =>
       (_payloadCounts[kind] ?? 0).toString();
+
+  void _invalidatePendingSource() {
+    _pendingSourceCache = null;
+    _pendingSourceLoaded = false;
+  }
 }
 
 MdstreamReducer createNativeReducer(
@@ -571,6 +644,7 @@ final class _DecodedReducerOutput {
   final List<ProcessorCompletionView> processorCompletions = [];
   final List<ArtifactChangeView> artifactChanges = [];
   final List<ArtifactView> artifactViews = [];
+  final List<PendingSourceView> pendingSourceViews = [];
   int outputPayloadBytes = 0;
 }
 

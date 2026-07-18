@@ -61,7 +61,7 @@ final class _DeferredProcessor implements ContentProcessor {
   bool get allowProvisional => false;
 
   @override
-  bool matches(ContentNodeView node) => node.content['kind'] == 'paragraph';
+  bool matches(ContentNodeView node) => node.content is ParagraphContentView;
 
   @override
   FutureOr<ProcessorOutput> process(

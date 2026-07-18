@@ -224,7 +224,9 @@ abstract interface class _ProcessorBackend {
   bool get isClosed;
 
   ReducerResult beginProcessor({
+    required Epoch expectedEpoch,
     required NodeId nodeId,
+    required NodeVersion expectedNodeVersion,
     required String processorId,
     required String processorVersion,
     required String configurationVersion,
@@ -303,8 +305,37 @@ final class _InFlightProcessor {
   final _ProcessorCancellation cancellation;
 }
 
+final class _ProcessorCandidate {
+  _ProcessorCandidate({
+    required this.registration,
+    required this.expectedEpoch,
+    required this.nodeId,
+    required this.expectedNodeVersion,
+  });
+
+  final _RegisteredProcessor registration;
+  final NodeId nodeId;
+  Epoch expectedEpoch;
+  NodeVersion expectedNodeVersion;
+  bool queued = true;
+}
+
+final class _CandidateExpectation {
+  const _CandidateExpectation({required this.epoch, required this.nodeVersion});
+
+  final Epoch epoch;
+  final NodeVersion nodeVersion;
+}
+
+enum _BeginDisposition { started, stale, blocked, terminal }
+
 final class _ProcessorScheduler {
   _ProcessorScheduler({required this.backend, required this.onResult});
+
+  static const int _maxDispatchJobs = 32;
+  static const int _maxQueuedCandidates = 4096;
+  static const int _candidateQueueCompactionFloor = 64;
+  static const int _candidateQueueCompactionRatio = 4;
 
   final _ProcessorBackend backend;
   final void Function(ReducerResult result) onResult;
@@ -315,9 +346,20 @@ final class _ProcessorScheduler {
   final LinkedHashSet<NodeId> _pendingNodes = LinkedHashSet<NodeId>();
   final LinkedHashSet<_RegisteredProcessor> _pendingRegistrations =
       LinkedHashSet<_RegisteredProcessor>();
+  final ListQueue<_ProcessorCandidate> _candidateQueue =
+      ListQueue<_ProcessorCandidate>();
+  final Map<_RegisteredProcessor, Map<NodeId, _ProcessorCandidate>>
+  _candidates = <_RegisteredProcessor, Map<NodeId, _ProcessorCandidate>>{};
+  final Map<_RegisteredProcessor, Map<NodeId, _CandidateExpectation>>
+  _rejectedCandidates =
+      <_RegisteredProcessor, Map<NodeId, _CandidateExpectation>>{};
   final Set<Future<void>> _jobs = <Future<void>>{};
   final _DirectedValueListenable<ProcessorErrorEvent?> errors =
       _DirectedValueListenable<ProcessorErrorEvent?>(null);
+  Map<RequestGeneration, Object>? _removedDuringBegin;
+  int _beginDepth = 0;
+  int _candidateCount = 0;
+  bool _dispatching = false;
   bool _scanScheduled = false;
   bool _closed = false;
 
@@ -354,9 +396,21 @@ final class _ProcessorScheduler {
     for (final result in results) {
       for (final change in result.artifactChanges) {
         if (change.change.kind == 'removed') {
-          _inFlight[change.key.generation]?.cancellation.cancel(
-            change.change.reason ?? 'artifact_removed',
-          );
+          final generation = change.key.generation;
+          final reason = change.change.reason ?? 'artifact_removed';
+          final entry = _inFlight[generation];
+          if (entry == null) {
+            if (_beginDepth > 0) {
+              (_removedDuringBegin ??=
+                      <RequestGeneration, Object>{})[generation] =
+                  reason;
+            }
+          } else {
+            entry.cancellation.cancel(reason);
+            if (identical(_inFlight[generation], entry)) {
+              _inFlight.remove(generation);
+            }
+          }
         }
       }
       if (_processors.isEmpty) {
@@ -367,16 +421,34 @@ final class _ProcessorScheduler {
             update.outcome.kind != 'recovered') {
           continue;
         }
-        _pendingNodes.addAll(update.impact.changedNodeIds);
-        _pendingNodes.removeAll(update.impact.removedNodeIds);
+        if (update.impact.fullReplace) {
+          _clearCandidates();
+          _clearRejectedCandidates();
+          _pendingNodes.clear();
+          _pendingRegistrations.addAll(
+            _processors.values.where((registration) => registration.active),
+          );
+          continue;
+        }
+        for (final id in update.impact.changedNodeIds) {
+          _removeNodeCandidates(id);
+          _pendingNodes.add(id);
+        }
+        for (final id in update.impact.removedNodeIds) {
+          _removeNodeCandidates(id);
+          _removeRejectedNode(id);
+          _pendingNodes.remove(id);
+        }
       }
     }
     _scheduleScan();
+    _drainCandidates();
   }
 
   Future<void> whenIdle() async {
     for (;;) {
       await Future<void>.value();
+      _drainCandidates();
       if (_scanScheduled ||
           _pendingNodes.isNotEmpty ||
           _pendingRegistrations.isNotEmpty) {
@@ -384,7 +456,10 @@ final class _ProcessorScheduler {
       }
       final jobs = List<Future<void>>.of(_jobs);
       if (jobs.isEmpty) {
-        return;
+        if (_candidateCount == 0) {
+          return;
+        }
+        continue;
       }
       await Future.wait(jobs);
     }
@@ -398,6 +473,8 @@ final class _ProcessorScheduler {
     _scanScheduled = false;
     _pendingNodes.clear();
     _pendingRegistrations.clear();
+    _clearCandidates();
+    _clearRejectedCandidates();
     for (final registration in _processors.values) {
       registration.active = false;
     }
@@ -448,6 +525,7 @@ final class _ProcessorScheduler {
       _scanCurrentTree(pendingRegistrations);
     }
     _scheduleScan();
+    _drainCandidates();
   }
 
   void _scanCurrentTree(List<_RegisteredProcessor> registrations) {
@@ -473,11 +551,19 @@ final class _ProcessorScheduler {
     if (registrations.isEmpty) {
       return null;
     }
+    final expectedEpoch = backend.state.currentState.document?.coordinate.epoch;
+    if (expectedEpoch == null) {
+      for (final registration in registrations) {
+        _removeCandidate(registration, nodeId);
+      }
+      return null;
+    }
     NodeView? nodeView;
     try {
       nodeView = backend.state.nodeView(nodeId);
     } catch (error, stackTrace) {
       for (final registration in registrations) {
+        _removeCandidate(registration, nodeId);
         if (registration.active) {
           _emitError(
             phase: ProcessorErrorPhase.view,
@@ -491,6 +577,9 @@ final class _ProcessorScheduler {
       return null;
     }
     if (nodeView == null) {
+      for (final registration in registrations) {
+        _removeCandidate(registration, nodeId);
+      }
       return null;
     }
     for (final registration in registrations) {
@@ -501,12 +590,14 @@ final class _ProcessorScheduler {
       if (nodeView.node.stability == 'provisional' &&
           !(registration.descriptor.acceptsProvisional &&
               registration.allowProvisional)) {
+        _removeCandidate(registration, nodeId);
         continue;
       }
       bool matches;
       try {
         matches = processor.matches(nodeView.node);
       } catch (error, stackTrace) {
+        _removeCandidate(registration, nodeId);
         _emitError(
           phase: ProcessorErrorPhase.matches,
           registration: registration,
@@ -516,19 +607,234 @@ final class _ProcessorScheduler {
         );
         continue;
       }
-      if (matches) {
-        _begin(registration, nodeId);
+      if (matches && registration.active) {
+        _enqueueCandidate(
+          registration,
+          expectedEpoch,
+          nodeId,
+          nodeView.node.version,
+        );
+      } else {
+        _removeCandidate(registration, nodeId);
       }
     }
     return nodeView;
   }
 
-  void _begin(_RegisteredProcessor registration, NodeId nodeId) {
+  void _enqueueCandidate(
+    _RegisteredProcessor registration,
+    Epoch expectedEpoch,
+    NodeId nodeId,
+    NodeVersion expectedNodeVersion, {
+    bool front = false,
+  }) {
+    if (_closed || !registration.active) {
+      return;
+    }
+    final rejected = _rejectedCandidates[registration]?[nodeId];
+    if (rejected?.epoch == expectedEpoch &&
+        rejected?.nodeVersion == expectedNodeVersion) {
+      return;
+    }
+    final registrationCandidates = _candidates.putIfAbsent(
+      registration,
+      () => <NodeId, _ProcessorCandidate>{},
+    );
+    final existing = registrationCandidates[nodeId];
+    if (existing != null) {
+      existing.expectedEpoch = expectedEpoch;
+      existing.expectedNodeVersion = expectedNodeVersion;
+      return;
+    }
+    if (_candidateCount >= _maxQueuedCandidates) {
+      _emitError(
+        phase: ProcessorErrorPhase.begin,
+        registration: registration,
+        nodeId: nodeId,
+        error: MdstreamException(
+          'processor candidate queue limit $_maxQueuedCandidates exceeded',
+          status: BindingStatus.resourceLimitExceeded.value,
+          statusName: BindingStatus.resourceLimitExceeded.statusName,
+          detailCode: 'processor.candidate_queue_limit',
+        ),
+        stackTrace: StackTrace.current,
+      );
+      if (registrationCandidates.isEmpty) {
+        _candidates.remove(registration);
+      }
+      return;
+    }
+    final candidate = _ProcessorCandidate(
+      registration: registration,
+      expectedEpoch: expectedEpoch,
+      nodeId: nodeId,
+      expectedNodeVersion: expectedNodeVersion,
+    );
+    registrationCandidates[nodeId] = candidate;
+    if (front) {
+      _candidateQueue.addFirst(candidate);
+    } else {
+      _candidateQueue.addLast(candidate);
+    }
+    _candidateCount += 1;
+  }
+
+  void _removeCandidate(_RegisteredProcessor registration, NodeId nodeId) {
+    final registrationCandidates = _candidates[registration];
+    final candidate = registrationCandidates?.remove(nodeId);
+    if (candidate == null) {
+      return;
+    }
+    candidate.queued = false;
+    _candidateCount -= 1;
+    if (registrationCandidates!.isEmpty) {
+      _candidates.remove(registration);
+    }
+    _compactCandidateQueue();
+  }
+
+  void _removeNodeCandidates(NodeId nodeId) {
+    for (final registration in _candidates.keys.toList(growable: false)) {
+      _removeCandidate(registration, nodeId);
+    }
+  }
+
+  void _removeRegistrationCandidates(_RegisteredProcessor registration) {
+    final candidates = _candidates.remove(registration);
+    if (candidates == null) {
+      return;
+    }
+    for (final candidate in candidates.values) {
+      candidate.queued = false;
+      _candidateCount -= 1;
+    }
+    _compactCandidateQueue();
+  }
+
+  void _clearCandidates() {
+    for (final candidates in _candidates.values) {
+      for (final candidate in candidates.values) {
+        candidate.queued = false;
+      }
+    }
+    _candidates.clear();
+    _candidateQueue.clear();
+    _candidateCount = 0;
+  }
+
+  void _rejectCandidate(_ProcessorCandidate candidate) {
+    final rejected = _rejectedCandidates.putIfAbsent(
+      candidate.registration,
+      () => <NodeId, _CandidateExpectation>{},
+    );
+    rejected[candidate.nodeId] = _CandidateExpectation(
+      epoch: candidate.expectedEpoch,
+      nodeVersion: candidate.expectedNodeVersion,
+    );
+  }
+
+  void _removeRejectedNode(NodeId nodeId) {
+    for (final registration in _rejectedCandidates.keys.toList(
+      growable: false,
+    )) {
+      final rejected = _rejectedCandidates[registration]!;
+      rejected.remove(nodeId);
+      if (rejected.isEmpty) {
+        _rejectedCandidates.remove(registration);
+      }
+    }
+  }
+
+  void _removeRejectedCandidate(
+    _RegisteredProcessor registration,
+    NodeId nodeId,
+  ) {
+    final rejected = _rejectedCandidates[registration];
+    rejected?.remove(nodeId);
+    if (rejected?.isEmpty ?? false) {
+      _rejectedCandidates.remove(registration);
+    }
+  }
+
+  void _clearRejectedCandidates() => _rejectedCandidates.clear();
+
+  _ProcessorCandidate? _takeCandidate() {
+    while (_candidateQueue.isNotEmpty) {
+      final candidate = _candidateQueue.removeFirst();
+      if (!candidate.queued) {
+        continue;
+      }
+      candidate.queued = false;
+      final registrationCandidates = _candidates[candidate.registration];
+      registrationCandidates?.remove(candidate.nodeId);
+      if (registrationCandidates?.isEmpty ?? false) {
+        _candidates.remove(candidate.registration);
+      }
+      _candidateCount -= 1;
+      _compactCandidateQueue();
+      return candidate;
+    }
+    _compactCandidateQueue();
+    return null;
+  }
+
+  void _compactCandidateQueue() {
+    if (_candidateCount == 0) {
+      _candidateQueue.clear();
+      return;
+    }
+    if (_candidateQueue.length <= _candidateQueueCompactionFloor ||
+        _candidateQueue.length <=
+            _candidateCount * _candidateQueueCompactionRatio) {
+      return;
+    }
+    final retained = _candidateQueue
+        .where((candidate) => candidate.queued)
+        .toList(growable: false);
+    _candidateQueue
+      ..clear()
+      ..addAll(retained);
+  }
+
+  void _drainCandidates() {
+    if (_dispatching || _closed) {
+      return;
+    }
+    _dispatching = true;
+    try {
+      while (_candidateCount > 0 && _inFlight.length < _maxDispatchJobs) {
+        final candidate = _takeCandidate();
+        if (candidate == null) {
+          break;
+        }
+        if (!candidate.registration.active) {
+          continue;
+        }
+        if (_begin(candidate) == _BeginDisposition.blocked) {
+          break;
+        }
+      }
+    } finally {
+      _dispatching = false;
+    }
+  }
+
+  _BeginDisposition _begin(_ProcessorCandidate candidate) {
+    final registration = candidate.registration;
+    final expectedEpoch = candidate.expectedEpoch;
+    final nodeId = candidate.nodeId;
+    final expectedNodeVersion = candidate.expectedNodeVersion;
     final processor = registration.processor;
     ProcessorRequestView request;
+    final parentRemovals = _removedDuringBegin;
+    Map<RequestGeneration, Object>? removals;
+    _removedDuringBegin = null;
+    _beginDepth += 1;
     try {
       final result = backend.beginProcessor(
+        expectedEpoch: expectedEpoch,
         nodeId: nodeId,
+        expectedNodeVersion: expectedNodeVersion,
         processorId: registration.descriptor.id,
         processorVersion: registration.descriptor.version,
         configurationVersion: registration.configurationVersion,
@@ -536,21 +842,52 @@ final class _ProcessorScheduler {
         allowProvisional: registration.allowProvisional,
       );
       onResult(result);
+      if (result.processorRequests.isEmpty) {
+        _rejectCandidate(candidate);
+        _pendingNodes.add(nodeId);
+        _scheduleScan();
+        return _BeginDisposition.stale;
+      }
       if (result.processorRequests.length != 1) {
         throw StateError('native processor host returned no unique request');
       }
       request = result.processorRequests.single;
+      _removeRejectedCandidate(registration, nodeId);
     } catch (error, stackTrace) {
+      final normalized = MdstreamException.fromObject(error);
+      if (normalized.status == BindingStatus.resourceLimitExceeded.value &&
+          _inFlight.isNotEmpty) {
+        _enqueueCandidate(
+          registration,
+          expectedEpoch,
+          nodeId,
+          expectedNodeVersion,
+          front: true,
+        );
+        return _BeginDisposition.blocked;
+      }
       _emitError(
         phase: ProcessorErrorPhase.begin,
         registration: registration,
         nodeId: nodeId,
-        error: error,
+        error: normalized,
         stackTrace: stackTrace,
       );
-      return;
+      return _BeginDisposition.terminal;
+    } finally {
+      removals = _removedDuringBegin;
+      _beginDepth -= 1;
+      _removedDuringBegin = parentRemovals;
+      if (_beginDepth > 0 && removals != null) {
+        (_removedDuringBegin ??= <RequestGeneration, Object>{}).addAll(
+          removals,
+        );
+      }
     }
 
+    if (removals?.containsKey(request.requestId) ?? false) {
+      return _BeginDisposition.stale;
+    }
     final entry = _InFlightProcessor(
       registration: registration,
       request: request,
@@ -559,7 +896,7 @@ final class _ProcessorScheduler {
     if (_closed || !registration.active || backend.isClosed) {
       entry.cancellation.cancel('processor_inactive');
       _cancel(entry, ProcessorErrorPhase.cancel);
-      return;
+      return _BeginDisposition.terminal;
     }
     _inFlight[request.requestId] = entry;
     late final Future<void> job;
@@ -580,8 +917,11 @@ final class _ProcessorScheduler {
                 _inFlight.remove(request.requestId);
               }
               _jobs.remove(job);
+              _drainCandidates();
+              _scheduleScan();
             });
     _jobs.add(job);
+    return _BeginDisposition.started;
   }
 
   void _complete(_InFlightProcessor entry, ProcessorOutput output) {
@@ -673,6 +1013,8 @@ final class _ProcessorScheduler {
     registration.active = false;
     _processors.remove(registration.descriptor.id);
     _pendingRegistrations.remove(registration);
+    _removeRegistrationCandidates(registration);
+    _rejectedCandidates.remove(registration);
     for (final entry in List<_InFlightProcessor>.of(_inFlight.values)) {
       if (identical(entry.registration, registration)) {
         entry.cancellation.cancel('processor_unregistered');
@@ -680,6 +1022,7 @@ final class _ProcessorScheduler {
         _inFlight.remove(entry.request.requestId);
       }
     }
+    _drainCandidates();
   }
 
   void _cancel(_InFlightProcessor entry, ProcessorErrorPhase phase) {

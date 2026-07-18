@@ -8,6 +8,7 @@ export enum BindingPayloadKind {
   ProcessorCompletion = 7,
   ArtifactChange = 8,
   ArtifactView = 9,
+  PendingSourceView = 10,
 }
 
 export interface WasmOutput {
@@ -34,8 +35,19 @@ export interface WasmReducerSession {
   snapshot(): WasmOutput;
   nodeView(nodeId: string): WasmOutput;
   resourceView(resourceId: string): WasmOutput;
+  pendingSourceView(): WasmOutput;
   beginProcessor(
     nodeId: string,
+    processorId: string,
+    processorVersion: string,
+    configurationVersion: string,
+    acceptsProvisional: boolean,
+    allowProvisional: boolean,
+  ): WasmOutput;
+  beginProcessorIfCurrent(
+    expectedEpoch: string,
+    nodeId: string,
+    expectedNodeVersion: string,
     processorId: string,
     processorVersion: string,
     configurationVersion: string,
@@ -85,13 +97,34 @@ export interface DrainedOutput {
   readonly payloadBytes: bigint;
 }
 
+const expectedAbiVersion = 1;
+const expectedBindingSchema = "mdstream.bindings/0.4";
+const expectedBindingOptionsSchema = "mdstream.bindings-options/0.4";
+
+class WasmContractError extends Error {
+  readonly status = 5;
+  readonly status_name = "MDSTREAM_UNSUPPORTED_SCHEMA";
+  readonly detail_code = "unsupported_schema";
+  readonly schema: string | undefined;
+
+  constructor(message: string, schema?: string) {
+    super(message);
+    this.name = "WasmContractError";
+    this.schema = schema;
+  }
+}
+
 export function drainOutput(output: WasmOutput): DrainedOutput {
   const payloads: TransportPayload[] = [];
   let payloadBytes = 0n;
   try {
     for (let index = 0; index < output.len; index += 1) {
       const kind = output.kind(index);
-      if (!Number.isInteger(kind) || kind < 1 || kind > 9) {
+      if (
+        !Number.isInteger(kind) ||
+        kind < BindingPayloadKind.Change ||
+        kind > BindingPayloadKind.PendingSourceView
+      ) {
         throw new TypeError(`WASM returned unknown binding payload kind ${kind}`);
       }
       const bytes = output.take(index);
@@ -110,7 +143,7 @@ export function drainOutput(output: WasmOutput): DrainedOutput {
 export async function loadWasmBindings(loader: WasmModuleLoader): Promise<WasmBindings> {
   const loaded = await loader();
   const namespace = asModuleRecord(loaded);
-  const candidate = hasBindings(namespace)
+  const candidate = hasBindingModuleShape(namespace)
     ? namespace
     : asModuleRecord(namespace.default);
 
@@ -118,10 +151,48 @@ export async function loadWasmBindings(loader: WasmModuleLoader): Promise<WasmBi
     await candidate.default();
   }
   if (!hasBindings(candidate)) {
-    throw new TypeError("WASM loader did not return the mdstream binding module");
+    throw new WasmContractError(
+      "WASM loader did not return the complete mdstream binding module",
+    );
   }
-  if (candidate.abiVersion() !== 1) {
-    throw new TypeError(`unsupported mdstream WASM ABI ${candidate.abiVersion()}`);
+  const packageVersion = candidate.packageVersion();
+  if (typeof packageVersion !== "string") {
+    throw new WasmContractError(
+      "mdstream WASM packageVersion probe must return a string",
+    );
+  }
+  const abiVersion = candidate.abiVersion();
+  if (abiVersion !== expectedAbiVersion) {
+    throw new WasmContractError(
+      `unsupported mdstream WASM ABI ${abiVersion}; expected ${expectedAbiVersion}`,
+    );
+  }
+  const bindingSchema = candidate.bindingSchema();
+  if (bindingSchema !== expectedBindingSchema) {
+    throw new WasmContractError(
+      `unsupported mdstream binding schema ${bindingSchema}; expected ${expectedBindingSchema}`,
+      bindingSchema,
+    );
+  }
+  const bindingOptionsSchema = candidate.bindingOptionsSchema();
+  if (bindingOptionsSchema !== expectedBindingOptionsSchema) {
+    throw new WasmContractError(
+      `unsupported mdstream binding options schema ${bindingOptionsSchema}; expected ${expectedBindingOptionsSchema}`,
+      bindingOptionsSchema,
+    );
+  }
+  const reducerPrototype = asModuleRecord(candidate.MdstreamReducerSession.prototype);
+  if (typeof reducerPrototype.pendingSourceView !== "function") {
+    throw new WasmContractError(
+      "mdstream WASM reducer is missing required pendingSourceView capability",
+      bindingSchema,
+    );
+  }
+  if (typeof reducerPrototype.beginProcessorIfCurrent !== "function") {
+    throw new WasmContractError(
+      "mdstream WASM reducer is missing required beginProcessorIfCurrent capability",
+      bindingSchema,
+    );
   }
   return candidate;
 }
@@ -156,6 +227,13 @@ function asModuleRecord(value: unknown): Record<string, unknown> {
 function hasBindings(
   value: Record<string, unknown>,
 ): value is Record<string, unknown> & WasmBindings {
+  return (
+    hasBindingModuleShape(value) &&
+    typeof value.packageVersion === "function"
+  );
+}
+
+function hasBindingModuleShape(value: Record<string, unknown>): boolean {
   return (
     typeof value.MdstreamEngineSession === "function" &&
     typeof value.MdstreamReducerSession === "function" &&

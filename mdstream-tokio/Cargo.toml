@@ -1,7 +1,7 @@
 [package]
 name = "mdstream-tokio"
-version = "0.3.0"
-description = "Tokio glue for mdstream (delta coalescing and optional actor helpers)."
+version = "0.4.0"
+description = "Lossless Tokio transport and actor integration for mdstream change sets."
 readme = "../README.md"
 edition = "2024"
 rust-version = "1.88.0"
@@ -11,7 +11,7 @@ repository = "https://github.com/Latias94/mdstream"
 homepage = "https://github.com/Latias94/mdstream"
 
 [dependencies]
-mdstream = { version = "0.3.0", path = "../mdstream" }
+mdstream = { version = "0.4.0", path = "../mdstream" }
 mdstream-protocol = { version = "0.4.0", path = "../mdstream-protocol" }
 tokio = { version = "1.52.3", features = ["sync", "time", "rt", "macros"] }
 

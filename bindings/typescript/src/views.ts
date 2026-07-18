@@ -99,9 +99,149 @@ export interface SourceRangeView {
   readonly end: SourceCursor;
 }
 
-export type ContentKindView = Readonly<Record<string, unknown>> & {
-  readonly kind: string;
-};
+export interface PendingSourceView {
+  readonly schema: string;
+  readonly kind: "pending_source_view";
+  readonly range: SourceRangeView;
+  readonly text: string;
+}
+
+export type TableAlignment = "none" | "left" | "center" | "right";
+export type LinkStyle =
+  | "inline"
+  | "reference"
+  | "reference_unknown"
+  | "collapsed"
+  | "collapsed_unknown"
+  | "shortcut"
+  | "shortcut_unknown"
+  | "autolink"
+  | "email";
+export type BlockQuoteKind =
+  | "plain"
+  | "note"
+  | "tip"
+  | "important"
+  | "warning"
+  | "caution";
+export type CodeFenceMarker = "backtick" | "tilde";
+export type CitationProtocol = "mdstream.citation/1";
+
+export type SemanticTextView =
+  | { readonly kind: "source" }
+  | { readonly kind: "normalized"; readonly value: string };
+
+export type CodeBlockSyntaxView =
+  | { readonly kind: "indented" }
+  | {
+      readonly kind: "fenced";
+      readonly marker: CodeFenceMarker;
+      readonly length: number;
+    };
+
+export interface ResourceRefView {
+  readonly id: ResourceId;
+  readonly version: ResourceVersion;
+}
+
+type EmptyContentKindView =
+  | { readonly kind: "paragraph" }
+  | { readonly kind: "emphasis" }
+  | { readonly kind: "strong" }
+  | { readonly kind: "strikethrough" }
+  | { readonly kind: "thematic_break" }
+  | { readonly kind: "table_head" }
+  | { readonly kind: "table_body" }
+  | { readonly kind: "table_row" }
+  | { readonly kind: "soft_break" }
+  | { readonly kind: "hard_break" };
+
+export type ContentKindView =
+  | EmptyContentKindView
+  | { readonly kind: "heading"; readonly level: number }
+  | { readonly kind: "text"; readonly text: SemanticTextView }
+  | {
+      readonly kind: "link";
+      readonly target: ResourceRefView | null;
+      readonly referenceLabel: string | null;
+      readonly style: LinkStyle;
+    }
+  | {
+      readonly kind: "image";
+      readonly target: ResourceRefView | null;
+      readonly referenceLabel: string | null;
+      readonly style: LinkStyle;
+      readonly alt: SemanticTextView;
+    }
+  | { readonly kind: "inline_code"; readonly text: SemanticTextView }
+  | {
+      readonly kind: "code_block";
+      readonly syntax: CodeBlockSyntaxView;
+      readonly info: string | null;
+      readonly text: SemanticTextView;
+    }
+  | {
+      readonly kind: "list";
+      readonly ordered: boolean;
+      readonly start: number | null;
+      readonly tight: boolean;
+    }
+  | { readonly kind: "list_item"; readonly checked: boolean | null }
+  | { readonly kind: "block_quote"; readonly style: BlockQuoteKind }
+  | { readonly kind: "table"; readonly alignments: readonly TableAlignment[] }
+  | { readonly kind: "table_cell"; readonly column: number }
+  | {
+      readonly kind: "html";
+      readonly block: boolean;
+      readonly text: SemanticTextView;
+    }
+  | {
+      readonly kind: "math";
+      readonly display: boolean;
+      readonly text: SemanticTextView;
+    }
+  | {
+      readonly kind: "footnote_definition";
+      readonly label: string;
+      readonly target: ResourceRefView;
+    }
+  | {
+      readonly kind: "footnote_reference";
+      readonly label: string;
+      readonly target: ResourceRefView | null;
+    }
+  | {
+      readonly kind: "citation_definition";
+      readonly key: string;
+      readonly target: ResourceRefView;
+    }
+  | {
+      readonly kind: "citation_reference";
+      readonly key: string;
+      readonly target: ResourceRefView | null;
+    }
+  | {
+      readonly kind: "custom";
+      readonly namespace: string;
+      readonly name: string;
+      readonly opaque: boolean;
+      readonly attributes: Readonly<Record<string, string>>;
+    };
+
+export type SemanticResourceKindView =
+  | {
+      readonly kind: "link";
+      readonly destination: string;
+      readonly title: string | null;
+    }
+  | { readonly kind: "footnote"; readonly label: string }
+  | {
+      readonly kind: "citation";
+      readonly protocol: CitationProtocol;
+      readonly key: string;
+      readonly destination: string;
+      readonly title: string | null;
+    };
 
 export interface ContentNodeView {
   readonly id: NodeId;
@@ -123,7 +263,7 @@ export interface NodeView {
 export interface SemanticResourceView {
   readonly id: ResourceId;
   readonly version: ResourceVersion;
-  readonly content: Readonly<Record<string, unknown>> & { readonly kind: string };
+  readonly content: SemanticResourceKindView;
 }
 
 export interface ResourceView {
@@ -232,6 +372,7 @@ export type DecodedBindingView =
   | ReducerUpdateView
   | NodeView
   | ResourceView
+  | PendingSourceView
   | ProcessorRequestView
   | ProcessorCompletionView
   | ArtifactChangeView
@@ -290,6 +431,8 @@ export class MdstreamError extends Error {
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const decimalPattern = /^(0|[1-9][0-9]*)$/;
+const maxU64 = "18446744073709551615";
+const maxU128 = "340282366920938463463374607431768211455";
 
 /** @internal */
 export function decodeBindingView(
@@ -301,25 +444,37 @@ export function decodeBindingView(
   requiredLiteral(record.schema, expectedSchema, "schema");
   requiredLiteral(record.kind, expectedViewKind(payloadKind), "kind");
 
+  let decoded: DecodedBindingView;
   switch (payloadKind) {
     case BindingPayloadKind.ReducerUpdate:
-      return decodeReducerUpdate(record, expectedSchema);
+      decoded = decodeReducerUpdate(record, expectedSchema);
+      break;
     case BindingPayloadKind.NodeView:
-      return decodeNodeView(record, expectedSchema);
+      decoded = decodeNodeView(record, expectedSchema);
+      break;
     case BindingPayloadKind.ResourceView:
-      return decodeResourceView(record, expectedSchema);
+      decoded = decodeResourceView(record, expectedSchema);
+      break;
+    case BindingPayloadKind.PendingSourceView:
+      decoded = decodePendingSourceView(record, expectedSchema);
+      break;
     case BindingPayloadKind.ProcessorRequest:
-      return decodeProcessorRequest(record, expectedSchema);
+      decoded = decodeProcessorRequest(record, expectedSchema);
+      break;
     case BindingPayloadKind.ProcessorCompletion:
-      return decodeProcessorCompletion(record, expectedSchema);
+      decoded = decodeProcessorCompletion(record, expectedSchema);
+      break;
     case BindingPayloadKind.ArtifactChange:
-      return decodeArtifactChange(record, expectedSchema);
+      decoded = decodeArtifactChange(record, expectedSchema);
+      break;
     case BindingPayloadKind.ArtifactView:
-      return decodeArtifactView(record, expectedSchema);
+      decoded = decodeArtifactView(record, expectedSchema);
+      break;
     case BindingPayloadKind.Change:
     case BindingPayloadKind.Snapshot:
       throw invalidPayload("canonical byte payloads must not be decoded as binding views");
   }
+  return deepFreeze(decoded);
 }
 
 /** @internal */
@@ -346,15 +501,19 @@ export function decodeMetricsPayload(
   for (let index = 0; index < fields.length; index += 1) {
     metrics[fields[index]!] = view.getBigUint64(6 + index * 8, true).toString() as DecimalCounter;
   }
-  return metrics;
+  return Object.freeze(metrics);
+}
+
+export function asEpoch(value: string): Epoch {
+  return inputDecimal(value, "epoch", maxU64) as Epoch;
 }
 
 export function asNodeId(value: string): NodeId {
-  return decimal(value, "node id") as NodeId;
+  return inputDecimal(value, "node id", maxU128) as NodeId;
 }
 
 export function asResourceId(value: string): ResourceId {
-  return decimal(value, "resource id") as ResourceId;
+  return inputDecimal(value, "resource id", maxU128) as ResourceId;
 }
 
 export function asCanonicalChangeBytes(value: Uint8Array): CanonicalChangeBytes {
@@ -394,8 +553,8 @@ function decodeOutcome(value: Record<string, unknown>): ApplyOutcomeView {
       return {
         kind,
         current: decodeCoordinate(requiredRecord(value.current, "current")),
-        receivedEpoch: decimal(requiredString(value.received_epoch, "received_epoch"), "received_epoch") as Epoch,
-        receivedSequence: decimal(requiredString(value.received_sequence, "received_sequence"), "received_sequence") as Sequence,
+        receivedEpoch: decimalU64(requiredString(value.received_epoch, "received_epoch"), "received_epoch") as Epoch,
+        receivedSequence: decimalU64(requiredString(value.received_sequence, "received_sequence"), "received_sequence") as Sequence,
       };
     case "recovery_required":
       return {
@@ -432,10 +591,10 @@ function decodeRecoveryReason(value: Record<string, unknown>): RecoveryReasonVie
 
 function decodeImpact(value: Record<string, unknown>): ChangeImpactView {
   return {
-    changedNodeIds: decimalArray(value.changed_node_ids, "changed_node_ids") as readonly NodeId[],
-    removedNodeIds: decimalArray(value.removed_node_ids, "removed_node_ids") as readonly NodeId[],
-    changedResourceIds: decimalArray(value.changed_resource_ids, "changed_resource_ids") as readonly ResourceId[],
-    removedResourceIds: decimalArray(value.removed_resource_ids, "removed_resource_ids") as readonly ResourceId[],
+    changedNodeIds: decimalU128Array(value.changed_node_ids, "changed_node_ids") as readonly NodeId[],
+    removedNodeIds: decimalU128Array(value.removed_node_ids, "removed_node_ids") as readonly NodeId[],
+    changedResourceIds: decimalU128Array(value.changed_resource_ids, "changed_resource_ids") as readonly ResourceId[],
+    removedResourceIds: decimalU128Array(value.removed_resource_ids, "removed_resource_ids") as readonly ResourceId[],
     sourceChanged: requiredBoolean(value.source_changed, "source_changed"),
     projectionChanged: requiredBoolean(value.projection_changed, "projection_changed"),
     lifecycleChanged: requiredBoolean(value.lifecycle_changed, "lifecycle_changed"),
@@ -455,17 +614,17 @@ function decodeDocument(value: Record<string, unknown>): DocumentSummaryView {
   return {
     coordinate: decodeCoordinate(requiredRecord(value.coordinate, "document.coordinate")),
     lifecycle,
-    projectionCursor: decimal(requiredString(value.projection_cursor, "projection_cursor"), "projection_cursor") as SourceCursor,
+    projectionCursor: decimalU64(requiredString(value.projection_cursor, "projection_cursor"), "projection_cursor") as SourceCursor,
     ...(roots === undefined ? {} : { roots }),
   };
 }
 
 function decodeCoordinate(value: Record<string, unknown>): CoordinateView {
   return {
-    epoch: decimal(requiredString(value.epoch, "coordinate.epoch"), "coordinate.epoch") as Epoch,
-    sequence: decimal(requiredString(value.sequence, "coordinate.sequence"), "coordinate.sequence") as Sequence,
+    epoch: decimalU64(requiredString(value.epoch, "coordinate.epoch"), "coordinate.epoch") as Epoch,
+    sequence: decimalU64(requiredString(value.sequence, "coordinate.sequence"), "coordinate.sequence") as Sequence,
     changeId: requiredString(value.change_id, "coordinate.change_id") as ChangeId,
-    sourceCursor: decimal(requiredString(value.source_cursor, "coordinate.source_cursor"), "coordinate.source_cursor") as SourceCursor,
+    sourceCursor: decimalU64(requiredString(value.source_cursor, "coordinate.source_cursor"), "coordinate.source_cursor") as SourceCursor,
   };
 }
 
@@ -483,30 +642,210 @@ function decodeNode(value: Record<string, unknown>): ContentNodeView {
   if (stability !== "provisional" && stability !== "stable") {
     throw invalidPayload(`unknown node stability ${stability}`);
   }
-  const content = requiredRecord(value.content, "node.content");
-  requiredString(content.kind, "node.content.kind");
   return {
-    id: decimal(requiredString(value.id, "node.id"), "node.id") as NodeId,
+    id: decimalU128(requiredString(value.id, "node.id"), "node.id") as NodeId,
     version: requiredString(value.version, "node.version") as NodeVersion,
     stability,
     source: decodeRange(requiredRecord(value.source, "node.source")),
     body: decodeRange(requiredRecord(value.body, "node.body")),
     children: decodeChildList(requiredRecord(value.children, "node.children")),
-    content: content as ContentKindView,
+    content: decodeContentKind(requiredRecord(value.content, "node.content")),
+  };
+}
+
+function decodeContentKind(value: Record<string, unknown>): ContentKindView {
+  const kind = requiredString(value.kind, "node.content.kind");
+  switch (kind) {
+    case "paragraph":
+    case "emphasis":
+    case "strong":
+    case "strikethrough":
+    case "thematic_break":
+    case "table_head":
+    case "table_body":
+    case "table_row":
+    case "soft_break":
+    case "hard_break":
+      exactKeys(value, ["kind"], `content ${kind}`);
+      return { kind };
+    case "heading":
+      exactKeys(value, ["kind", "level"], "content heading");
+      return { kind, level: requiredInteger(value.level, "heading.level", 255) };
+    case "text":
+      exactKeys(value, ["kind", "text"], "content text");
+      return {
+        kind,
+        text: decodeSemanticText(requiredRecord(value.text, "text.text")),
+      };
+    case "link":
+      exactKeys(value, ["kind", "target", "reference_label", "style"], "content link");
+      return {
+        kind,
+        target: nullableResourceRef(value, "target", "link.target"),
+        referenceLabel: requiredNullableString(value, "reference_label", "link.reference_label"),
+        style: linkStyle(value.style, "link.style"),
+      };
+    case "image":
+      exactKeys(value, ["kind", "target", "reference_label", "style", "alt"], "content image");
+      return {
+        kind,
+        target: nullableResourceRef(value, "target", "image.target"),
+        referenceLabel: requiredNullableString(value, "reference_label", "image.reference_label"),
+        style: linkStyle(value.style, "image.style"),
+        alt: decodeSemanticText(requiredRecord(value.alt, "image.alt")),
+      };
+    case "inline_code":
+      exactKeys(value, ["kind", "text"], "content inline_code");
+      return {
+        kind,
+        text: decodeSemanticText(requiredRecord(value.text, "inline_code.text")),
+      };
+    case "code_block":
+      exactKeys(value, ["kind", "syntax", "info", "text"], "content code_block");
+      return {
+        kind,
+        syntax: decodeCodeBlockSyntax(requiredRecord(value.syntax, "code_block.syntax")),
+        info: requiredNullableString(value, "info", "code_block.info"),
+        text: decodeSemanticText(requiredRecord(value.text, "code_block.text")),
+      };
+    case "list":
+      exactKeys(value, ["kind", "ordered", "start", "tight"], "content list");
+      return {
+        kind,
+        ordered: requiredBoolean(value.ordered, "list.ordered"),
+        start: requiredNullableInteger(value, "start", "list.start", 0xffff_ffff),
+        tight: requiredBoolean(value.tight, "list.tight"),
+      };
+    case "list_item":
+      exactKeys(value, ["kind", "checked"], "content list_item");
+      return {
+        kind,
+        checked: requiredNullableBoolean(value, "checked", "list_item.checked"),
+      };
+    case "block_quote":
+      exactKeys(value, ["kind", "style"], "content block_quote");
+      return { kind, style: blockQuoteKind(value.style, "block_quote.style") };
+    case "table":
+      exactKeys(value, ["kind", "alignments"], "content table");
+      return {
+        kind,
+        alignments: requiredArray(value.alignments, "table.alignments").map(
+          (alignment) => tableAlignment(alignment, "table.alignment"),
+        ),
+      };
+    case "table_cell":
+      exactKeys(value, ["kind", "column"], "content table_cell");
+      return {
+        kind,
+        column: requiredInteger(value.column, "table_cell.column", 0xffff_ffff),
+      };
+    case "html":
+      exactKeys(value, ["kind", "block", "text"], "content html");
+      return {
+        kind,
+        block: requiredBoolean(value.block, "html.block"),
+        text: decodeSemanticText(requiredRecord(value.text, "html.text")),
+      };
+    case "math":
+      exactKeys(value, ["kind", "display", "text"], "content math");
+      return {
+        kind,
+        display: requiredBoolean(value.display, "math.display"),
+        text: decodeSemanticText(requiredRecord(value.text, "math.text")),
+      };
+    case "footnote_definition":
+      exactKeys(value, ["kind", "label", "target"], "content footnote_definition");
+      return {
+        kind,
+        label: requiredString(value.label, "footnote_definition.label"),
+        target: decodeResourceRef(requiredRecord(value.target, "footnote_definition.target")),
+      };
+    case "footnote_reference":
+      exactKeys(value, ["kind", "label", "target"], "content footnote_reference");
+      return {
+        kind,
+        label: requiredString(value.label, "footnote_reference.label"),
+        target: nullableResourceRef(value, "target", "footnote_reference.target"),
+      };
+    case "citation_definition":
+      exactKeys(value, ["kind", "key", "target"], "content citation_definition");
+      return {
+        kind,
+        key: requiredString(value.key, "citation_definition.key"),
+        target: decodeResourceRef(requiredRecord(value.target, "citation_definition.target")),
+      };
+    case "citation_reference":
+      exactKeys(value, ["kind", "key", "target"], "content citation_reference");
+      return {
+        kind,
+        key: requiredString(value.key, "citation_reference.key"),
+        target: nullableResourceRef(value, "target", "citation_reference.target"),
+      };
+    case "custom":
+      exactKeys(value, ["kind", "namespace", "name", "opaque", "attributes"], "content custom");
+      return {
+        kind,
+        namespace: requiredString(value.namespace, "custom.namespace"),
+        name: requiredString(value.name, "custom.name"),
+        opaque: requiredBoolean(value.opaque, "custom.opaque"),
+        attributes: stringRecord(value.attributes, "custom.attributes"),
+      };
+    default:
+      throw invalidPayload(`unknown content kind ${kind}`);
+  }
+}
+
+function decodeSemanticText(value: Record<string, unknown>): SemanticTextView {
+  const kind = requiredString(value.kind, "semantic text kind");
+  switch (kind) {
+    case "source":
+      exactKeys(value, ["kind"], "semantic text source");
+      return { kind };
+    case "normalized":
+      exactKeys(value, ["kind", "value"], "semantic text normalized");
+      return { kind, value: requiredString(value.value, "semantic text value") };
+    default:
+      throw invalidPayload(`unknown semantic text kind ${kind}`);
+  }
+}
+
+function decodeCodeBlockSyntax(value: Record<string, unknown>): CodeBlockSyntaxView {
+  const kind = requiredString(value.kind, "code block syntax kind");
+  switch (kind) {
+    case "indented":
+      exactKeys(value, ["kind"], "indented code block syntax");
+      return { kind };
+    case "fenced":
+      exactKeys(value, ["kind", "marker", "length"], "fenced code block syntax");
+      return {
+        kind,
+        marker: codeFenceMarker(value.marker, "code block fence marker"),
+        length: requiredInteger(value.length, "code block fence length", 0xffff_ffff),
+      };
+    default:
+      throw invalidPayload(`unknown code block syntax ${kind}`);
+  }
+}
+
+function decodeResourceRef(value: Record<string, unknown>): ResourceRefView {
+  exactKeys(value, ["id", "version"], "resource reference");
+  return {
+    id: decimalU128(requiredString(value.id, "resource reference id"), "resource reference id") as ResourceId,
+    version: requiredString(value.version, "resource reference version") as ResourceVersion,
   };
 }
 
 function decodeRange(value: Record<string, unknown>): SourceRangeView {
   return {
-    start: decimal(requiredString(value.start, "range.start"), "range.start") as SourceCursor,
-    end: decimal(requiredString(value.end, "range.end"), "range.end") as SourceCursor,
+    start: decimalU64(requiredString(value.start, "range.start"), "range.start") as SourceCursor,
+    end: decimalU64(requiredString(value.end, "range.end"), "range.end") as SourceCursor,
   };
 }
 
 function decodeChildList(value: Record<string, unknown>): ChildListView {
   return {
     version: requiredString(value.version, "child_list.version") as StructureVersion,
-    children: decimalArray(value.children, "child_list.children") as readonly NodeId[],
+    children: decimalU128Array(value.children, "child_list.children") as readonly NodeId[],
   };
 }
 
@@ -518,14 +857,67 @@ function decodeResourceView(value: Record<string, unknown>, schema: string): Res
   };
 }
 
-function decodeResource(value: Record<string, unknown>): SemanticResourceView {
-  const content = requiredRecord(value.content, "resource.content");
-  requiredString(content.kind, "resource.content.kind");
+function decodePendingSourceView(
+  value: Record<string, unknown>,
+  schema: string,
+): PendingSourceView {
   return {
-    id: decimal(requiredString(value.id, "resource.id"), "resource.id") as ResourceId,
-    version: requiredString(value.version, "resource.version") as ResourceVersion,
-    content: content as SemanticResourceView["content"],
+    schema,
+    kind: "pending_source_view",
+    range: decodeRange(requiredRecord(value.range, "pending source range")),
+    text: requiredString(value.text, "pending source text"),
   };
+}
+
+function decodeResource(value: Record<string, unknown>): SemanticResourceView {
+  return {
+    id: decimalU128(requiredString(value.id, "resource.id"), "resource.id") as ResourceId,
+    version: requiredString(value.version, "resource.version") as ResourceVersion,
+    content: decodeSemanticResourceKind(
+      requiredRecord(value.content, "resource.content"),
+    ),
+  };
+}
+
+function decodeSemanticResourceKind(
+  value: Record<string, unknown>,
+): SemanticResourceKindView {
+  const kind = requiredString(value.kind, "resource.content.kind");
+  switch (kind) {
+    case "link":
+      exactKeys(value, ["kind", "destination", "title"], "link resource");
+      return {
+        kind,
+        destination: requiredString(value.destination, "link resource destination"),
+        title: requiredNullableString(value, "title", "link resource title"),
+      };
+    case "footnote":
+      exactKeys(value, ["kind", "label"], "footnote resource");
+      return {
+        kind,
+        label: requiredString(value.label, "footnote resource label"),
+      };
+    case "citation": {
+      exactKeys(
+        value,
+        ["kind", "protocol", "key", "destination", "title"],
+        "citation resource",
+      );
+      requiredLiteral(value.protocol, "mdstream.citation/1", "citation protocol");
+      return {
+        kind,
+        protocol: "mdstream.citation/1",
+        key: requiredString(value.key, "citation resource key"),
+        destination: requiredString(
+          value.destination,
+          "citation resource destination",
+        ),
+        title: requiredNullableString(value, "title", "citation resource title"),
+      };
+    }
+    default:
+      throw invalidPayload(`unknown semantic resource kind ${kind}`);
+  }
 }
 
 function decodeProcessorRequest(
@@ -536,7 +928,7 @@ function decodeProcessorRequest(
   return {
     schema,
     kind: "processor_request",
-    requestId: decimal(requiredString(value.request_id, "request_id"), "request_id") as RequestGeneration,
+    requestId: decimalU64(requiredString(value.request_id, "request_id"), "request_id") as RequestGeneration,
     key: decodeProcessorKey(requiredRecord(value.key, "processor key")),
     input: {
       node: decodeNode(requiredRecord(input.node, "processor input node")),
@@ -559,21 +951,21 @@ function decodeProcessorCompletion(
   return {
     schema,
     kind: "processor_completion",
-    requestId: decimal(requiredString(value.request_id, "request_id"), "request_id") as RequestGeneration,
+    requestId: decimalU64(requiredString(value.request_id, "request_id"), "request_id") as RequestGeneration,
     outcome,
   };
 }
 
 function decodeProcessorKey(value: Record<string, unknown>): ProcessorKeyView {
   return {
-    epoch: decimal(requiredString(value.epoch, "processor key epoch"), "processor key epoch") as Epoch,
-    nodeId: decimal(requiredString(value.node_id, "processor key node_id"), "processor key node_id") as NodeId,
+    epoch: decimalU64(requiredString(value.epoch, "processor key epoch"), "processor key epoch") as Epoch,
+    nodeId: decimalU128(requiredString(value.node_id, "processor key node_id"), "processor key node_id") as NodeId,
     processorId: requiredString(value.processor_id, "processor key processor_id"),
     nodeVersion: requiredString(value.node_version, "processor key node_version") as NodeVersion,
     inputVersion: requiredString(value.input_version, "processor key input_version") as ProcessorInputVersion,
     processorVersion: requiredString(value.processor_version, "processor key processor_version"),
     configurationVersion: requiredString(value.configuration_version, "processor key configuration_version"),
-    generation: decimal(requiredString(value.generation, "processor key generation"), "processor key generation") as RequestGeneration,
+    generation: decimalU64(requiredString(value.generation, "processor key generation"), "processor key generation") as RequestGeneration,
   };
 }
 
@@ -591,7 +983,7 @@ function decodeArtifactChange(
     case "ready":
       decoded = {
         kind,
-        artifactBytes: decimal(requiredString(change.artifact_bytes, "artifact_bytes"), "artifact_bytes") as DecimalCounter,
+        artifactBytes: decimalU64(requiredString(change.artifact_bytes, "artifact_bytes"), "artifact_bytes") as DecimalCounter,
       };
       break;
     case "failed":
@@ -601,7 +993,7 @@ function decodeArtifactChange(
       decoded = {
         kind,
         reason: requiredString(change.reason, "artifact removal reason"),
-        releasedArtifactBytes: decimal(requiredString(change.released_artifact_bytes, "released_artifact_bytes"), "released_artifact_bytes") as DecimalCounter,
+        releasedArtifactBytes: decimalU64(requiredString(change.released_artifact_bytes, "released_artifact_bytes"), "released_artifact_bytes") as DecimalCounter,
       };
       break;
     default:
@@ -700,6 +1092,8 @@ function expectedViewKind(kind: BindingPayloadKind): string {
       return "node_view";
     case BindingPayloadKind.ResourceView:
       return "resource_view";
+    case BindingPayloadKind.PendingSourceView:
+      return "pending_source_view";
     case BindingPayloadKind.ProcessorRequest:
       return "processor_request";
     case BindingPayloadKind.ProcessorCompletion:
@@ -715,17 +1109,175 @@ function expectedViewKind(kind: BindingPayloadKind): string {
   }
 }
 
-function decimal(value: string, field: string): string {
-  if (!decimalPattern.test(value)) {
+function decimalU64(value: string, field: string): string {
+  return outputDecimal(value, field, maxU64);
+}
+
+function decimalU128(value: string, field: string): string {
+  return outputDecimal(value, field, maxU128);
+}
+
+function outputDecimal(value: string, field: string, maximum: string): string {
+  if (!decimalPattern.test(value) || decimalExceeds(value, maximum)) {
     throw invalidPayload(`${field} must be a canonical unsigned decimal string`);
   }
   return value;
 }
 
-function decimalArray(value: unknown, field: string): readonly string[] {
-  return requiredArray(value, field).map((entry) =>
-    decimal(requiredString(entry, field), field),
+function inputDecimal(value: string, field: string, maximum: string): string {
+  if (!decimalPattern.test(value) || decimalExceeds(value, maximum)) {
+    throw new MdstreamError(
+      `${field} must be a canonical unsigned decimal string within its supported range`,
+      {
+        status: 1,
+        statusName: "MDSTREAM_INVALID_ARGUMENT",
+        detailCode: "bindings.decimal_id",
+      },
+    );
+  }
+  return value;
+}
+
+function decimalExceeds(value: string, maximum: string): boolean {
+  return (
+    value.length > maximum.length ||
+    (value.length === maximum.length && value > maximum)
   );
+}
+
+function decimalU128Array(value: unknown, field: string): readonly string[] {
+  return requiredArray(value, field).map((entry) =>
+    decimalU128(requiredString(entry, field), field),
+  );
+}
+
+function nullableResourceRef(
+  value: Record<string, unknown>,
+  key: string,
+  field: string,
+): ResourceRefView | null {
+  requireOwnKey(value, key, field);
+  return value[key] === null
+    ? null
+    : decodeResourceRef(requiredRecord(value[key], field));
+}
+
+function requiredNullableString(
+  value: Record<string, unknown>,
+  key: string,
+  field: string,
+): string | null {
+  requireOwnKey(value, key, field);
+  return value[key] === null ? null : requiredString(value[key], field);
+}
+
+function requiredNullableBoolean(
+  value: Record<string, unknown>,
+  key: string,
+  field: string,
+): boolean | null {
+  requireOwnKey(value, key, field);
+  return value[key] === null ? null : requiredBoolean(value[key], field);
+}
+
+function requiredNullableInteger(
+  value: Record<string, unknown>,
+  key: string,
+  field: string,
+  maximum: number,
+): number | null {
+  requireOwnKey(value, key, field);
+  return value[key] === null
+    ? null
+    : requiredInteger(value[key], field, maximum);
+}
+
+function requiredInteger(value: unknown, field: string, maximum: number): number {
+  if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > maximum) {
+    throw invalidPayload(`${field} must be an unsigned integer no greater than ${maximum}`);
+  }
+  return value as number;
+}
+
+function stringRecord(value: unknown, field: string): Readonly<Record<string, string>> {
+  const source = requiredRecord(value, field);
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(source)) {
+    result[key] = requiredString(entry, `${field}.${key}`);
+  }
+  return result;
+}
+
+function tableAlignment(value: unknown, field: string): TableAlignment {
+  const alignment = requiredString(value, field);
+  if (alignment !== "none" && alignment !== "left" && alignment !== "center" && alignment !== "right") {
+    throw invalidPayload(`unknown table alignment ${alignment}`);
+  }
+  return alignment;
+}
+
+function linkStyle(value: unknown, field: string): LinkStyle {
+  const style = requiredString(value, field);
+  switch (style) {
+    case "inline":
+    case "reference":
+    case "reference_unknown":
+    case "collapsed":
+    case "collapsed_unknown":
+    case "shortcut":
+    case "shortcut_unknown":
+    case "autolink":
+    case "email":
+      return style;
+    default:
+      throw invalidPayload(`unknown link style ${style}`);
+  }
+}
+
+function blockQuoteKind(value: unknown, field: string): BlockQuoteKind {
+  const kind = requiredString(value, field);
+  switch (kind) {
+    case "plain":
+    case "note":
+    case "tip":
+    case "important":
+    case "warning":
+    case "caution":
+      return kind;
+    default:
+      throw invalidPayload(`unknown block quote kind ${kind}`);
+  }
+}
+
+function codeFenceMarker(value: unknown, field: string): CodeFenceMarker {
+  const marker = requiredString(value, field);
+  if (marker !== "backtick" && marker !== "tilde") {
+    throw invalidPayload(`unknown code fence marker ${marker}`);
+  }
+  return marker;
+}
+
+function exactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+  field: string,
+): void {
+  const allowed = new Set(expected);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw invalidPayload(`${field} contains unknown field ${key}`);
+    }
+  }
+}
+
+function requireOwnKey(
+  value: Record<string, unknown>,
+  key: string,
+  field: string,
+): void {
+  if (!Object.hasOwn(value, key)) {
+    throw invalidPayload(`${field} is required`);
+  }
 }
 
 function requiredRecord(value: unknown, field: string): Record<string, unknown> {
@@ -780,7 +1332,18 @@ function requiredLiteral(value: unknown, expected: string, field: string): void 
   }
 }
 
-function invalidPayload(message: string, cause?: unknown): MdstreamError {
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || ArrayBuffer.isView(value)) {
+    return value;
+  }
+  for (const entry of Object.values(value)) {
+    deepFreeze(entry);
+  }
+  return Object.freeze(value);
+}
+
+/** @internal */
+export function invalidPayload(message: string, cause?: unknown): MdstreamError {
   return new MdstreamError(message, {
     status: 12,
     statusName: "MDSTREAM_INTERNAL_ERROR",

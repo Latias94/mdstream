@@ -4,6 +4,7 @@ import {
   initMdstream,
   MdstreamError,
   type MdstreamSessionOptions,
+  type WasmModuleLoader,
 } from "../src/index.js";
 import {
   decodeJson,
@@ -113,5 +114,85 @@ describe("Rust/WASM/TypeScript structural goldens", () => {
       wire: { maxCommandBytes: "536870912" },
     };
     expect(_typedOptions.wire?.maxCommandBytes).toBe("536870912");
+  });
+
+  it("rejects an incompatible binding schema before constructing sessions", async () => {
+    let constructedSessions = 0;
+    class UnexpectedSession {
+      constructor() {
+        constructedSessions += 1;
+        throw new Error("session construction must not be reached");
+      }
+    }
+    const loader: WasmModuleLoader = () => ({
+      MdstreamEngineSession: UnexpectedSession,
+      MdstreamReducerSession: UnexpectedSession,
+      abiVersion: () => 1,
+      packageVersion: () => "0.4.0",
+      bindingSchema: () => "mdstream.bindings/0.3",
+      bindingOptionsSchema: () => "mdstream.bindings-options/0.4",
+    });
+
+    let failure: unknown;
+    try {
+      const runtime = await initMdstream({ loader });
+      runtime.createEngine();
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(MdstreamError);
+    expect(failure).toMatchObject({
+      status: 5,
+      statusName: "MDSTREAM_UNSUPPORTED_SCHEMA",
+      detailCode: "unsupported_schema",
+      schema: "mdstream.bindings/0.3",
+    });
+    expect(constructedSessions).toBe(0);
+  });
+
+  it("rejects a same-schema WASM module missing required reducer capabilities", async () => {
+    let constructedSessions = 0;
+    class LegacySession {
+      constructor() {
+        constructedSessions += 1;
+      }
+    }
+    const loader: WasmModuleLoader = () => ({
+      MdstreamEngineSession: LegacySession,
+      MdstreamReducerSession: LegacySession,
+      abiVersion: () => 1,
+      packageVersion: () => "0.4.0",
+      bindingSchema: () => "mdstream.bindings/0.4",
+      bindingOptionsSchema: () => "mdstream.bindings-options/0.4",
+    });
+
+    await expect(initMdstream({ loader })).rejects.toMatchObject({
+      status: 5,
+      statusName: "MDSTREAM_UNSUPPORTED_SCHEMA",
+      detailCode: "unsupported_schema",
+      schema: "mdstream.bindings/0.4",
+    });
+    expect(constructedSessions).toBe(0);
+  });
+
+  it("rejects a same-schema WASM module missing conditional processor begin", async () => {
+    class PartialReducerSession {
+      pendingSourceView(): never {
+        throw new Error("session construction must not be reached");
+      }
+    }
+    const loader: WasmModuleLoader = () => ({
+      MdstreamEngineSession: PartialReducerSession,
+      MdstreamReducerSession: PartialReducerSession,
+      abiVersion: () => 1,
+      packageVersion: () => "0.4.0",
+      bindingSchema: () => "mdstream.bindings/0.4",
+      bindingOptionsSchema: () => "mdstream.bindings-options/0.4",
+    });
+
+    await expect(initMdstream({ loader })).rejects.toThrow(
+      "beginProcessorIfCurrent",
+    );
   });
 });

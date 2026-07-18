@@ -13,6 +13,8 @@ import time
 import zipfile
 from pathlib import Path
 
+from package_metadata import package_version
+
 from build_native import PLUGIN_ROOT, REPOSITORY_ROOT
 from package_smoke import PackageSmokeError
 
@@ -56,8 +58,7 @@ def _clean_environment() -> dict[str, str]:
 
 
 def _write_smoke_main(path: Path) -> None:
-    path.write_text(
-        """import 'package:flutter/material.dart';
+    source = """import 'package:flutter/material.dart';
 import 'package:mdstream_flutter/mdstream_flutter.dart';
 
 Future<void> main() async {
@@ -65,7 +66,7 @@ Future<void> main() async {
   try {
     final runtime = MdstreamFlutterRuntime.open();
     if (runtime.abiVersion != 1 ||
-        runtime.packageVersion != '0.4.0' ||
+        runtime.packageVersion != '@PACKAGE_VERSION@' ||
         runtime.bindingSchema != 'mdstream.bindings/0.4') {
       throw StateError('unexpected mdstream runtime metadata');
     }
@@ -92,7 +93,9 @@ Future<void> main() async {
     rethrow;
   }
 }
-""",
+"""
+    path.write_text(
+        source.replace("@PACKAGE_VERSION@", package_version()),
         encoding="utf-8",
     )
 

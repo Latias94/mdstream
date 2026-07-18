@@ -74,7 +74,9 @@ async fn main() -> io::Result<()> {
     )
     .await;
     actor.close_output();
-    let _ = tokio::time::timeout(Duration::from_secs(1), actor.join()).await;
+    if let Ok(Ok(unread)) = tokio::time::timeout(Duration::from_secs(1), actor.join()).await {
+        drop(unread);
+    }
 
     disable_raw_mode()?;
     crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;

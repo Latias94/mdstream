@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { initMdstream, utf8ByteLength } from "../src/index.js";
+import {
+  BatchOperationError,
+  initMdstream,
+  MdstreamError,
+  utf8ByteLength,
+  type EngineResult,
+} from "../src/index.js";
 import {
   decodeJson,
   nodeWasmLoader,
@@ -8,6 +14,83 @@ import {
 } from "./helpers.js";
 
 describe("lossless UTF-8 input batching", () => {
+  it("returns every committed result in wire order for replica replay", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine();
+    const replica = runtime.createStore();
+    const batcher = engine.createBatcher(4);
+    const results: EngineResult[] = [];
+
+    expect(batcher.push("ab")).toEqual([]);
+    const oversized = batcher.push("12345");
+    expect(oversized).toHaveLength(2);
+    results.push(...oversized);
+    expect(batcher.push("cd")).toEqual([]);
+    const finished = batcher.finish();
+    expect(finished).toHaveLength(2);
+    results.push(...finished);
+
+    for (const result of results) {
+      for (const change of result.changes) {
+        replica.applyChange(change);
+      }
+    }
+    expect(
+      normalizeSnapshot(decodeJson(replica.createRecoverySnapshot()!)),
+    ).toEqual(normalizeSnapshot(decodeJson(engine.createRecoverySnapshot()!)));
+
+    replica.close();
+    engine.close();
+  });
+
+  it("returns flushed results from reset and recovery snapshots", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine();
+    const batcher = engine.createBatcher(128);
+
+    expect(batcher.push("before reset")).toEqual([]);
+    expect(batcher.reset()).toHaveLength(2);
+    expect(batcher.push("after reset")).toEqual([]);
+    const recovery = batcher.createRecoverySnapshot();
+    expect(recovery.flushed).toHaveLength(1);
+    expect(recovery.snapshot).toBeDefined();
+    expect(decodeJson(recovery.snapshot!).source).toBe("after reset");
+
+    engine.close();
+  });
+
+  it("preserves committed results when an oversized forward fails", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine({
+      protocol: { maxSourceBytes: 3n },
+    });
+    const replica = runtime.createStore();
+    const batcher = engine.createBatcher(2);
+
+    expect(batcher.push("a")).toEqual([]);
+    let failure: unknown;
+    try {
+      batcher.push("bbbb");
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(BatchOperationError);
+    const batchError = failure as BatchOperationError;
+    expect(batchError.completedResults).toHaveLength(1);
+    expect(batchError.cause).toBeInstanceOf(MdstreamError);
+    for (const result of batchError.completedResults) {
+      for (const change of result.changes) {
+        replica.applyChange(change);
+      }
+    }
+    expect(decodeJson(replica.createRecoverySnapshot()!).source).toBe("a");
+    expect(decodeJson(engine.createRecoverySnapshot()!).source).toBe("a");
+
+    replica.close();
+    engine.close();
+  });
+
   it("preserves state for 1/16/128/4096-byte batches", async () => {
     const runtime = await initMdstream({ loader: nodeWasmLoader });
     const chunks = [
@@ -27,7 +110,7 @@ describe("lossless UTF-8 input batching", () => {
         batcher.push(chunk);
       }
       batcher.finish();
-      const snapshot = batcher.createRecoverySnapshot()!;
+      const snapshot = batcher.createRecoverySnapshot().snapshot!;
       const normalized = normalizeSnapshot(decodeJson(snapshot));
       expected ??= normalized;
       expect(normalized).toEqual(expected);
@@ -64,7 +147,7 @@ describe("lossless UTF-8 input batching", () => {
     expect(batcher.metrics().wasmAppendCalls).toBe("0");
     batcher.push("\nnext");
     batcher.finish();
-    expect(decodeJson(batcher.createRecoverySnapshot()!).source).toBe("line\nnext");
+    expect(decodeJson(batcher.createRecoverySnapshot().snapshot!).source).toBe("line\nnext");
     engine.close();
   });
 });

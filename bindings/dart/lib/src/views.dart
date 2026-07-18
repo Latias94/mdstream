@@ -144,7 +144,298 @@ final class SourceRangeView {
   final SourceCursor end;
 }
 
-/// Typed stable node envelope with extensible content metadata.
+/// Materialized source suffix not yet covered by the projected document.
+final class PendingSourceView extends DecodedBindingView {
+  const PendingSourceView._({
+    required super.schema,
+    required super.raw,
+    required this.range,
+    required this.text,
+  }) : super(kind: 'pending_source_view');
+
+  final SourceRangeView range;
+  final String text;
+}
+
+enum TableAlignment { none, left, center, right }
+
+enum LinkStyle {
+  inline,
+  reference,
+  referenceUnknown,
+  collapsed,
+  collapsedUnknown,
+  shortcut,
+  shortcutUnknown,
+  autolink,
+  email,
+}
+
+enum BlockQuoteKind { plain, note, tip, important, warning, caution }
+
+enum CodeFenceMarker { backtick, tilde }
+
+enum CitationProtocol {
+  mdstreamCitation1('mdstream.citation/1');
+
+  const CitationProtocol(this.wireName);
+  final String wireName;
+}
+
+sealed class SemanticTextView {
+  const SemanticTextView(this.kind);
+  final String kind;
+}
+
+final class SourceSemanticTextView extends SemanticTextView {
+  const SourceSemanticTextView() : super('source');
+}
+
+final class NormalizedSemanticTextView extends SemanticTextView {
+  const NormalizedSemanticTextView(this.value) : super('normalized');
+  final String value;
+}
+
+sealed class CodeBlockSyntaxView {
+  const CodeBlockSyntaxView(this.kind);
+  final String kind;
+}
+
+final class IndentedCodeBlockSyntaxView extends CodeBlockSyntaxView {
+  const IndentedCodeBlockSyntaxView() : super('indented');
+}
+
+final class FencedCodeBlockSyntaxView extends CodeBlockSyntaxView {
+  const FencedCodeBlockSyntaxView({required this.marker, required this.length})
+    : super('fenced');
+  final CodeFenceMarker marker;
+  final int length;
+}
+
+final class ResourceRefView {
+  const ResourceRefView({required this.id, required this.version});
+  final ResourceId id;
+  final ResourceVersion version;
+}
+
+sealed class ContentKindView {
+  const ContentKindView(this.kind);
+  final String kind;
+}
+
+final class ParagraphContentView extends ContentKindView {
+  const ParagraphContentView() : super('paragraph');
+}
+
+final class HeadingContentView extends ContentKindView {
+  const HeadingContentView(this.level) : super('heading');
+  final int level;
+}
+
+final class TextContentView extends ContentKindView {
+  const TextContentView(this.text) : super('text');
+  final SemanticTextView text;
+}
+
+final class EmphasisContentView extends ContentKindView {
+  const EmphasisContentView() : super('emphasis');
+}
+
+final class StrongContentView extends ContentKindView {
+  const StrongContentView() : super('strong');
+}
+
+final class StrikethroughContentView extends ContentKindView {
+  const StrikethroughContentView() : super('strikethrough');
+}
+
+final class LinkContentView extends ContentKindView {
+  const LinkContentView({
+    required this.target,
+    required this.referenceLabel,
+    required this.style,
+  }) : super('link');
+  final ResourceRefView? target;
+  final String? referenceLabel;
+  final LinkStyle style;
+}
+
+final class ImageContentView extends ContentKindView {
+  const ImageContentView({
+    required this.target,
+    required this.referenceLabel,
+    required this.style,
+    required this.alt,
+  }) : super('image');
+  final ResourceRefView? target;
+  final String? referenceLabel;
+  final LinkStyle style;
+  final SemanticTextView alt;
+}
+
+final class InlineCodeContentView extends ContentKindView {
+  const InlineCodeContentView(this.text) : super('inline_code');
+  final SemanticTextView text;
+}
+
+final class CodeBlockContentView extends ContentKindView {
+  const CodeBlockContentView({
+    required this.syntax,
+    required this.info,
+    required this.text,
+  }) : super('code_block');
+  final CodeBlockSyntaxView syntax;
+  final String? info;
+  final SemanticTextView text;
+}
+
+final class ListContentView extends ContentKindView {
+  const ListContentView({
+    required this.ordered,
+    required this.start,
+    required this.tight,
+  }) : super('list');
+  final bool ordered;
+  final int? start;
+  final bool tight;
+}
+
+final class ListItemContentView extends ContentKindView {
+  const ListItemContentView(this.checked) : super('list_item');
+  final bool? checked;
+}
+
+final class BlockQuoteContentView extends ContentKindView {
+  const BlockQuoteContentView(this.style) : super('block_quote');
+  final BlockQuoteKind style;
+}
+
+final class ThematicBreakContentView extends ContentKindView {
+  const ThematicBreakContentView() : super('thematic_break');
+}
+
+final class TableContentView extends ContentKindView {
+  const TableContentView(this.alignments) : super('table');
+  final List<TableAlignment> alignments;
+}
+
+final class TableHeadContentView extends ContentKindView {
+  const TableHeadContentView() : super('table_head');
+}
+
+final class TableBodyContentView extends ContentKindView {
+  const TableBodyContentView() : super('table_body');
+}
+
+final class TableRowContentView extends ContentKindView {
+  const TableRowContentView() : super('table_row');
+}
+
+final class TableCellContentView extends ContentKindView {
+  const TableCellContentView(this.column) : super('table_cell');
+  final int column;
+}
+
+final class HtmlContentView extends ContentKindView {
+  const HtmlContentView({required this.block, required this.text})
+    : super('html');
+  final bool block;
+  final SemanticTextView text;
+}
+
+final class MathContentView extends ContentKindView {
+  const MathContentView({required this.display, required this.text})
+    : super('math');
+  final bool display;
+  final SemanticTextView text;
+}
+
+final class FootnoteDefinitionContentView extends ContentKindView {
+  const FootnoteDefinitionContentView({
+    required this.label,
+    required this.target,
+  }) : super('footnote_definition');
+  final String label;
+  final ResourceRefView target;
+}
+
+final class FootnoteReferenceContentView extends ContentKindView {
+  const FootnoteReferenceContentView({
+    required this.label,
+    required this.target,
+  }) : super('footnote_reference');
+  final String label;
+  final ResourceRefView? target;
+}
+
+final class CitationDefinitionContentView extends ContentKindView {
+  const CitationDefinitionContentView({required this.key, required this.target})
+    : super('citation_definition');
+  final String key;
+  final ResourceRefView target;
+}
+
+final class CitationReferenceContentView extends ContentKindView {
+  const CitationReferenceContentView({required this.key, required this.target})
+    : super('citation_reference');
+  final String key;
+  final ResourceRefView? target;
+}
+
+final class SoftBreakContentView extends ContentKindView {
+  const SoftBreakContentView() : super('soft_break');
+}
+
+final class HardBreakContentView extends ContentKindView {
+  const HardBreakContentView() : super('hard_break');
+}
+
+final class CustomContentView extends ContentKindView {
+  const CustomContentView({
+    required this.namespace,
+    required this.name,
+    required this.opaque,
+    required this.attributes,
+  }) : super('custom');
+  final String namespace;
+  final String name;
+  final bool opaque;
+  final Map<String, String> attributes;
+}
+
+sealed class SemanticResourceKindView {
+  const SemanticResourceKindView(this.kind);
+  final String kind;
+}
+
+final class LinkResourceContentView extends SemanticResourceKindView {
+  const LinkResourceContentView({
+    required this.destination,
+    required this.title,
+  }) : super('link');
+  final String destination;
+  final String? title;
+}
+
+final class FootnoteResourceContentView extends SemanticResourceKindView {
+  const FootnoteResourceContentView(this.label) : super('footnote');
+  final String label;
+}
+
+final class CitationResourceContentView extends SemanticResourceKindView {
+  const CitationResourceContentView({
+    required this.protocol,
+    required this.key,
+    required this.destination,
+    required this.title,
+  }) : super('citation');
+  final CitationProtocol protocol;
+  final String key;
+  final String destination;
+  final String? title;
+}
+
+/// Typed stable node envelope with exhaustive content metadata.
 final class ContentNodeView {
   const ContentNodeView({
     required this.id,
@@ -162,7 +453,7 @@ final class ContentNodeView {
   final SourceRangeView source;
   final SourceRangeView body;
   final ChildListView children;
-  final Map<String, Object?> content;
+  final ContentKindView content;
 }
 
 /// Materialized node plus its body text.
@@ -178,7 +469,7 @@ final class NodeView extends DecodedBindingView {
   final String bodyText;
 }
 
-/// Typed stable semantic resource with extensible content metadata.
+/// Typed stable semantic resource with exhaustive content metadata.
 final class SemanticResourceView {
   const SemanticResourceView({
     required this.id,
@@ -188,7 +479,7 @@ final class SemanticResourceView {
 
   final ResourceId id;
   final ResourceVersion version;
-  final Map<String, Object?> content;
+  final SemanticResourceKindView content;
 }
 
 /// Materialized semantic resource.
@@ -399,6 +690,8 @@ DecodedBindingView decodeBindingView(
       return _decodeArtifactChange(record, expectedSchema);
     case BindingPayloadKind.artifactView:
       return _decodeArtifactView(record, expectedSchema);
+    case BindingPayloadKind.pendingSourceView:
+      return _decodePendingSourceView(record, expectedSchema);
     case BindingPayloadKind.change:
     case BindingPayloadKind.snapshot:
       throw invalidBindingPayload(
@@ -440,11 +733,11 @@ ApplyOutcomeView _decodeOutcome(Map<String, Object?> value) {
         current: _decodeCoordinate(
           _requiredRecord(value['current'], 'current'),
         ),
-        receivedEpoch: requireDecimalString(
+        receivedEpoch: decodeDecimalU64(
           value['received_epoch'],
           'received_epoch',
         ),
-        receivedSequence: requireDecimalString(
+        receivedSequence: decodeDecimalU64(
           value['received_sequence'],
           'received_sequence',
         ),
@@ -492,13 +785,19 @@ RecoveryReasonView _decodeRecoveryReason(Map<String, Object?> value) =>
     );
 
 ChangeImpactView _decodeImpact(Map<String, Object?> value) => ChangeImpactView(
-  changedNodeIds: _decimalArray(value['changed_node_ids'], 'changed_node_ids'),
-  removedNodeIds: _decimalArray(value['removed_node_ids'], 'removed_node_ids'),
-  changedResourceIds: _decimalArray(
+  changedNodeIds: _decimalU128Array(
+    value['changed_node_ids'],
+    'changed_node_ids',
+  ),
+  removedNodeIds: _decimalU128Array(
+    value['removed_node_ids'],
+    'removed_node_ids',
+  ),
+  changedResourceIds: _decimalU128Array(
     value['changed_resource_ids'],
     'changed_resource_ids',
   ),
-  removedResourceIds: _decimalArray(
+  removedResourceIds: _decimalU128Array(
     value['removed_resource_ids'],
     'removed_resource_ids',
   ),
@@ -525,7 +824,7 @@ DocumentSummaryView _decodeDocument(Map<String, Object?> value) {
       _requiredRecord(value['coordinate'], 'document.coordinate'),
     ),
     lifecycle: lifecycle,
-    projectionCursor: requireDecimalString(
+    projectionCursor: decodeDecimalU64(
       value['projection_cursor'],
       'projection_cursor',
     ),
@@ -536,10 +835,10 @@ DocumentSummaryView _decodeDocument(Map<String, Object?> value) {
 }
 
 CoordinateView _decodeCoordinate(Map<String, Object?> value) => CoordinateView(
-  epoch: requireDecimalString(value['epoch'], 'coordinate.epoch'),
-  sequence: requireDecimalString(value['sequence'], 'coordinate.sequence'),
+  epoch: decodeDecimalU64(value['epoch'], 'coordinate.epoch'),
+  sequence: decodeDecimalU64(value['sequence'], 'coordinate.sequence'),
   changeId: _requiredString(value['change_id'], 'coordinate.change_id'),
-  sourceCursor: requireDecimalString(
+  sourceCursor: decodeDecimalU64(
     value['source_cursor'],
     'coordinate.source_cursor',
   ),
@@ -558,10 +857,8 @@ ContentNodeView _decodeNode(Map<String, Object?> value) {
   if (stability != 'provisional' && stability != 'stable') {
     throw invalidBindingPayload('unknown node stability $stability');
   }
-  final content = _requiredRecord(value['content'], 'node.content');
-  _requiredString(content['kind'], 'node.content.kind');
   return ContentNodeView(
-    id: requireDecimalString(value['id'], 'node.id'),
+    id: decodeDecimalU128(value['id'], 'node.id'),
     version: _requiredString(value['version'], 'node.version'),
     stability: stability,
     source: _decodeRange(_requiredRecord(value['source'], 'node.source')),
@@ -569,18 +866,301 @@ ContentNodeView _decodeNode(Map<String, Object?> value) {
     children: _decodeChildList(
       _requiredRecord(value['children'], 'node.children'),
     ),
-    content: content,
+    content: _decodeContentKind(
+      _requiredRecord(value['content'], 'node.content'),
+    ),
+  );
+}
+
+ContentKindView _decodeContentKind(Map<String, Object?> value) {
+  final kind = _requiredString(value['kind'], 'node.content.kind');
+  switch (kind) {
+    case 'paragraph':
+      _exactKeys(value, {'kind'}, 'content paragraph');
+      return const ParagraphContentView();
+    case 'heading':
+      _exactKeys(value, {'kind', 'level'}, 'content heading');
+      return HeadingContentView(
+        _requiredUnsignedInteger(value['level'], 'heading.level', 255),
+      );
+    case 'text':
+      _exactKeys(value, {'kind', 'text'}, 'content text');
+      return TextContentView(
+        _decodeSemanticText(_requiredRecord(value['text'], 'text.text')),
+      );
+    case 'emphasis':
+      _exactKeys(value, {'kind'}, 'content emphasis');
+      return const EmphasisContentView();
+    case 'strong':
+      _exactKeys(value, {'kind'}, 'content strong');
+      return const StrongContentView();
+    case 'strikethrough':
+      _exactKeys(value, {'kind'}, 'content strikethrough');
+      return const StrikethroughContentView();
+    case 'link':
+      _exactKeys(value, {
+        'kind',
+        'target',
+        'reference_label',
+        'style',
+      }, 'content link');
+      return LinkContentView(
+        target: _nullableResourceRef(value, 'target', 'link.target'),
+        referenceLabel: _requiredNullableString(
+          value,
+          'reference_label',
+          'link.reference_label',
+        ),
+        style: _linkStyle(value['style'], 'link.style'),
+      );
+    case 'image':
+      _exactKeys(value, {
+        'kind',
+        'target',
+        'reference_label',
+        'style',
+        'alt',
+      }, 'content image');
+      return ImageContentView(
+        target: _nullableResourceRef(value, 'target', 'image.target'),
+        referenceLabel: _requiredNullableString(
+          value,
+          'reference_label',
+          'image.reference_label',
+        ),
+        style: _linkStyle(value['style'], 'image.style'),
+        alt: _decodeSemanticText(_requiredRecord(value['alt'], 'image.alt')),
+      );
+    case 'inline_code':
+      _exactKeys(value, {'kind', 'text'}, 'content inline_code');
+      return InlineCodeContentView(
+        _decodeSemanticText(_requiredRecord(value['text'], 'inline_code.text')),
+      );
+    case 'code_block':
+      _exactKeys(value, {
+        'kind',
+        'syntax',
+        'info',
+        'text',
+      }, 'content code_block');
+      return CodeBlockContentView(
+        syntax: _decodeCodeBlockSyntax(
+          _requiredRecord(value['syntax'], 'code_block.syntax'),
+        ),
+        info: _requiredNullableString(value, 'info', 'code_block.info'),
+        text: _decodeSemanticText(
+          _requiredRecord(value['text'], 'code_block.text'),
+        ),
+      );
+    case 'list':
+      _exactKeys(value, {'kind', 'ordered', 'start', 'tight'}, 'content list');
+      return ListContentView(
+        ordered: _requiredBoolean(value['ordered'], 'list.ordered'),
+        start: _requiredNullableInteger(
+          value,
+          'start',
+          'list.start',
+          0xffffffff,
+        ),
+        tight: _requiredBoolean(value['tight'], 'list.tight'),
+      );
+    case 'list_item':
+      _exactKeys(value, {'kind', 'checked'}, 'content list_item');
+      return ListItemContentView(
+        _requiredNullableBoolean(value, 'checked', 'list_item.checked'),
+      );
+    case 'block_quote':
+      _exactKeys(value, {'kind', 'style'}, 'content block_quote');
+      return BlockQuoteContentView(
+        _blockQuoteKind(value['style'], 'block_quote.style'),
+      );
+    case 'thematic_break':
+      _exactKeys(value, {'kind'}, 'content thematic_break');
+      return const ThematicBreakContentView();
+    case 'table':
+      _exactKeys(value, {'kind', 'alignments'}, 'content table');
+      return TableContentView(
+        List<TableAlignment>.unmodifiable(
+          _requiredList(
+            value['alignments'],
+            'table.alignments',
+          ).map((alignment) => _tableAlignment(alignment, 'table.alignment')),
+        ),
+      );
+    case 'table_head':
+      _exactKeys(value, {'kind'}, 'content table_head');
+      return const TableHeadContentView();
+    case 'table_body':
+      _exactKeys(value, {'kind'}, 'content table_body');
+      return const TableBodyContentView();
+    case 'table_row':
+      _exactKeys(value, {'kind'}, 'content table_row');
+      return const TableRowContentView();
+    case 'table_cell':
+      _exactKeys(value, {'kind', 'column'}, 'content table_cell');
+      return TableCellContentView(
+        _requiredUnsignedInteger(
+          value['column'],
+          'table_cell.column',
+          0xffffffff,
+        ),
+      );
+    case 'html':
+      _exactKeys(value, {'kind', 'block', 'text'}, 'content html');
+      return HtmlContentView(
+        block: _requiredBoolean(value['block'], 'html.block'),
+        text: _decodeSemanticText(_requiredRecord(value['text'], 'html.text')),
+      );
+    case 'math':
+      _exactKeys(value, {'kind', 'display', 'text'}, 'content math');
+      return MathContentView(
+        display: _requiredBoolean(value['display'], 'math.display'),
+        text: _decodeSemanticText(_requiredRecord(value['text'], 'math.text')),
+      );
+    case 'footnote_definition':
+      _exactKeys(value, {
+        'kind',
+        'label',
+        'target',
+      }, 'content footnote_definition');
+      return FootnoteDefinitionContentView(
+        label: _requiredString(value['label'], 'footnote_definition.label'),
+        target: _decodeResourceRef(
+          _requiredRecord(value['target'], 'footnote_definition.target'),
+        ),
+      );
+    case 'footnote_reference':
+      _exactKeys(value, {
+        'kind',
+        'label',
+        'target',
+      }, 'content footnote_reference');
+      return FootnoteReferenceContentView(
+        label: _requiredString(value['label'], 'footnote_reference.label'),
+        target: _nullableResourceRef(
+          value,
+          'target',
+          'footnote_reference.target',
+        ),
+      );
+    case 'citation_definition':
+      _exactKeys(value, {
+        'kind',
+        'key',
+        'target',
+      }, 'content citation_definition');
+      return CitationDefinitionContentView(
+        key: _requiredString(value['key'], 'citation_definition.key'),
+        target: _decodeResourceRef(
+          _requiredRecord(value['target'], 'citation_definition.target'),
+        ),
+      );
+    case 'citation_reference':
+      _exactKeys(value, {
+        'kind',
+        'key',
+        'target',
+      }, 'content citation_reference');
+      return CitationReferenceContentView(
+        key: _requiredString(value['key'], 'citation_reference.key'),
+        target: _nullableResourceRef(
+          value,
+          'target',
+          'citation_reference.target',
+        ),
+      );
+    case 'soft_break':
+      _exactKeys(value, {'kind'}, 'content soft_break');
+      return const SoftBreakContentView();
+    case 'hard_break':
+      _exactKeys(value, {'kind'}, 'content hard_break');
+      return const HardBreakContentView();
+    case 'custom':
+      _exactKeys(value, {
+        'kind',
+        'namespace',
+        'name',
+        'opaque',
+        'attributes',
+      }, 'content custom');
+      return CustomContentView(
+        namespace: _requiredString(value['namespace'], 'custom.namespace'),
+        name: _requiredString(value['name'], 'custom.name'),
+        opaque: _requiredBoolean(value['opaque'], 'custom.opaque'),
+        attributes: _stringRecord(value['attributes'], 'custom.attributes'),
+      );
+    default:
+      throw invalidBindingPayload('unknown content kind $kind');
+  }
+}
+
+SemanticTextView _decodeSemanticText(Map<String, Object?> value) {
+  final kind = _requiredString(value['kind'], 'semantic text kind');
+  switch (kind) {
+    case 'source':
+      _exactKeys(value, {'kind'}, 'semantic text source');
+      return const SourceSemanticTextView();
+    case 'normalized':
+      _exactKeys(value, {'kind', 'value'}, 'semantic text normalized');
+      return NormalizedSemanticTextView(
+        _requiredString(value['value'], 'semantic text value'),
+      );
+    default:
+      throw invalidBindingPayload('unknown semantic text kind $kind');
+  }
+}
+
+CodeBlockSyntaxView _decodeCodeBlockSyntax(Map<String, Object?> value) {
+  final kind = _requiredString(value['kind'], 'code block syntax kind');
+  switch (kind) {
+    case 'indented':
+      _exactKeys(value, {'kind'}, 'indented code block syntax');
+      return const IndentedCodeBlockSyntaxView();
+    case 'fenced':
+      _exactKeys(value, {
+        'kind',
+        'marker',
+        'length',
+      }, 'fenced code block syntax');
+      return FencedCodeBlockSyntaxView(
+        marker: _codeFenceMarker(value['marker'], 'code block fence marker'),
+        length: _requiredUnsignedInteger(
+          value['length'],
+          'code block fence length',
+          0xffffffff,
+        ),
+      );
+    default:
+      throw invalidBindingPayload('unknown code block syntax $kind');
+  }
+}
+
+ResourceRefView _decodeResourceRef(Map<String, Object?> value) {
+  _exactKeys(value, {'id', 'version'}, 'resource reference');
+  return ResourceRefView(
+    id: decodeDecimalU128(value['id'], 'resource reference id'),
+    version: _requiredString(value['version'], 'resource reference version'),
   );
 }
 
 SourceRangeView _decodeRange(Map<String, Object?> value) => SourceRangeView(
-  start: requireDecimalString(value['start'], 'range.start'),
-  end: requireDecimalString(value['end'], 'range.end'),
+  start: decodeDecimalU64(value['start'], 'range.start'),
+  end: decodeDecimalU64(value['end'], 'range.end'),
+);
+
+PendingSourceView _decodePendingSourceView(
+  Map<String, Object?> value,
+  String schema,
+) => PendingSourceView._(
+  schema: schema,
+  raw: value,
+  range: _decodeRange(_requiredRecord(value['range'], 'pending source range')),
+  text: _requiredString(value['text'], 'pending source text'),
 );
 
 ChildListView _decodeChildList(Map<String, Object?> value) => ChildListView(
   version: _requiredString(value['version'], 'child_list.version'),
-  children: _decimalArray(value['children'], 'child_list.children'),
+  children: _decimalU128Array(value['children'], 'child_list.children'),
 );
 
 ResourceView _decodeResourceView(Map<String, Object?> value, String schema) =>
@@ -591,13 +1171,63 @@ ResourceView _decodeResourceView(Map<String, Object?> value, String schema) =>
     );
 
 SemanticResourceView _decodeResource(Map<String, Object?> value) {
-  final content = _requiredRecord(value['content'], 'resource.content');
-  _requiredString(content['kind'], 'resource.content.kind');
   return SemanticResourceView(
-    id: requireDecimalString(value['id'], 'resource.id'),
+    id: decodeDecimalU128(value['id'], 'resource.id'),
     version: _requiredString(value['version'], 'resource.version'),
-    content: content,
+    content: _decodeSemanticResourceKind(
+      _requiredRecord(value['content'], 'resource.content'),
+    ),
   );
+}
+
+SemanticResourceKindView _decodeSemanticResourceKind(
+  Map<String, Object?> value,
+) {
+  final kind = _requiredString(value['kind'], 'resource.content.kind');
+  switch (kind) {
+    case 'link':
+      _exactKeys(value, {'kind', 'destination', 'title'}, 'link resource');
+      return LinkResourceContentView(
+        destination: _requiredString(
+          value['destination'],
+          'link resource destination',
+        ),
+        title: _requiredNullableString(value, 'title', 'link resource title'),
+      );
+    case 'footnote':
+      _exactKeys(value, {'kind', 'label'}, 'footnote resource');
+      return FootnoteResourceContentView(
+        _requiredString(value['label'], 'footnote resource label'),
+      );
+    case 'citation':
+      _exactKeys(value, {
+        'kind',
+        'protocol',
+        'key',
+        'destination',
+        'title',
+      }, 'citation resource');
+      _requireLiteral(
+        value['protocol'],
+        'mdstream.citation/1',
+        'citation protocol',
+      );
+      return CitationResourceContentView(
+        protocol: CitationProtocol.mdstreamCitation1,
+        key: _requiredString(value['key'], 'citation resource key'),
+        destination: _requiredString(
+          value['destination'],
+          'citation resource destination',
+        ),
+        title: _requiredNullableString(
+          value,
+          'title',
+          'citation resource title',
+        ),
+      );
+    default:
+      throw invalidBindingPayload('unknown semantic resource kind $kind');
+  }
 }
 
 ProcessorRequestView _decodeProcessorRequest(
@@ -608,7 +1238,7 @@ ProcessorRequestView _decodeProcessorRequest(
   return ProcessorRequestView._(
     schema: schema,
     raw: value,
-    requestId: requireDecimalString(value['request_id'], 'request_id'),
+    requestId: decodeDecimalU64(value['request_id'], 'request_id'),
     key: _decodeProcessorKey(_requiredRecord(value['key'], 'processor key')),
     input: ProcessorInputView(
       node: _decodeNode(_requiredRecord(input['node'], 'processor input node')),
@@ -638,15 +1268,15 @@ ProcessorCompletionView _decodeProcessorCompletion(
   return ProcessorCompletionView._(
     schema: schema,
     raw: value,
-    requestId: requireDecimalString(value['request_id'], 'request_id'),
+    requestId: decodeDecimalU64(value['request_id'], 'request_id'),
     outcome: outcome,
   );
 }
 
 ProcessorKeyView _decodeProcessorKey(Map<String, Object?> value) =>
     ProcessorKeyView(
-      epoch: requireDecimalString(value['epoch'], 'processor key epoch'),
-      nodeId: requireDecimalString(value['node_id'], 'processor key node_id'),
+      epoch: decodeDecimalU64(value['epoch'], 'processor key epoch'),
+      nodeId: decodeDecimalU128(value['node_id'], 'processor key node_id'),
       processorId: _requiredString(
         value['processor_id'],
         'processor key processor_id',
@@ -667,7 +1297,7 @@ ProcessorKeyView _decodeProcessorKey(Map<String, Object?> value) =>
         value['configuration_version'],
         'processor key configuration_version',
       ),
-      generation: requireDecimalString(
+      generation: decodeDecimalU64(
         value['generation'],
         'processor key generation',
       ),
@@ -686,7 +1316,7 @@ ArtifactChangeView _decodeArtifactChange(
     case 'ready':
       decoded = ArtifactChangeKindView(
         kind: kind,
-        artifactBytes: requireDecimalString(
+        artifactBytes: decodeDecimalU64(
           change['artifact_bytes'],
           'artifact_bytes',
         ),
@@ -700,7 +1330,7 @@ ArtifactChangeView _decodeArtifactChange(
       decoded = ArtifactChangeKindView(
         kind: kind,
         reason: _requiredString(change['reason'], 'artifact removal reason'),
-        releasedArtifactBytes: requireDecimalString(
+        releasedArtifactBytes: decodeDecimalU64(
           change['released_artifact_bytes'],
           'released_artifact_bytes',
         ),
@@ -794,6 +1424,132 @@ String _failureCode(Object? value) {
   return code;
 }
 
+ResourceRefView? _nullableResourceRef(
+  Map<String, Object?> value,
+  String key,
+  String field,
+) {
+  _requireOwnKey(value, key, field);
+  return value[key] == null
+      ? null
+      : _decodeResourceRef(_requiredRecord(value[key], field));
+}
+
+String? _requiredNullableString(
+  Map<String, Object?> value,
+  String key,
+  String field,
+) {
+  _requireOwnKey(value, key, field);
+  return value[key] == null ? null : _requiredString(value[key], field);
+}
+
+bool? _requiredNullableBoolean(
+  Map<String, Object?> value,
+  String key,
+  String field,
+) {
+  _requireOwnKey(value, key, field);
+  return value[key] == null ? null : _requiredBoolean(value[key], field);
+}
+
+int? _requiredNullableInteger(
+  Map<String, Object?> value,
+  String key,
+  String field,
+  int maximum,
+) {
+  _requireOwnKey(value, key, field);
+  return value[key] == null
+      ? null
+      : _requiredUnsignedInteger(value[key], field, maximum);
+}
+
+int _requiredUnsignedInteger(Object? value, String field, int maximum) {
+  if (value is! int || value < 0 || value > maximum) {
+    throw invalidBindingPayload(
+      '$field must be an unsigned integer no greater than $maximum',
+    );
+  }
+  return value;
+}
+
+Map<String, String> _stringRecord(Object? value, String field) {
+  final source = _requiredRecord(value, field);
+  final result = <String, String>{};
+  for (final MapEntry(:key, :value) in source.entries) {
+    result[key] = _requiredString(value, '$field.$key');
+  }
+  return Map<String, String>.unmodifiable(result);
+}
+
+TableAlignment _tableAlignment(Object? value, String field) {
+  final alignment = _requiredString(value, field);
+  return switch (alignment) {
+    'none' => TableAlignment.none,
+    'left' => TableAlignment.left,
+    'center' => TableAlignment.center,
+    'right' => TableAlignment.right,
+    _ => throw invalidBindingPayload('unknown table alignment $alignment'),
+  };
+}
+
+LinkStyle _linkStyle(Object? value, String field) {
+  final style = _requiredString(value, field);
+  return switch (style) {
+    'inline' => LinkStyle.inline,
+    'reference' => LinkStyle.reference,
+    'reference_unknown' => LinkStyle.referenceUnknown,
+    'collapsed' => LinkStyle.collapsed,
+    'collapsed_unknown' => LinkStyle.collapsedUnknown,
+    'shortcut' => LinkStyle.shortcut,
+    'shortcut_unknown' => LinkStyle.shortcutUnknown,
+    'autolink' => LinkStyle.autolink,
+    'email' => LinkStyle.email,
+    _ => throw invalidBindingPayload('unknown link style $style'),
+  };
+}
+
+BlockQuoteKind _blockQuoteKind(Object? value, String field) {
+  final kind = _requiredString(value, field);
+  return switch (kind) {
+    'plain' => BlockQuoteKind.plain,
+    'note' => BlockQuoteKind.note,
+    'tip' => BlockQuoteKind.tip,
+    'important' => BlockQuoteKind.important,
+    'warning' => BlockQuoteKind.warning,
+    'caution' => BlockQuoteKind.caution,
+    _ => throw invalidBindingPayload('unknown block quote kind $kind'),
+  };
+}
+
+CodeFenceMarker _codeFenceMarker(Object? value, String field) {
+  final marker = _requiredString(value, field);
+  return switch (marker) {
+    'backtick' => CodeFenceMarker.backtick,
+    'tilde' => CodeFenceMarker.tilde,
+    _ => throw invalidBindingPayload('unknown code fence marker $marker'),
+  };
+}
+
+void _exactKeys(
+  Map<String, Object?> value,
+  Set<String> expected,
+  String field,
+) {
+  for (final key in value.keys) {
+    if (!expected.contains(key)) {
+      throw invalidBindingPayload('$field contains unknown field $key');
+    }
+  }
+}
+
+void _requireOwnKey(Map<String, Object?> value, String key, String field) {
+  if (!value.containsKey(key)) {
+    throw invalidBindingPayload('$field is required');
+  }
+}
+
 Map<String, Object?> _parseJsonRecord(List<int> bytes, String field) {
   try {
     final decoded = jsonDecode(utf8.decode(bytes, allowMalformed: false));
@@ -861,10 +1617,10 @@ void _requireLiteral(Object? value, String expected, String field) {
   }
 }
 
-List<String> _decimalArray(Object? value, String field) =>
+List<String> _decimalU128Array(Object? value, String field) =>
     List<String>.unmodifiable(
       _requiredList(
         value,
         field,
-      ).map((entry) => requireDecimalString(entry, field)),
+      ).map((entry) => decodeDecimalU128(entry, field)),
     );

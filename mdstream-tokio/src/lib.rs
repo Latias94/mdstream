@@ -6,6 +6,7 @@
 //! - Losslessly coalesce tiny chunks with bounded backpressure.
 //! - Run an actor that owns [`mdstream::StreamEngine`] and emits atomic,
 //!   replayable [`mdstream_protocol::ChangeSet`] batches.
+//! - Close actor input and join without losing output that was not read yet.
 //!
 //! For a full TUI example, see `cargo run -p mdstream-tokio --example agent_tui`.
 

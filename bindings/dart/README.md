@@ -69,6 +69,11 @@ identity until their exact changed ID is invalidated. Epochs, sequences,
 cursors, request generations, and other Rust-domain counters remain canonical
 decimal strings.
 
+`engine.state.pendingSourceView()` lazily returns the exact source suffix not
+yet covered by Content IR, including its UTF-8 byte range, or `null` when the
+projection is current. The value is cached until source, projection, or epoch
+replacement invalidates it; it is not embedded in every reducer update.
+
 Use `runtime.createReducer()` for replication. A gap or conflicting current
 sequence moves the reducer to `needs_snapshot`; only
 `recoverSnapshot(CanonicalSnapshotBytes)` resumes it.

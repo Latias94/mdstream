@@ -27,6 +27,10 @@ typed ContentNode
   impacts follow the same rule.
 - Consumers materialize only invalidated views. A missing view removes the
   corresponding host object.
+- Pending source is a separate, on-demand view of
+  `projection_cursor..source_cursor`. It is invalidated by source or projection
+  changes, carries exact UTF-8 byte cursors, and is never embedded in every
+  reducer update or parsed by an adapter.
 - `full_replace` invalidates all retained canonical and derived host views,
   including state from a prior epoch.
 
@@ -55,7 +59,8 @@ this reducer boundary. They do not need an mdstream-specific renderer.
 
 `@mdstream/core` is the complete first-party web state surface. Its engine owns
 the producer and its synchronized Rust reducer. `engine.store` is a read-only
-external-store facade with root, node, resource, and artifact subscriptions.
+external-store facade with root, pending-source, node, resource, and artifact
+subscriptions.
 `runtime.createStore()` is the separate mutable reducer surface for replicated
 change streams and explicit recovery.
 
@@ -63,6 +68,19 @@ Framework integrations bind `subscribe` and `getSnapshot` to their native state
 primitive. React can use `useSyncExternalStore`; mdstream intentionally ships no
 React hooks, components, renderer, or theme. See
 [ADR 0004](ADR_0004_FRAMEWORK_NEUTRAL_WEB_BINDINGS.md).
+
+## Dart and Flutter
+
+The Dart package wraps the C ABI and requires a host-supplied native-library
+path. It exposes the same Rust engine/reducer handles, typed views, lossless
+batching, and explicit recovery without depending on Flutter.
+
+`mdstream_flutter` adds native library delivery and no-path loading for Android,
+iOS, macOS, Linux, and Windows. Its producer and replica controllers implement
+`ValueListenable`, publish epoch-qualified node keys, and expose focused
+pending-source/node/resource/artifact listenables. Processor scheduling
+snapshots registration identity and rejects late generations. The package
+contains no widgets, renderer, theme, or default Merman binary.
 
 ## Processors and Merman
 

@@ -1,13 +1,14 @@
 name: Flutter platforms
 
 on:
+  workflow_call:
   push:
     branches: [main, master, develop]
   pull_request:
     branches: [main, master]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: flutter-platforms-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -287,12 +288,19 @@ jobs:
         working-directory: bindings
         run: flutter pub get
 
+      - name: Resolve Flutter archive path
+        shell: bash
+        run: echo "FLUTTER_ARCHIVE=$(python3 bindings/flutter/tool/package_smoke.py --print-archive-path)" >> "$GITHUB_ENV"
+
       - name: Validate complete publish archive and budgets
         run: python3 bindings/flutter/tool/package_smoke.py --release --skip-native-build --skip-runtime
+
+      - name: Verify exact Flutter package archive
+        run: python3 scripts/verify-packages.py --phase local --ecosystem flutter --archive "$FLUTTER_ARCHIVE"
 
       - name: Upload Flutter publish archive
         uses: actions/upload-artifact@v4
         with:
           name: mdstream-flutter-package
-          path: target/flutter-package/mdstream_flutter-0.4.0.tar.gz
+          path: ${{ env.FLUTTER_ARCHIVE }}
           if-no-files-found: error

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import io
+import gzip
 import json
 import os
 import sys
@@ -24,9 +25,11 @@ from build_native import (  # noqa: E402
 )
 from package_smoke import (  # noqa: E402
     PackageSmokeError,
+    _extract_archive,
     inspect_package_archive,
     validate_dependency_graph,
 )
+from package_metadata import package_archive_path, package_version  # noqa: E402
 
 
 class BuildNativeContractTest(unittest.TestCase):
@@ -137,6 +140,21 @@ class PackageSmokeContractTest(unittest.TestCase):
         with self.assertRaisesRegex(PackageSmokeError, "merman"):
             validate_dependency_graph(graph, {"merman", "react"})
 
+    def test_future_manifest_version_drives_archive_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pubspec = root / "pubspec.yaml"
+            pubspec.write_text(
+                "name: mdstream_flutter\nversion: 1.2.3\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(package_version(pubspec), "1.2.3")
+            self.assertEqual(
+                package_archive_path(root, pubspec),
+                root / "target" / "flutter-package" / "mdstream_flutter-1.2.3.tar.gz",
+            )
+
     def test_archive_reports_single_slice_increment_and_rejects_forbidden_text(
         self,
     ) -> None:
@@ -174,14 +192,169 @@ class PackageSmokeContractTest(unittest.TestCase):
                     require_all_platforms=False,
                 )
 
+    def test_archive_rejects_noncanonical_and_unsupported_members(self) -> None:
+        native = (
+            b"\x7fELFmdstream_abi_version|mdstream_package_version|"
+            b"mdstream_engine_new|mdstream_reducer_new"
+        )
+        base = [
+            _tar_file("pubspec.yaml", b"name: mdstream_flutter\n"),
+            _tar_file(
+                "android/src/main/jniLibs/x86_64/libmdstream_ffi.so",
+                native,
+            ),
+        ]
+        fifo = tarfile.TarInfo("lib/pipe")
+        fifo.type = tarfile.FIFOTYPE
+        cases = {
+            "backslash": [*base, _tar_file(r"lib\escape.dart", b"content")],
+            "dot alias": [*base, _tar_file("lib/./escape.dart", b"content")],
+            "normalized duplicate": [
+                *base,
+                _tar_file("lib/escape.dart", b"first"),
+                _tar_file("lib/./escape.dart", b"second"),
+            ],
+            "special member": [*base, (fifo, b"")],
+        }
+
+        for name, members in cases.items():
+            with self.subTest(member=name), tempfile.TemporaryDirectory() as temporary:
+                archive = Path(temporary) / "mdstream_flutter.tar.gz"
+                _write_archive_members(archive, members)
+                with self.assertRaisesRegex(
+                    PackageSmokeError,
+                    "unsafe|non-canonical|duplicate|unsupported",
+                ):
+                    inspect_package_archive(
+                        archive,
+                        forbidden_terms=set(),
+                        native_ceiling_bytes=128,
+                        increment_ceiling_bytes=128,
+                        require_all_platforms=False,
+                    )
+
+    def test_archive_rejects_resource_limits_before_reading_payload(self) -> None:
+        native = (
+            b"\x7fELFmdstream_abi_version|mdstream_package_version|"
+            b"mdstream_engine_new|mdstream_reducer_new"
+        )
+        entries = {
+            "pubspec.yaml": b"name: mdstream_flutter\n",
+            "android/src/main/jniLibs/x86_64/libmdstream_ffi.so": native,
+            "lib/extra.dart": b"content",
+        }
+        default_limits = {
+            "max_compressed_bytes": 64_000,
+            "max_members": 32,
+            "max_member_bytes": 1_024,
+            "max_uncompressed_bytes": 4_096,
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "mdstream_flutter.tar.gz"
+            _write_archive(archive, entries)
+            cases = {
+                "compressed size": {**default_limits, "max_compressed_bytes": 1},
+                "member count": {**default_limits, "max_members": 2},
+                "total uncompressed": {
+                    **default_limits,
+                    "max_uncompressed_bytes": 100,
+                },
+            }
+            for label, limits in cases.items():
+                with self.subTest(limit=label), self.assertRaisesRegex(
+                    PackageSmokeError,
+                    "compressed|member count|uncompressed",
+                ):
+                    inspect_package_archive(
+                        archive,
+                        forbidden_terms=set(),
+                        native_ceiling_bytes=128,
+                        increment_ceiling_bytes=128,
+                        require_all_platforms=False,
+                        archive_limits=limits,
+                    )
+
+            declared = root / "declared-too-large.tar.gz"
+            _write_declared_size_archive(declared, "lib/huge.bin", 1_000_000)
+            with self.assertRaisesRegex(PackageSmokeError, "member.*ceiling"):
+                inspect_package_archive(
+                    declared,
+                    forbidden_terms=set(),
+                    native_ceiling_bytes=128,
+                    increment_ceiling_bytes=128,
+                    require_all_platforms=False,
+                    archive_limits=default_limits,
+                )
+
+            pax = root / "oversized-pax.tar.gz"
+            _write_oversized_pax_archive(pax, declared_size=1_000_000)
+            with self.assertRaisesRegex(PackageSmokeError, "decompressed stream"):
+                inspect_package_archive(
+                    pax,
+                    forbidden_terms=set(),
+                    native_ceiling_bytes=128,
+                    increment_ceiling_bytes=128,
+                    require_all_platforms=False,
+                    archive_limits={
+                        **default_limits,
+                        "max_members": 1,
+                        "max_uncompressed_bytes": 4_096,
+                    },
+                )
+
+    def test_archive_extraction_stays_beneath_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "package.tar.gz"
+            _write_archive(archive, {"linked/escape.txt": b"escaped"})
+            destination = root / "destination"
+            destination.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            (destination / "linked").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(PackageSmokeError, "extraction path"):
+                _extract_archive(archive, destination)
+
+            self.assertFalse((outside / "escape.txt").exists())
+
 
 def _write_archive(path: Path, entries: dict[str, bytes]) -> None:
+    _write_archive_members(
+        path,
+        [_tar_file(name, contents) for name, contents in entries.items()],
+    )
+
+
+def _tar_file(name: str, contents: bytes) -> tuple[tarfile.TarInfo, bytes]:
+    info = tarfile.TarInfo(name)
+    info.size = len(contents)
+    info.mode = 0o644
+    return info, contents
+
+
+def _write_archive_members(
+    path: Path,
+    members: list[tuple[tarfile.TarInfo, bytes]],
+) -> None:
     with tarfile.open(path, "w:gz") as archive:
-        for name, contents in entries.items():
-            info = tarfile.TarInfo(name)
-            info.size = len(contents)
-            info.mode = 0o644
-            archive.addfile(info, io.BytesIO(contents))
+        for info, contents in members:
+            archive.addfile(info, io.BytesIO(contents) if info.isfile() else None)
+
+
+def _write_declared_size_archive(path: Path, name: str, size: int) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = size
+    path.write_bytes(gzip.compress(info.tobuf() + (b"\0" * 1024)))
+
+
+def _write_oversized_pax_archive(path: Path, declared_size: int) -> None:
+    info = tarfile.TarInfo("././@PaxHeader")
+    info.type = tarfile.XHDTYPE
+    info.size = declared_size
+    path.write_bytes(gzip.compress(info.tobuf() + (b"0" * 100_000)))
 
 
 if __name__ == "__main__":

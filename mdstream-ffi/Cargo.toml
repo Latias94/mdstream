@@ -18,7 +18,7 @@ mdstream-bindings-core = { path = "../mdstream-bindings-core", version = "0.4.0"
 
 [dev-dependencies]
 cc = "=1.2.67"
-mdstream-conformance = { path = "../mdstream-conformance", version = "0.4.0" }
+mdstream-conformance = { path = "../mdstream-conformance" }
 mdstream-protocol = { path = "../mdstream-protocol", version = "0.4.0" }
 serde_json = "1.0.140"
 
