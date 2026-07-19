@@ -97,11 +97,11 @@ fn transition_capture_is_opt_in_and_disabled_updates_keep_the_old_shape() {
 }
 
 #[test]
-fn enabled_updates_carry_draft_facts_without_a_new_payload_kind() {
+fn enabled_updates_carry_stable_facts_without_a_new_payload_kind() {
     let mut session = ReducerSession::new(&transition_options()).unwrap();
     let start = start_change(1, None);
     let update = apply(&mut session, &start);
-    assert_eq!(update["transition"]["schema"], "mdstream.transitions/draft");
+    assert_eq!(update["transition"]["schema"], "mdstream.transitions/1");
     assert_eq!(update["transition"]["facts"]["scope"], "continuous");
     assert_eq!(
         update["transition"]["facts"]["after"]["continuity_generation"],

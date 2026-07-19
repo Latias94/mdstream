@@ -163,7 +163,7 @@ describe("typed transition binding views", () => {
   it("decodes and deep-freezes a complete continuous transition", () => {
     const update = decodeUpdate(continuousTransition());
     const transition = update.transition;
-    expect(transition?.schema).toBe("mdstream.transitions/draft");
+    expect(transition?.schema).toBe("mdstream.transitions/1");
     expect(transition?.facts.scope).toBe("continuous");
     expect(Object.isFrozen(transition)).toBe(true);
     expect(Object.isFrozen(transition?.facts)).toBe(true);
@@ -191,7 +191,7 @@ describe("typed transition binding views", () => {
     expect(Object.hasOwn(withoutTransition, "transition")).toBe(false);
 
     const fullReplace = decodeUpdate({
-      schema: "mdstream.transitions/draft",
+      schema: "mdstream.transitions/1",
       facts: {
         scope: "full_replace",
         before: null,
@@ -207,7 +207,7 @@ describe("typed transition binding views", () => {
 
   it("rejects the wrong transition schema and every unknown nested field", () => {
     const wrongSchema = continuousTransition();
-    wrongSchema.schema = "mdstream.transitions/1";
+    wrongSchema.schema = "mdstream.transitions/draft";
     expect(() => decodeUpdate(wrongSchema)).toThrowError(MdstreamError);
 
     const mutations: ((transition: MutableTransitionFixture) => void)[] = [
@@ -498,7 +498,7 @@ function nodeKey(): MutableNodeKey {
 
 function continuousTransition(): MutableTransitionFixture {
   return {
-    schema: "mdstream.transitions/draft",
+    schema: "mdstream.transitions/1",
     facts: {
       scope: "continuous",
       before: null,

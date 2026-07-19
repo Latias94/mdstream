@@ -14,5 +14,5 @@ pub use mdstream_processors::{ProcessorExpectation, ProcessorFailureCode};
 pub use options::BINDING_OPTIONS_SCHEMA;
 pub use wire::{
     BINDING_SCHEMA, BindingMetrics, BindingOutput, BindingPayload, BindingPayloadKind,
-    TRANSITION_SCHEMA_DRAFT,
+    TRANSITION_SCHEMA,
 };

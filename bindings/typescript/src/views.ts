@@ -1,4 +1,4 @@
-import { BindingPayloadKind, TRANSITION_SCHEMA_DRAFT } from "./wasm.js";
+import { BindingPayloadKind, TRANSITION_SCHEMA } from "./wasm.js";
 
 declare const mdstreamBrand: unique symbol;
 
@@ -164,7 +164,7 @@ export type TransitionFactsView =
     };
 
 export interface TransitionEnvelopeView {
-  readonly schema: typeof TRANSITION_SCHEMA_DRAFT;
+  readonly schema: typeof TRANSITION_SCHEMA;
   readonly facts: TransitionFactsView;
 }
 
@@ -648,9 +648,9 @@ function decodeTransitionEnvelope(
   value: Record<string, unknown>,
 ): TransitionEnvelopeView {
   exactKeys(value, ["schema", "facts"], "transition");
-  requiredLiteral(value.schema, TRANSITION_SCHEMA_DRAFT, "transition.schema");
+  requiredLiteral(value.schema, TRANSITION_SCHEMA, "transition.schema");
   return {
-    schema: TRANSITION_SCHEMA_DRAFT,
+    schema: TRANSITION_SCHEMA,
     facts: decodeTransitionFacts(requiredRecord(value.facts, "transition.facts")),
   };
 }

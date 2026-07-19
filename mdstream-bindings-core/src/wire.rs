@@ -14,7 +14,7 @@ use serde::Serialize;
 use crate::{BindingError, errors::protocol_error};
 
 pub const BINDING_SCHEMA: &str = "mdstream.bindings/0.4";
-pub const TRANSITION_SCHEMA_DRAFT: &str = "mdstream.transitions/draft";
+pub const TRANSITION_SCHEMA: &str = "mdstream.transitions/1";
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,7 +180,7 @@ pub(crate) fn encode_reducer_update(
             impact: ImpactView::from(impact),
             document,
             transition: transition.map(|facts| TransitionView {
-                schema: TRANSITION_SCHEMA_DRAFT,
+                schema: TRANSITION_SCHEMA,
                 facts,
             }),
         },

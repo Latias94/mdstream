@@ -42,7 +42,7 @@ export {
   type TransitionBatchView,
   type TransitionListener,
 } from "./store.js";
-export { TRANSITION_SCHEMA_DRAFT } from "./wasm.js";
+export { TRANSITION_SCHEMA } from "./wasm.js";
 export {
   asCanonicalChangeBytes,
   asCanonicalSnapshotBytes,

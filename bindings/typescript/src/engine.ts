@@ -24,7 +24,7 @@ import {
 } from "./views.js";
 import {
   BindingPayloadKind,
-  TRANSITION_SCHEMA_DRAFT,
+  TRANSITION_SCHEMA,
   defaultWasmLoader,
   drainOutput,
   loadWasmBindings,
@@ -167,7 +167,7 @@ export class MdstreamRuntime {
   readonly packageVersion: string;
   readonly bindingSchema: string;
   readonly bindingOptionsSchema: string;
-  readonly transitionSchema: string;
+  readonly transitionSchema: typeof TRANSITION_SCHEMA;
 
   private constructor(wasm: WasmBindings) {
     this.#wasm = wasm;
@@ -175,7 +175,7 @@ export class MdstreamRuntime {
     this.packageVersion = wasm.packageVersion();
     this.bindingSchema = wasm.bindingSchema();
     this.bindingOptionsSchema = wasm.bindingOptionsSchema();
-    this.transitionSchema = TRANSITION_SCHEMA_DRAFT;
+    this.transitionSchema = TRANSITION_SCHEMA;
   }
 
   /** @internal */

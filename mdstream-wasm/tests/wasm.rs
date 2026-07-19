@@ -125,7 +125,7 @@ fn metadata_payload_kinds_and_consumption_are_stable() {
     assert_eq!(package_version(), "0.4.0");
     assert_eq!(binding_schema(), "mdstream.bindings/0.4");
     assert_eq!(binding_options_schema(), "mdstream.bindings-options/0.4");
-    assert_eq!(transition_schema(), "mdstream.transitions/draft");
+    assert_eq!(transition_schema(), "mdstream.transitions/1");
     assert_eq!(MdstreamPayloadKind::Change as u32, 1);
     assert_eq!(MdstreamPayloadKind::ReducerUpdate as u32, 3);
     assert_eq!(MdstreamPayloadKind::ArtifactView as u32, 9);

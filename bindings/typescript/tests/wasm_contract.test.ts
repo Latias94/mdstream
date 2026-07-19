@@ -28,7 +28,7 @@ describe("custom WASM loader contract", () => {
       abiVersion: () => 1,
       bindingSchema: () => "mdstream.bindings/0.4",
       bindingOptionsSchema: () => "mdstream.bindings-options/0.4",
-      transitionSchema: () => "mdstream.transitions/draft",
+      transitionSchema: () => "mdstream.transitions/1",
     };
     if (probe !== undefined) {
       module.packageVersion = probe;
@@ -45,9 +45,10 @@ describe("custom WASM loader contract", () => {
 
   it.each([
     ["missing", undefined],
-    ["non-callable", "mdstream.transitions/draft"],
+    ["non-callable", "mdstream.transitions/1"],
     ["non-string result", () => 1],
-    ["different schema", () => "mdstream.transitions/1"],
+    ["old draft schema", () => "mdstream.transitions/draft"],
+    ["future schema", () => "mdstream.transitions/2"],
   ])("rejects a %s transitionSchema probe before sessions", async (_, probe) => {
     let constructedSessions = 0;
     class ContractSession {

@@ -178,7 +178,7 @@ describe("framework-neutral transition feed", () => {
       packageVersion: () => "0.4.0",
       bindingSchema: () => "mdstream.bindings/0.4",
       bindingOptionsSchema: () => "mdstream.bindings-options/0.4",
-      transitionSchema: () => "mdstream.transitions/draft",
+      transitionSchema: () => "mdstream.transitions/1",
     });
     const runtime = await initMdstream({ loader });
     const engine = runtime.createEngine(capturedOptions);
@@ -350,7 +350,7 @@ function fakeReducerUpdate(before: string, after: string, sequence: number): unk
       roots: { version: `roots.${after}`, children: ["7"] },
     },
     transition: {
-      schema: "mdstream.transitions/draft",
+      schema: "mdstream.transitions/1",
       facts: {
         scope: "continuous",
         before: documentStamp(before),

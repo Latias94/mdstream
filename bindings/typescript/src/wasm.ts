@@ -101,7 +101,7 @@ export interface DrainedOutput {
 const expectedAbiVersion = 1;
 const expectedBindingSchema = "mdstream.bindings/0.4";
 const expectedBindingOptionsSchema = "mdstream.bindings-options/0.4";
-export const TRANSITION_SCHEMA_DRAFT = "mdstream.transitions/draft" as const;
+export const TRANSITION_SCHEMA = "mdstream.transitions/1" as const;
 
 class WasmContractError extends Error {
   readonly status = 5;
@@ -196,9 +196,9 @@ export async function loadWasmBindings(loader: WasmModuleLoader): Promise<WasmBi
       "mdstream WASM transitionSchema probe must return a string",
     );
   }
-  if (transitionSchema !== TRANSITION_SCHEMA_DRAFT) {
+  if (transitionSchema !== TRANSITION_SCHEMA) {
     throw new WasmContractError(
-      `unsupported mdstream transition schema ${transitionSchema}; expected ${TRANSITION_SCHEMA_DRAFT}`,
+      `unsupported mdstream transition schema ${transitionSchema}; expected ${TRANSITION_SCHEMA}`,
       transitionSchema,
     );
   }
