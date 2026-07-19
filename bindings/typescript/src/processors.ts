@@ -186,7 +186,14 @@ export class ProcessorScheduler {
     this.#pendingRegistrations.add(registration);
     this.#scheduleScan();
     return {
-      dispose: () => this.#disposeRegistration(registration),
+      dispose: () => {
+        if (!registration.active) {
+          return;
+        }
+        this.#store.runDocumentOperation(() =>
+          this.#disposeRegistration(registration)
+        );
+      },
     };
   }
 

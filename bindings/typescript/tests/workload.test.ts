@@ -53,4 +53,47 @@ describe("large Rust-backed TypeScript workload", () => {
       pendingEngine.close();
     },
   );
+
+  it(
+    "keeps 10k-node transition classification lazy when capture is enabled",
+    { timeout: 120_000 },
+    async () => {
+      const runtime = await initMdstream({ loader: nodeWasmLoader });
+      const engine = runtime.createEngine({
+        captureTransitions: true,
+        protocol: {
+          maxSourceBytes: "1048576",
+          maxNodes: "25000",
+          maxResources: "100",
+          maxOperations: "40000",
+          maxChangeStructuralItems: "25000",
+          maxChildrenPerList: "10000",
+        },
+        wire: { maxReducerUpdateBytes: "268435456" },
+      });
+      let transitionedNodes = 0;
+      engine.store.subscribeTransitions((batch) => {
+        transitionedNodes += batch.facts.reduce(
+          (count, facts) => count + (facts.scope === "continuous" ? facts.nodes.length : 0),
+          0,
+        );
+      });
+      const source = Array.from(
+        { length: 10_000 },
+        (_, index) => `paragraph ${index}\n\n`,
+      ).join("");
+
+      engine.append(source);
+      engine.finish();
+      const roots = engine.store.getSnapshot().document?.roots?.children ?? [];
+      expect(roots).toHaveLength(10_000);
+      expect(transitionedNodes).toBeGreaterThanOrEqual(10_000);
+      expect(engine.store.metrics().materializedNodeViews).toBe("0");
+
+      const accessed = roots.slice(0, 16);
+      accessed.forEach((id) => engine.store.getNodeSnapshot(id));
+      expect(engine.store.metrics().materializedNodeViews).toBe("16");
+      engine.close();
+    },
+  );
 });

@@ -3,11 +3,24 @@ import { describe, expect, it, vi } from "vitest";
 import {
   initMdstream,
   type ContentNodeView,
+  type MdstreamSessionOptions,
   type ProcessorRegistration,
   type ProcessorOutput,
   type ProcessorRequestView,
 } from "../src/index.js";
 import { nodeWasmLoader, textDecoder } from "./helpers.js";
+
+const capturedProcessorOptions = {
+  captureTransitions: true,
+  protocol: {
+    maxSourceBytes: "1048576",
+    maxNodes: "4096",
+    maxResources: "256",
+    maxOperations: "4096",
+    maxChangeStructuralItems: "4096",
+    maxChildrenPerList: "4096",
+  },
+} satisfies MdstreamSessionOptions;
 
 describe("host-side processor scheduling", () => {
   it("scans the current tree once when a processor is registered after content exists", async () => {
@@ -173,7 +186,7 @@ describe("host-side processor scheduling", () => {
 
   it("does not execute a request invalidated by reset during its pending notification", async () => {
     const runtime = await initMdstream({ loader: nodeWasmLoader });
-    const engine = runtime.createEngine();
+    const engine = runtime.createEngine(capturedProcessorOptions);
     const process = vi.fn<() => ProcessorOutput>(() => ({
       kind: "text",
       protocol: "test.ts.pending-reset/1",
@@ -399,7 +412,7 @@ describe("host-side processor scheduling", () => {
 
   it("rechecks an old-epoch candidate after matches resets the engine", async () => {
     const runtime = await initMdstream({ loader: nodeWasmLoader });
-    const engine = runtime.createEngine();
+    const engine = runtime.createEngine(capturedProcessorOptions);
     const requests: ProcessorRequestView[] = [];
     const errors = vi.fn();
     let reentered = false;

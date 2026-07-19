@@ -82,6 +82,7 @@ export interface WasmBindings {
   packageVersion(): string;
   bindingSchema(): string;
   bindingOptionsSchema(): string;
+  transitionSchema(): string;
   default?: (input?: unknown) => Promise<unknown>;
 }
 
@@ -100,6 +101,7 @@ export interface DrainedOutput {
 const expectedAbiVersion = 1;
 const expectedBindingSchema = "mdstream.bindings/0.4";
 const expectedBindingOptionsSchema = "mdstream.bindings-options/0.4";
+export const TRANSITION_SCHEMA_DRAFT = "mdstream.transitions/draft" as const;
 
 class WasmContractError extends Error {
   readonly status = 5;
@@ -181,6 +183,25 @@ export async function loadWasmBindings(loader: WasmModuleLoader): Promise<WasmBi
       bindingOptionsSchema,
     );
   }
+  const transitionSchemaProbe = candidate.transitionSchema;
+  if (typeof transitionSchemaProbe !== "function") {
+    throw new WasmContractError(
+      "mdstream WASM module is missing required transitionSchema capability",
+      bindingSchema,
+    );
+  }
+  const transitionSchema = transitionSchemaProbe();
+  if (typeof transitionSchema !== "string") {
+    throw new WasmContractError(
+      "mdstream WASM transitionSchema probe must return a string",
+    );
+  }
+  if (transitionSchema !== TRANSITION_SCHEMA_DRAFT) {
+    throw new WasmContractError(
+      `unsupported mdstream transition schema ${transitionSchema}; expected ${TRANSITION_SCHEMA_DRAFT}`,
+      transitionSchema,
+    );
+  }
   const reducerPrototype = asModuleRecord(candidate.MdstreamReducerSession.prototype);
   if (typeof reducerPrototype.pendingSourceView !== "function") {
     throw new WasmContractError(
@@ -194,7 +215,7 @@ export async function loadWasmBindings(loader: WasmModuleLoader): Promise<WasmBi
       bindingSchema,
     );
   }
-  return candidate;
+  return candidate as Record<string, unknown> & WasmBindings;
 }
 
 export const defaultWasmLoader: WasmModuleLoader = async () => {
@@ -226,7 +247,9 @@ function asModuleRecord(value: unknown): Record<string, unknown> {
 
 function hasBindings(
   value: Record<string, unknown>,
-): value is Record<string, unknown> & WasmBindings {
+): value is Record<string, unknown> & Omit<WasmBindings, "transitionSchema"> & {
+  readonly transitionSchema?: unknown;
+} {
   return (
     hasBindingModuleShape(value) &&
     typeof value.packageVersion === "function"

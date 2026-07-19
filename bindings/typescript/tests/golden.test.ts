@@ -131,6 +131,7 @@ describe("Rust/WASM/TypeScript structural goldens", () => {
       packageVersion: () => "0.4.0",
       bindingSchema: () => "mdstream.bindings/0.3",
       bindingOptionsSchema: () => "mdstream.bindings-options/0.4",
+      transitionSchema: () => "mdstream.transitions/draft",
     });
 
     let failure: unknown;
@@ -165,6 +166,7 @@ describe("Rust/WASM/TypeScript structural goldens", () => {
       packageVersion: () => "0.4.0",
       bindingSchema: () => "mdstream.bindings/0.4",
       bindingOptionsSchema: () => "mdstream.bindings-options/0.4",
+      transitionSchema: () => "mdstream.transitions/draft",
     });
 
     await expect(initMdstream({ loader })).rejects.toMatchObject({
@@ -189,6 +191,7 @@ describe("Rust/WASM/TypeScript structural goldens", () => {
       packageVersion: () => "0.4.0",
       bindingSchema: () => "mdstream.bindings/0.4",
       bindingOptionsSchema: () => "mdstream.bindings-options/0.4",
+      transitionSchema: () => "mdstream.transitions/draft",
     });
 
     await expect(initMdstream({ loader })).rejects.toThrow(

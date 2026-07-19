@@ -25,6 +25,7 @@ import {
   type RequestGeneration,
   type ResourceId,
   type ResourceView,
+  type TransitionFactsView,
 } from "./views.js";
 import {
   BindingPayloadKind,
@@ -34,6 +35,7 @@ import {
 } from "./wasm.js";
 
 export type StoreListener = () => void;
+export type TransitionListener = (batch: TransitionBatchView) => void;
 
 export interface ExternalStore<Snapshot> {
   subscribe(listener: StoreListener): () => void;
@@ -44,6 +46,10 @@ export interface StoreSnapshot {
   readonly status: ReducerStatusView;
   readonly document: DocumentSummaryView | null;
   readonly impact: ChangeImpactView;
+}
+
+export interface TransitionBatchView {
+  readonly facts: readonly TransitionFactsView[];
 }
 
 export interface ArtifactSlot {
@@ -95,6 +101,7 @@ export interface ProcessorMetricsView {
 }
 
 export interface MdstreamStoreView extends ExternalStore<StoreSnapshot> {
+  subscribeTransitions(listener: TransitionListener): () => void;
   getPendingSourceSnapshot(): PendingSourceView | undefined;
   subscribePendingSource(listener: StoreListener): () => void;
   pendingSource(): ExternalStore<PendingSourceView | undefined>;
@@ -150,6 +157,13 @@ interface ConsumedOutput extends ReducerResult {
   readonly resourceViews: readonly ResourceView[];
   readonly pendingSourceViews: readonly PendingSourceView[];
   readonly artifactViews: readonly ArtifactView[];
+}
+
+interface StoreOperation {
+  readonly notifications: Notifications;
+  readonly updates: ReducerUpdateView[];
+  readonly artifactChanges: ArtifactChangeView[];
+  readonly facts: TransitionFactsView[];
 }
 
 const emptyImpact: ChangeImpactView = Object.freeze({
@@ -209,11 +223,15 @@ const processorMetricFields = [
 export class RustBackedStore implements MdstreamStore {
   readonly #session: WasmReducerSession;
   readonly #schema: string;
+  readonly #captureTransitions: boolean;
   #snapshot = initialSnapshot;
+  #operation: StoreOperation | undefined;
+  #publishingTransitions = false;
   #closed = false;
   #eventSink: ((events: InternalStoreEvents) => void) | undefined;
 
   readonly #listeners = new Set<StoreListener>();
+  readonly #transitionListeners = new Set<TransitionListener>();
   readonly #pendingSourceListeners = new Set<StoreListener>();
   readonly #nodeListeners = new Map<string, Set<StoreListener>>();
   readonly #resourceListeners = new Map<string, Set<StoreListener>>();
@@ -228,13 +246,48 @@ export class RustBackedStore implements MdstreamStore {
   #pendingSourceCache: PendingSourceView | undefined;
   #pendingSourceLoaded = false;
 
-  constructor(session: WasmReducerSession, schema: string) {
+  constructor(
+    session: WasmReducerSession,
+    schema: string,
+    captureTransitions: boolean,
+  ) {
     this.#session = session;
     this.#schema = schema;
+    this.#captureTransitions = captureTransitions;
   }
 
   setEventSink(sink: ((events: InternalStoreEvents) => void) | undefined): void {
     this.#eventSink = sink;
+  }
+
+  /** @internal */
+  runDocumentOperation<Result>(operation: () => Result): Result {
+    this.#assertOpen();
+    this.#assertMutationAllowed();
+    if (!this.#captureTransitions) {
+      return operation();
+    }
+    if (this.#operation !== undefined) {
+      return operation();
+    }
+
+    const pending = createStoreOperation();
+    this.#operation = pending;
+    let succeeded = false;
+    try {
+      const result = operation();
+      succeeded = true;
+      return result;
+    } finally {
+      this.#operation = undefined;
+      this.#finishDocumentOperation(pending, succeeded);
+    }
+  }
+
+  /** @internal */
+  assertMutationAllowed(): void {
+    this.#assertOpen();
+    this.#assertMutationAllowed();
   }
 
   subscribe(listener: StoreListener): () => void {
@@ -247,14 +300,22 @@ export class RustBackedStore implements MdstreamStore {
     return this.#snapshot;
   }
 
-  applyChange(change: CanonicalChangeBytes): ReducerResult {
+  subscribeTransitions(listener: TransitionListener): () => void {
     this.#assertOpen();
-    return this.#publicResult(this.#invoke(() => this.#session.applyChange(change)));
+    this.#transitionListeners.add(listener);
+    return () => this.#transitionListeners.delete(listener);
+  }
+
+  applyChange(change: CanonicalChangeBytes): ReducerResult {
+    return this.runDocumentOperation(() =>
+      this.#publicResult(this.#invoke(() => this.#session.applyChange(change)))
+    );
   }
 
   recoverSnapshot(snapshot: CanonicalSnapshotBytes): ReducerResult {
-    this.#assertOpen();
-    return this.#publicResult(this.#invoke(() => this.#session.recoverSnapshot(snapshot)));
+    return this.runDocumentOperation(() =>
+      this.#publicResult(this.#invoke(() => this.#session.recoverSnapshot(snapshot)))
+    );
   }
 
   createRecoverySnapshot(): CanonicalSnapshotBytes | undefined {
@@ -408,19 +469,20 @@ export class RustBackedStore implements MdstreamStore {
   }
 
   beginProcessor(options: BeginProcessorOptions): ReducerResult {
-    this.#assertOpen();
-    return this.#publicResult(this.#invoke(() =>
-      this.#session.beginProcessorIfCurrent(
-        options.expectedEpoch,
-        options.nodeId,
-        options.expectedNodeVersion,
-        options.processorId,
-        options.processorVersion,
-        options.configurationVersion,
-        options.acceptsProvisional,
-        options.allowProvisional,
-      ),
-    ));
+    return this.runDocumentOperation(() =>
+      this.#publicResult(this.#invoke(() =>
+        this.#session.beginProcessorIfCurrent(
+          options.expectedEpoch,
+          options.nodeId,
+          options.expectedNodeVersion,
+          options.processorId,
+          options.processorVersion,
+          options.configurationVersion,
+          options.acceptsProvisional,
+          options.allowProvisional,
+        ),
+      ))
+    );
   }
 
   completeProcessorText(
@@ -429,10 +491,11 @@ export class RustBackedStore implements MdstreamStore {
     mediaType: string,
     text: string,
   ): ReducerResult {
-    this.#assertOpen();
-    return this.#publicResult(this.#invoke(() =>
-      this.#session.completeProcessorText(requestId, protocol, mediaType, text),
-    ));
+    return this.runDocumentOperation(() =>
+      this.#publicResult(this.#invoke(() =>
+        this.#session.completeProcessorText(requestId, protocol, mediaType, text),
+      ))
+    );
   }
 
   completeProcessorBinary(
@@ -441,10 +504,11 @@ export class RustBackedStore implements MdstreamStore {
     mediaType: string,
     bytes: Uint8Array,
   ): ReducerResult {
-    this.#assertOpen();
-    return this.#publicResult(this.#invoke(() =>
-      this.#session.completeProcessorBinary(requestId, protocol, mediaType, bytes),
-    ));
+    return this.runDocumentOperation(() =>
+      this.#publicResult(this.#invoke(() =>
+        this.#session.completeProcessorBinary(requestId, protocol, mediaType, bytes),
+      ))
+    );
   }
 
   failProcessor(
@@ -452,15 +516,17 @@ export class RustBackedStore implements MdstreamStore {
     code: ProcessorFailureCode,
     message: string,
   ): ReducerResult {
-    this.#assertOpen();
-    return this.#publicResult(this.#invoke(() =>
-      this.#session.failProcessor(requestId, code, message),
-    ));
+    return this.runDocumentOperation(() =>
+      this.#publicResult(this.#invoke(() =>
+        this.#session.failProcessor(requestId, code, message),
+      ))
+    );
   }
 
   cancelProcessor(requestId: RequestGeneration): ReducerResult {
-    this.#assertOpen();
-    return this.#publicResult(this.#invoke(() => this.#session.cancelProcessor(requestId)));
+    return this.runDocumentOperation(() =>
+      this.#publicResult(this.#invoke(() => this.#session.cancelProcessor(requestId)))
+    );
   }
 
   metrics(): BindingMetricsView {
@@ -496,9 +562,11 @@ export class RustBackedStore implements MdstreamStore {
     if (this.#closed) {
       return;
     }
+    this.#assertMutationAllowed();
     this.#closed = true;
     this.#eventSink = undefined;
     this.#listeners.clear();
+    this.#transitionListeners.clear();
     this.#pendingSourceListeners.clear();
     this.#nodeListeners.clear();
     this.#resourceListeners.clear();
@@ -574,13 +642,17 @@ export class RustBackedStore implements MdstreamStore {
       }
     }
 
-    const notifications: Notifications = {
-      root: false,
-      pendingSource: false,
-      nodes: new Set(),
-      resources: new Set(),
-      artifacts: new Set(),
-    };
+    if (
+      !this.#captureTransitions &&
+      updates.some((update) => update.transition !== undefined)
+    ) {
+      throw invalidPayload(
+        "capture-disabled reducer returned unexpected transition facts",
+      );
+    }
+
+    const operation = this.#operation;
+    const notifications = operation?.notifications ?? createNotifications();
     for (const update of updates) {
       this.#applyUpdate(update, notifications);
     }
@@ -601,9 +673,19 @@ export class RustBackedStore implements MdstreamStore {
       this.#artifactCache.set(key, view);
     }
 
-    this.#notify(notifications);
-    if (updates.length > 0 || artifactChanges.length > 0) {
-      this.#eventSink?.({ updates, artifactChanges });
+    if (operation === undefined) {
+      this.#notify(notifications);
+      if (updates.length > 0 || artifactChanges.length > 0) {
+        this.#eventSink?.({ updates, artifactChanges });
+      }
+    } else {
+      operation.updates.push(...updates);
+      operation.artifactChanges.push(...artifactChanges);
+      for (const update of updates) {
+        if (update.transition !== undefined) {
+          operation.facts.push(update.transition.facts);
+        }
+      }
     }
 
     return {
@@ -720,6 +802,26 @@ export class RustBackedStore implements MdstreamStore {
     notifyKeyed(this.#artifactListeners, notifications.artifacts);
   }
 
+  #finishDocumentOperation(operation: StoreOperation, succeeded: boolean): void {
+    const batch = Object.freeze({
+      facts: Object.freeze(succeeded ? [...operation.facts] : []),
+    });
+    this.#publishingTransitions = true;
+    try {
+      notifyTransitionListeners(this.#transitionListeners, batch);
+    } finally {
+      this.#publishingTransitions = false;
+    }
+
+    this.#notify(operation.notifications);
+    if (operation.updates.length > 0 || operation.artifactChanges.length > 0) {
+      this.#eventSink?.({
+        updates: operation.updates,
+        artifactChanges: operation.artifactChanges,
+      });
+    }
+  }
+
   #publicResult(output: ConsumedOutput): ReducerResult {
     return {
       updates: output.updates,
@@ -739,6 +841,19 @@ export class RustBackedStore implements MdstreamStore {
       });
     }
   }
+
+  #assertMutationAllowed(): void {
+    if (this.#publishingTransitions) {
+      throw new MdstreamError(
+        "mdstream state cannot be mutated from a transition listener",
+        {
+          status: 1,
+          statusName: "MDSTREAM_INVALID_ARGUMENT",
+          detailCode: "bindings.transition_reentry",
+        },
+      );
+    }
+  }
 }
 
 /** @internal */
@@ -746,6 +861,8 @@ export function createStoreView(store: RustBackedStore): MdstreamStoreView {
   return Object.freeze({
     subscribe: (listener: StoreListener) => store.subscribe(listener),
     getSnapshot: () => store.getSnapshot(),
+    subscribeTransitions: (listener: TransitionListener) =>
+      store.subscribeTransitions(listener),
     getPendingSourceSnapshot: () => store.getPendingSourceSnapshot(),
     subscribePendingSource: (listener: StoreListener) =>
       store.subscribePendingSource(listener),
@@ -765,6 +882,25 @@ export function createStoreView(store: RustBackedStore): MdstreamStoreView {
     metrics: () => store.metrics(),
     processorMetrics: () => store.processorMetrics(),
   });
+}
+
+function createStoreOperation(): StoreOperation {
+  return {
+    notifications: createNotifications(),
+    updates: [],
+    artifactChanges: [],
+    facts: [],
+  };
+}
+
+function createNotifications(): Notifications {
+  return {
+    root: false,
+    pendingSource: false,
+    nodes: new Set(),
+    resources: new Set(),
+    artifacts: new Set(),
+  };
 }
 
 export function artifactSlotKey(slot: ArtifactSlot): string {
@@ -853,6 +989,19 @@ function notifyListeners(listeners: ReadonlySet<StoreListener>): void {
       listener();
     } catch {
       // Subscriber failures cannot roll back an already-applied Rust update.
+    }
+  }
+}
+
+function notifyTransitionListeners(
+  listeners: ReadonlySet<TransitionListener>,
+  batch: TransitionBatchView,
+): void {
+  for (const listener of [...listeners]) {
+    try {
+      listener(batch);
+    } catch {
+      // One host observer cannot prevent later observers from seeing the same batch.
     }
   }
 }

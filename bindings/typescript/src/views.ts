@@ -1,4 +1,4 @@
-import { BindingPayloadKind } from "./wasm.js";
+import { BindingPayloadKind, TRANSITION_SCHEMA_DRAFT } from "./wasm.js";
 
 declare const mdstreamBrand: unique symbol;
 
@@ -18,6 +18,7 @@ export type ResourceVersion = Brand<string, "ResourceVersion">;
 export type StructureVersion = Brand<string, "StructureVersion">;
 export type ProcessorInputVersion = Brand<string, "ProcessorInputVersion">;
 export type DecimalCounter = Brand<string, "DecimalCounter">;
+export type ContinuityGeneration = Brand<string, "ContinuityGeneration">;
 export type CanonicalChangeBytes = Brand<Uint8Array, "CanonicalChangeBytes">;
 export type CanonicalSnapshotBytes = Brand<Uint8Array, "CanonicalSnapshotBytes">;
 
@@ -85,6 +86,88 @@ export interface DocumentSummaryView {
   readonly roots?: ChildListView;
 }
 
+export interface TransitionNodeKeyView {
+  readonly continuityGeneration: ContinuityGeneration;
+  readonly epoch: Epoch;
+  readonly nodeId: NodeId;
+}
+
+export interface TransitionResourceKeyView {
+  readonly continuityGeneration: ContinuityGeneration;
+  readonly epoch: Epoch;
+  readonly resourceId: ResourceId;
+}
+
+export type TransitionChildListOwnerView =
+  | { readonly kind: "document" }
+  | { readonly kind: "node"; readonly key: TransitionNodeKeyView };
+
+export interface DocumentStateStampView {
+  readonly continuityGeneration: ContinuityGeneration;
+  readonly coordinate: CoordinateView;
+  readonly lifecycle: "open" | "finalized";
+  readonly projectionCursor: SourceCursor;
+  readonly rootsVersion: StructureVersion;
+}
+
+export interface NodeStateStampView {
+  readonly version: NodeVersion;
+  readonly stability: "provisional" | "stable";
+  readonly parent: TransitionChildListOwnerView | null;
+  readonly childrenVersion: StructureVersion;
+}
+
+export type TextTransitionView =
+  | {
+      readonly kind: "projection_append";
+      readonly range: SourceRangeView;
+      readonly text: string;
+    }
+  | { readonly kind: "replacement" };
+
+export interface NodeTransitionView {
+  readonly key: TransitionNodeKeyView;
+  readonly before: NodeStateStampView | null;
+  readonly after: NodeStateStampView | null;
+  readonly text: TextTransitionView | null;
+}
+
+export interface StructureTransitionView {
+  readonly owner: TransitionChildListOwnerView;
+  readonly beforeVersion: StructureVersion;
+  readonly afterVersion: StructureVersion;
+  readonly start: number;
+  readonly removed: readonly TransitionNodeKeyView[];
+  readonly inserted: readonly TransitionNodeKeyView[];
+}
+
+export interface ResourceTransitionView {
+  readonly key: TransitionResourceKeyView;
+  readonly beforeVersion: ResourceVersion | null;
+  readonly afterVersion: ResourceVersion | null;
+  readonly affectedNodes: readonly TransitionNodeKeyView[];
+}
+
+export type TransitionFactsView =
+  | {
+      readonly scope: "continuous";
+      readonly before: DocumentStateStampView | null;
+      readonly after: DocumentStateStampView;
+      readonly nodes: readonly NodeTransitionView[];
+      readonly structures: readonly StructureTransitionView[];
+      readonly resources: readonly ResourceTransitionView[];
+    }
+  | {
+      readonly scope: "full_replace";
+      readonly before: DocumentStateStampView | null;
+      readonly after: DocumentStateStampView;
+    };
+
+export interface TransitionEnvelopeView {
+  readonly schema: typeof TRANSITION_SCHEMA_DRAFT;
+  readonly facts: TransitionFactsView;
+}
+
 export interface ReducerUpdateView {
   readonly schema: string;
   readonly kind: "reducer_update";
@@ -92,6 +175,7 @@ export interface ReducerUpdateView {
   readonly status: ReducerStatusView;
   readonly impact: ChangeImpactView;
   readonly document: DocumentSummaryView | null;
+  readonly transition?: TransitionEnvelopeView;
 }
 
 export interface SourceRangeView {
@@ -431,6 +515,7 @@ export class MdstreamError extends Error {
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const decimalPattern = /^(0|[1-9][0-9]*)$/;
+const opaqueIdentifierPattern = /^[A-Za-z0-9._:-]{1,128}$/;
 const maxU64 = "18446744073709551615";
 const maxU128 = "340282366920938463463374607431768211455";
 
@@ -528,6 +613,23 @@ function decodeReducerUpdate(
   value: Record<string, unknown>,
   schema: string,
 ): ReducerUpdateView {
+  const hasTransition = Object.hasOwn(value, "transition");
+  exactKeys(
+    value,
+    [
+      "schema",
+      "kind",
+      "outcome",
+      "status",
+      "impact",
+      "document",
+      ...(hasTransition ? ["transition"] : []),
+    ],
+    "reducer update",
+  );
+  const transition = hasTransition
+    ? decodeTransitionEnvelope(requiredRecord(value.transition, "transition"))
+    : undefined;
   return {
     schema,
     kind: "reducer_update",
@@ -538,7 +640,312 @@ function decodeReducerUpdate(
       value.document === null
         ? null
         : decodeDocument(requiredRecord(value.document, "document")),
+    ...(transition === undefined ? {} : { transition }),
   };
+}
+
+function decodeTransitionEnvelope(
+  value: Record<string, unknown>,
+): TransitionEnvelopeView {
+  exactKeys(value, ["schema", "facts"], "transition");
+  requiredLiteral(value.schema, TRANSITION_SCHEMA_DRAFT, "transition.schema");
+  return {
+    schema: TRANSITION_SCHEMA_DRAFT,
+    facts: decodeTransitionFacts(requiredRecord(value.facts, "transition.facts")),
+  };
+}
+
+function decodeTransitionFacts(value: Record<string, unknown>): TransitionFactsView {
+  const scope = requiredString(value.scope, "transition.facts.scope");
+  const before = requiredNullableRecord(value, "before", "transition.facts.before");
+  const after = decodeDocumentStateStamp(
+    requiredRecord(value.after, "transition.facts.after"),
+  );
+  switch (scope) {
+    case "continuous":
+      exactKeys(
+        value,
+        ["scope", "before", "after", "nodes", "structures", "resources"],
+        "continuous transition facts",
+      );
+      return {
+        scope,
+        before: before === null ? null : decodeDocumentStateStamp(before),
+        after,
+        nodes: requiredArray(value.nodes, "transition.facts.nodes").map(
+          (node) => decodeNodeTransition(requiredRecord(node, "transition node")),
+        ),
+        structures: requiredArray(
+          value.structures,
+          "transition.facts.structures",
+        ).map((structure) =>
+          decodeStructureTransition(requiredRecord(structure, "structure transition"))
+        ),
+        resources: requiredArray(
+          value.resources,
+          "transition.facts.resources",
+        ).map((resource) =>
+          decodeResourceTransition(requiredRecord(resource, "resource transition"))
+        ),
+      };
+    case "full_replace":
+      exactKeys(
+        value,
+        ["scope", "before", "after"],
+        "full-replace transition facts",
+      );
+      return {
+        scope,
+        before: before === null ? null : decodeDocumentStateStamp(before),
+        after,
+      };
+    default:
+      throw invalidPayload(`unknown transition scope ${scope}`);
+  }
+}
+
+function decodeDocumentStateStamp(
+  value: Record<string, unknown>,
+): DocumentStateStampView {
+  exactKeys(
+    value,
+    [
+      "continuity_generation",
+      "coordinate",
+      "lifecycle",
+      "projection_cursor",
+      "roots_version",
+    ],
+    "transition document stamp",
+  );
+  const lifecycle = requiredString(
+    value.lifecycle,
+    "transition document stamp lifecycle",
+  );
+  if (lifecycle !== "open" && lifecycle !== "finalized") {
+    throw invalidPayload(`unknown transition document lifecycle ${lifecycle}`);
+  }
+  const coordinate = requiredRecord(
+    value.coordinate,
+    "transition document stamp coordinate",
+  );
+  exactKeys(
+    coordinate,
+    ["epoch", "sequence", "change_id", "source_cursor"],
+    "transition document stamp coordinate",
+  );
+  return {
+    continuityGeneration: decimalU64(
+      requiredString(value.continuity_generation, "continuity_generation"),
+      "continuity_generation",
+    ) as ContinuityGeneration,
+    coordinate: decodeCoordinate(coordinate),
+    lifecycle,
+    projectionCursor: decimalU64(
+      requiredString(value.projection_cursor, "projection_cursor"),
+      "projection_cursor",
+    ) as SourceCursor,
+    rootsVersion: opaqueIdentifier(
+      value.roots_version,
+      "roots_version",
+    ) as StructureVersion,
+  };
+}
+
+function decodeTransitionNodeKey(
+  value: Record<string, unknown>,
+): TransitionNodeKeyView {
+  exactKeys(
+    value,
+    ["continuity_generation", "epoch", "node_id"],
+    "transition node key",
+  );
+  return {
+    continuityGeneration: decimalU64(
+      requiredString(value.continuity_generation, "continuity_generation"),
+      "continuity_generation",
+    ) as ContinuityGeneration,
+    epoch: decimalU64(
+      requiredString(value.epoch, "transition node epoch"),
+      "transition node epoch",
+    ) as Epoch,
+    nodeId: decimalU128(
+      requiredString(value.node_id, "transition node id"),
+      "transition node id",
+    ) as NodeId,
+  };
+}
+
+function decodeTransitionResourceKey(
+  value: Record<string, unknown>,
+): TransitionResourceKeyView {
+  exactKeys(
+    value,
+    ["continuity_generation", "epoch", "resource_id"],
+    "transition resource key",
+  );
+  return {
+    continuityGeneration: decimalU64(
+      requiredString(value.continuity_generation, "continuity_generation"),
+      "continuity_generation",
+    ) as ContinuityGeneration,
+    epoch: decimalU64(
+      requiredString(value.epoch, "transition resource epoch"),
+      "transition resource epoch",
+    ) as Epoch,
+    resourceId: decimalU128(
+      requiredString(value.resource_id, "transition resource id"),
+      "transition resource id",
+    ) as ResourceId,
+  };
+}
+
+function decodeTransitionOwner(
+  value: Record<string, unknown>,
+): TransitionChildListOwnerView {
+  const kind = requiredString(value.kind, "transition owner kind");
+  switch (kind) {
+    case "document":
+      exactKeys(value, ["kind"], "document transition owner");
+      return { kind };
+    case "node":
+      exactKeys(value, ["kind", "key"], "node transition owner");
+      return {
+        kind,
+        key: decodeTransitionNodeKey(
+          requiredRecord(value.key, "transition owner node key"),
+        ),
+      };
+    default:
+      throw invalidPayload(`unknown transition owner ${kind}`);
+  }
+}
+
+function decodeNodeStateStamp(value: Record<string, unknown>): NodeStateStampView {
+  exactKeys(
+    value,
+    ["version", "stability", "parent", "children_version"],
+    "transition node stamp",
+  );
+  const stability = requiredString(value.stability, "transition node stability");
+  if (stability !== "provisional" && stability !== "stable") {
+    throw invalidPayload(`unknown transition node stability ${stability}`);
+  }
+  const parent = requiredNullableRecord(value, "parent", "transition node parent");
+  return {
+    version: opaqueIdentifier(value.version, "transition node version") as NodeVersion,
+    stability,
+    parent: parent === null ? null : decodeTransitionOwner(parent),
+    childrenVersion: opaqueIdentifier(
+      value.children_version,
+      "transition children version",
+    ) as StructureVersion,
+  };
+}
+
+function decodeTextTransition(value: Record<string, unknown>): TextTransitionView {
+  const kind = requiredString(value.kind, "text transition kind");
+  switch (kind) {
+    case "projection_append": {
+      exactKeys(value, ["kind", "range", "text"], "projection-append transition");
+      const range = requiredRecord(value.range, "projection-append range");
+      exactKeys(range, ["start", "end"], "projection-append range");
+      return {
+        kind,
+        range: decodeRange(range),
+        text: requiredString(value.text, "projection-append text"),
+      };
+    }
+    case "replacement":
+      exactKeys(value, ["kind"], "replacement transition");
+      return { kind };
+    default:
+      throw invalidPayload(`unknown text transition ${kind}`);
+  }
+}
+
+function decodeNodeTransition(value: Record<string, unknown>): NodeTransitionView {
+  exactKeys(value, ["key", "before", "after", "text"], "node transition");
+  const before = requiredNullableRecord(value, "before", "node transition before");
+  const after = requiredNullableRecord(value, "after", "node transition after");
+  const text = requiredNullableRecord(value, "text", "node text transition");
+  return {
+    key: decodeTransitionNodeKey(requiredRecord(value.key, "node transition key")),
+    before: before === null ? null : decodeNodeStateStamp(before),
+    after: after === null ? null : decodeNodeStateStamp(after),
+    text: text === null ? null : decodeTextTransition(text),
+  };
+}
+
+function decodeStructureTransition(
+  value: Record<string, unknown>,
+): StructureTransitionView {
+  exactKeys(
+    value,
+    [
+      "owner",
+      "before_version",
+      "after_version",
+      "start",
+      "removed",
+      "inserted",
+    ],
+    "structure transition",
+  );
+  return {
+    owner: decodeTransitionOwner(
+      requiredRecord(value.owner, "structure transition owner"),
+    ),
+    beforeVersion: opaqueIdentifier(
+      value.before_version,
+      "structure before version",
+    ) as StructureVersion,
+    afterVersion: opaqueIdentifier(
+      value.after_version,
+      "structure after version",
+    ) as StructureVersion,
+    start: requiredInteger(value.start, "structure transition start", 0xffff_ffff),
+    removed: decodeTransitionNodeKeyArray(value.removed, "removed transition nodes"),
+    inserted: decodeTransitionNodeKeyArray(value.inserted, "inserted transition nodes"),
+  };
+}
+
+function decodeResourceTransition(
+  value: Record<string, unknown>,
+): ResourceTransitionView {
+  exactKeys(
+    value,
+    ["key", "before_version", "after_version", "affected_nodes"],
+    "resource transition",
+  );
+  return {
+    key: decodeTransitionResourceKey(
+      requiredRecord(value.key, "resource transition key"),
+    ),
+    beforeVersion: requiredNullableVersion(
+      value,
+      "before_version",
+      "resource before version",
+    ),
+    afterVersion: requiredNullableVersion(
+      value,
+      "after_version",
+      "resource after version",
+    ),
+    affectedNodes: decodeTransitionNodeKeyArray(
+      value.affected_nodes,
+      "resource affected nodes",
+    ),
+  };
+}
+
+function decodeTransitionNodeKeyArray(
+  value: unknown,
+  field: string,
+): readonly TransitionNodeKeyView[] {
+  return requiredArray(value, field).map((entry) =>
+    decodeTransitionNodeKey(requiredRecord(entry, field))
+  );
 }
 
 function decodeOutcome(value: Record<string, unknown>): ApplyOutcomeView {
@@ -623,7 +1030,7 @@ function decodeCoordinate(value: Record<string, unknown>): CoordinateView {
   return {
     epoch: decimalU64(requiredString(value.epoch, "coordinate.epoch"), "coordinate.epoch") as Epoch,
     sequence: decimalU64(requiredString(value.sequence, "coordinate.sequence"), "coordinate.sequence") as Sequence,
-    changeId: requiredString(value.change_id, "coordinate.change_id") as ChangeId,
+    changeId: opaqueIdentifier(value.change_id, "coordinate.change_id") as ChangeId,
     sourceCursor: decimalU64(requiredString(value.source_cursor, "coordinate.source_cursor"), "coordinate.source_cursor") as SourceCursor,
   };
 }
@@ -644,7 +1051,7 @@ function decodeNode(value: Record<string, unknown>): ContentNodeView {
   }
   return {
     id: decimalU128(requiredString(value.id, "node.id"), "node.id") as NodeId,
-    version: requiredString(value.version, "node.version") as NodeVersion,
+    version: opaqueIdentifier(value.version, "node.version") as NodeVersion,
     stability,
     source: decodeRange(requiredRecord(value.source, "node.source")),
     body: decodeRange(requiredRecord(value.body, "node.body")),
@@ -831,7 +1238,10 @@ function decodeResourceRef(value: Record<string, unknown>): ResourceRefView {
   exactKeys(value, ["id", "version"], "resource reference");
   return {
     id: decimalU128(requiredString(value.id, "resource reference id"), "resource reference id") as ResourceId,
-    version: requiredString(value.version, "resource reference version") as ResourceVersion,
+    version: opaqueIdentifier(
+      value.version,
+      "resource reference version",
+    ) as ResourceVersion,
   };
 }
 
@@ -844,7 +1254,7 @@ function decodeRange(value: Record<string, unknown>): SourceRangeView {
 
 function decodeChildList(value: Record<string, unknown>): ChildListView {
   return {
-    version: requiredString(value.version, "child_list.version") as StructureVersion,
+    version: opaqueIdentifier(value.version, "child_list.version") as StructureVersion,
     children: decimalU128Array(value.children, "child_list.children") as readonly NodeId[],
   };
 }
@@ -872,7 +1282,7 @@ function decodePendingSourceView(
 function decodeResource(value: Record<string, unknown>): SemanticResourceView {
   return {
     id: decimalU128(requiredString(value.id, "resource.id"), "resource.id") as ResourceId,
-    version: requiredString(value.version, "resource.version") as ResourceVersion,
+    version: opaqueIdentifier(value.version, "resource.version") as ResourceVersion,
     content: decodeSemanticResourceKind(
       requiredRecord(value.content, "resource.content"),
     ),
@@ -961,8 +1371,14 @@ function decodeProcessorKey(value: Record<string, unknown>): ProcessorKeyView {
     epoch: decimalU64(requiredString(value.epoch, "processor key epoch"), "processor key epoch") as Epoch,
     nodeId: decimalU128(requiredString(value.node_id, "processor key node_id"), "processor key node_id") as NodeId,
     processorId: requiredString(value.processor_id, "processor key processor_id"),
-    nodeVersion: requiredString(value.node_version, "processor key node_version") as NodeVersion,
-    inputVersion: requiredString(value.input_version, "processor key input_version") as ProcessorInputVersion,
+    nodeVersion: opaqueIdentifier(
+      value.node_version,
+      "processor key node_version",
+    ) as NodeVersion,
+    inputVersion: opaqueIdentifier(
+      value.input_version,
+      "processor key input_version",
+    ) as ProcessorInputVersion,
     processorVersion: requiredString(value.processor_version, "processor key processor_version"),
     configurationVersion: requiredString(value.configuration_version, "processor key configuration_version"),
     generation: decimalU64(requiredString(value.generation, "processor key generation"), "processor key generation") as RequestGeneration,
@@ -1162,6 +1578,26 @@ function nullableResourceRef(
     : decodeResourceRef(requiredRecord(value[key], field));
 }
 
+function requiredNullableRecord(
+  value: Record<string, unknown>,
+  key: string,
+  field: string,
+): Record<string, unknown> | null {
+  requireOwnKey(value, key, field);
+  return value[key] === null ? null : requiredRecord(value[key], field);
+}
+
+function requiredNullableVersion(
+  value: Record<string, unknown>,
+  key: string,
+  field: string,
+): ResourceVersion | null {
+  requireOwnKey(value, key, field);
+  return value[key] === null
+    ? null
+    : opaqueIdentifier(value[key], field) as ResourceVersion;
+}
+
 function requiredNullableString(
   value: Record<string, unknown>,
   key: string,
@@ -1313,6 +1749,16 @@ function requiredString(value: unknown, field: string): string {
     throw invalidPayload(`${field} must be a string`);
   }
   return value;
+}
+
+function opaqueIdentifier(value: unknown, field: string): string {
+  const identifier = requiredString(value, field);
+  if (!opaqueIdentifierPattern.test(identifier)) {
+    throw invalidPayload(
+      `${field} must be a 1-128 byte ASCII opaque identifier`,
+    );
+  }
+  return identifier;
 }
 
 function optionalString(value: unknown): string | undefined {

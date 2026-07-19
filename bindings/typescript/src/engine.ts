@@ -24,6 +24,7 @@ import {
 } from "./views.js";
 import {
   BindingPayloadKind,
+  TRANSITION_SCHEMA_DRAFT,
   defaultWasmLoader,
   drainOutput,
   loadWasmBindings,
@@ -80,7 +81,7 @@ export interface WireLimitOptions {
   readonly maxCommandBytes?: DecimalInput;
   readonly maxEncodedChangeBytes?: DecimalInput;
   readonly maxEncodedSnapshotBytes?: DecimalInput;
-  readonly maxImpactBytes?: DecimalInput;
+  readonly maxReducerUpdateBytes?: DecimalInput;
   readonly maxProcessorPayloadBytes?: DecimalInput;
   readonly maxArtifactEventBytes?: DecimalInput;
   readonly maxViewBytes?: DecimalInput;
@@ -94,6 +95,7 @@ export interface CustomBlockOptions {
 }
 
 export interface MdstreamSessionOptions {
+  readonly captureTransitions?: boolean;
   readonly protocol?: ProtocolLimitOptions;
   readonly engine?: EngineLimitOptions;
   readonly processor?: ProcessorLimitOptions;
@@ -139,6 +141,8 @@ export class BatchOperationError extends Error {
 }
 
 const emptyEngineResults = Object.freeze([]) as readonly EngineResult[];
+type DocumentOperationRunner = <Result>(operation: () => Result) => Result;
+const documentOperationRunners = new WeakMap<MdstreamEngine, DocumentOperationRunner>();
 
 const runtimes = new WeakMap<WasmModuleLoader, Promise<MdstreamRuntime>>();
 
@@ -163,6 +167,7 @@ export class MdstreamRuntime {
   readonly packageVersion: string;
   readonly bindingSchema: string;
   readonly bindingOptionsSchema: string;
+  readonly transitionSchema: string;
 
   private constructor(wasm: WasmBindings) {
     this.#wasm = wasm;
@@ -170,6 +175,7 @@ export class MdstreamRuntime {
     this.packageVersion = wasm.packageVersion();
     this.bindingSchema = wasm.bindingSchema();
     this.bindingOptionsSchema = wasm.bindingOptionsSchema();
+    this.transitionSchema = TRANSITION_SCHEMA_DRAFT;
   }
 
   /** @internal */
@@ -178,11 +184,12 @@ export class MdstreamRuntime {
   }
 
   createStore(options?: MdstreamSessionOptions): MdstreamStore {
-    const optionsJson = encodeSessionOptions(options, this.bindingOptionsSchema);
+    const prepared = prepareSessionOptions(options, this.bindingOptionsSchema);
     try {
       return new RustBackedStore(
-        new this.#wasm.MdstreamReducerSession(optionsJson),
+        new this.#wasm.MdstreamReducerSession(prepared.encodedJson),
         this.bindingSchema,
+        prepared.captureTransitions,
       );
     } catch (error) {
       throw MdstreamError.from(error);
@@ -190,22 +197,23 @@ export class MdstreamRuntime {
   }
 
   createEngine(options?: MdstreamSessionOptions): MdstreamEngine {
-    const optionsJson = encodeSessionOptions(options, this.bindingOptionsSchema);
+    const prepared = prepareSessionOptions(options, this.bindingOptionsSchema);
     let engine: WasmEngineSession;
     try {
-      engine = new this.#wasm.MdstreamEngineSession(optionsJson);
+      engine = new this.#wasm.MdstreamEngineSession(prepared.encodedJson);
     } catch (error) {
       throw MdstreamError.from(error);
     }
     try {
       const store = new RustBackedStore(
-        new this.#wasm.MdstreamReducerSession(optionsJson),
+        new this.#wasm.MdstreamReducerSession(prepared.encodedJson),
         this.bindingSchema,
+        prepared.captureTransitions,
       );
       return MdstreamEngine.fromSessions(
         engine,
         store,
-        processorSchedulerLimits(options),
+        prepared.schedulerLimits,
       );
     } catch (error) {
       engine.free();
@@ -230,6 +238,10 @@ export class MdstreamEngine {
     this.#rustStore = store;
     this.store = createStoreView(store);
     this.#scheduler = new ProcessorScheduler(store, schedulerLimits);
+    documentOperationRunners.set(
+      this,
+      (operation) => this.#rustStore.runDocumentOperation(operation),
+    );
     store.setEventSink((events) => this.#scheduler.handleStoreEvents(events));
   }
 
@@ -243,19 +255,25 @@ export class MdstreamEngine {
   }
 
   append(chunk: string): EngineResult {
-    this.#assertOpen();
-    utf8ByteLength(chunk);
-    return this.#consume(() => this.#engine.append(chunk));
+    return this.#rustStore.runDocumentOperation(() => {
+      this.#assertOpen();
+      utf8ByteLength(chunk);
+      return this.#consume(() => this.#engine.append(chunk));
+    });
   }
 
   finish(): EngineResult {
-    this.#assertOpen();
-    return this.#consume(() => this.#engine.finish());
+    return this.#rustStore.runDocumentOperation(() => {
+      this.#assertOpen();
+      return this.#consume(() => this.#engine.finish());
+    });
   }
 
   reset(): EngineResult {
-    this.#assertOpen();
-    return this.#consume(() => this.#engine.reset());
+    return this.#rustStore.runDocumentOperation(() => {
+      this.#assertOpen();
+      return this.#consume(() => this.#engine.reset());
+    });
   }
 
   createRecoverySnapshot(): CanonicalSnapshotBytes | undefined {
@@ -282,7 +300,9 @@ export class MdstreamEngine {
   }
 
   registerProcessor(processor: ContentProcessor): ProcessorRegistration {
-    return this.#scheduler.register(processor);
+    return this.#rustStore.runDocumentOperation(() =>
+      this.#scheduler.register(processor)
+    );
   }
 
   subscribeProcessorErrors(listener: ProcessorErrorListener): () => void {
@@ -307,6 +327,7 @@ export class MdstreamEngine {
     if (this.#closed) {
       return;
     }
+    this.#rustStore.assertMutationAllowed();
     this.#closed = true;
     this.#scheduler.close();
     this.#rustStore.setEventSink(undefined);
@@ -360,6 +381,7 @@ export class MdstreamEngine {
 export class LosslessInputBatcher {
   readonly #engine: MdstreamEngine;
   readonly #maxBatchBytes: number;
+  readonly #runOperation: DocumentOperationRunner;
   readonly #chunks: string[] = [];
   #pendingBytes = 0;
   #inputChunks = 0n;
@@ -375,9 +397,18 @@ export class LosslessInputBatcher {
     }
     this.#engine = engine;
     this.#maxBatchBytes = maxBatchBytes;
+    const runOperation = documentOperationRunners.get(engine);
+    if (runOperation === undefined) {
+      throw new TypeError("batchers require an mdstream-created engine");
+    }
+    this.#runOperation = runOperation;
   }
 
   push(chunk: string): readonly EngineResult[] {
+    return this.#runOperation(() => this.#push(chunk));
+  }
+
+  #push(chunk: string): readonly EngineResult[] {
     let results: EngineResult[] | undefined;
     const bytes = utf8ByteLength(chunk);
     this.#inputChunks += 1n;
@@ -411,6 +442,10 @@ export class LosslessInputBatcher {
   }
 
   flush(): EngineResult | undefined {
+    return this.#runOperation(() => this.#flush());
+  }
+
+  #flush(): EngineResult | undefined {
     if (this.#chunks.length === 0) {
       return undefined;
     }
@@ -431,31 +466,37 @@ export class LosslessInputBatcher {
   }
 
   finish(): readonly EngineResult[] {
-    const results = this.#flushResults();
-    const result = this.#afterCommitted(results, () => this.#engine.finish());
-    this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
-    results.push(result);
-    return Object.freeze(results);
+    return this.#runOperation(() => {
+      const results = this.#flushResults();
+      const result = this.#afterCommitted(results, () => this.#engine.finish());
+      this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
+      results.push(result);
+      return Object.freeze(results);
+    });
   }
 
   reset(): readonly EngineResult[] {
-    const results = this.#flushResults();
-    const result = this.#afterCommitted(results, () => this.#engine.reset());
-    this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
-    results.push(result);
-    return Object.freeze(results);
+    return this.#runOperation(() => {
+      const results = this.#flushResults();
+      const result = this.#afterCommitted(results, () => this.#engine.reset());
+      this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
+      results.push(result);
+      return Object.freeze(results);
+    });
   }
 
   createRecoverySnapshot(): BatchedRecoverySnapshot {
-    const flushed = this.#flushResults();
-    const snapshot = this.#afterCommitted(
-      flushed,
-      () => this.#engine.createRecoverySnapshot(),
-    );
-    if (snapshot !== undefined) {
-      this.#outputPayloadBytes += BigInt(snapshot.byteLength);
-    }
-    return Object.freeze({ flushed: Object.freeze(flushed), snapshot });
+    return this.#runOperation(() => {
+      const flushed = this.#flushResults();
+      const snapshot = this.#afterCommitted(
+        flushed,
+        () => this.#engine.createRecoverySnapshot(),
+      );
+      if (snapshot !== undefined) {
+        this.#outputPayloadBytes += BigInt(snapshot.byteLength);
+      }
+      return Object.freeze({ flushed: Object.freeze(flushed), snapshot });
+    });
   }
 
   metrics(): BatchMetrics {
@@ -486,7 +527,7 @@ export class LosslessInputBatcher {
 
   #flushResults(): EngineResult[] {
     const results: EngineResult[] = [];
-    const flushed = this.flush();
+    const flushed = this.#flush();
     if (flushed !== undefined) {
       results.push(flushed);
     }
@@ -543,41 +584,49 @@ async function createRuntime(loader: WasmModuleLoader): Promise<MdstreamRuntime>
   }
 }
 
-function encodeSessionOptions(
-  options: MdstreamSessionOptions | undefined,
-  schema: string,
-): string | undefined {
-  if (options === undefined) {
-    return undefined;
-  }
-  const normalized = normalizeOptions(options) as Record<string, unknown>;
-  return JSON.stringify({
-    schema,
-    ...normalized,
-  });
+interface PreparedSessionOptions {
+  readonly encodedJson: string | undefined;
+  readonly captureTransitions: boolean;
+  readonly schedulerLimits: ProcessorSchedulerLimits;
 }
 
-function processorSchedulerLimits(
+function prepareSessionOptions(
   options: MdstreamSessionOptions | undefined,
-): ProcessorSchedulerLimits {
+  schema: string,
+): PreparedSessionOptions {
+  if (options === undefined) {
+    return {
+      encodedJson: undefined,
+      captureTransitions: false,
+      schedulerLimits: { maxInFlightJobs: 32, maxCandidates: 256 },
+    };
+  }
+  const normalized = normalizeOptions(options) as Record<string, unknown>;
+  const processor = recordOrEmpty(normalized.processor);
   return {
-    maxInFlightJobs: schedulingLimit(
-      options?.processor?.maxInFlightJobs,
-      32,
-    ),
-    maxCandidates: schedulingLimit(options?.processor?.maxSlots, 256),
+    encodedJson: JSON.stringify({ schema, ...normalized }),
+    captureTransitions: normalized.capture_transitions === true,
+    schedulerLimits: {
+      maxInFlightJobs: schedulingLimit(processor.max_in_flight_jobs, 32),
+      maxCandidates: schedulingLimit(processor.max_slots, 256),
+    },
   };
 }
 
-function schedulingLimit(value: DecimalInput | undefined, fallback: number): number {
-  const parsed = value === undefined
-    ? BigInt(fallback)
-    : typeof value === "bigint"
-      ? value
-      : BigInt(value);
+function schedulingLimit(value: unknown, fallback: number): number {
+  if (value !== undefined && typeof value !== "string") {
+    throw new TypeError("mdstream processor limits must be decimal strings");
+  }
+  const parsed = value === undefined ? BigInt(fallback) : BigInt(value);
   return parsed > BigInt(Number.MAX_SAFE_INTEGER)
     ? Number.MAX_SAFE_INTEGER
     : Number(parsed);
+}
+
+function recordOrEmpty(value: unknown): Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : {};
 }
 
 function normalizeOptions(value: unknown): unknown {

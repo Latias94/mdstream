@@ -12,7 +12,7 @@ describe("framework-neutral package boundaries", () => {
       Record<
         "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies",
         Readonly<Record<string, string>> | undefined
-      >
+      > & { readonly files?: readonly string[] }
     >;
     expect(packageJson.dependencies ?? {}).toEqual({});
 
@@ -21,6 +21,11 @@ describe("framework-neutral package boundaries", () => {
       "react-dom",
       "@types/react",
       "@types/react-dom",
+      "@react-spring/web",
+      "animejs",
+      "framer-motion",
+      "gsap",
+      "motion",
       "streamdown",
       "incremark",
       "merman",
@@ -47,6 +52,10 @@ describe("framework-neutral package boundaries", () => {
     );
     expect(workspace).not.toContain("bindings/react");
     expect(existsSync(resolve(process.cwd(), "../react"))).toBe(false);
+
+    expect(packageJson).toMatchObject({
+      files: expect.not.arrayContaining(["examples"]),
+    });
   });
 
   it("keeps JSON decoding and canonical reduction out of adapters", () => {
@@ -87,6 +96,13 @@ describe("framework-neutral package boundaries", () => {
       ),
     );
     expect(reducerConstructs).toEqual([]);
+
+    const presentationImports = sources.flatMap(({ file, source }) =>
+      /(?:^|\n)\s*import\s+[^;]*["'][^"']+\.(?:css|scss|sass|less)["']/u.test(source)
+        ? [file]
+        : [],
+    );
+    expect(presentationImports).toEqual([]);
   });
 });
 
