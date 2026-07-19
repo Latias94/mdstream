@@ -1,13 +1,32 @@
 use super::reference;
-use mdstream::{CustomBlockSpec, StreamEngine};
+use mdstream::{CustomBlockSpec, EngineOutput, StreamEngine};
 use mdstream_conformance::{ChunkSchedule, NormalizedSnapshot};
-use mdstream_protocol::{ContentKind, LinkStyle, ProjectionOp, ProtocolLimits};
+use mdstream_protocol::{
+    ApplyOutcome, ContentKind, LinkStyle, ProjectionOp, ProtocolLimits, Reducer, TransitionReducer,
+};
 use std::collections::BTreeSet;
+
+fn apply_with_transition_mirror(
+    reducer: &mut Reducer,
+    transition_reducer: &mut TransitionReducer,
+    output: EngineOutput,
+) {
+    for change in output.into_changes() {
+        let outcome = reducer.apply(change.clone()).unwrap();
+        assert!(matches!(outcome, ApplyOutcome::Applied { .. }));
+        let observed = transition_reducer.apply(change).unwrap();
+        assert_eq!(observed.outcome, outcome);
+        assert!(observed.facts.is_some());
+    }
+}
 
 #[test]
 fn late_reference_definition_corrects_only_the_stable_dependent() {
     let mut engine = StreamEngine::new();
-    engine.append("[shared]\n\nunrelated\n\n").unwrap();
+    let mut reducer = Reducer::new();
+    let mut transition_reducer = TransitionReducer::new();
+    let initial = engine.append("[shared]\n\nunrelated\n\n").unwrap();
+    apply_with_transition_mirror(&mut reducer, &mut transition_reducer, initial);
     let before = engine.snapshot().unwrap();
     let (reference_id, before_version, before_target) = reference(&before, 0);
     assert_eq!(before_target, None);
@@ -32,6 +51,7 @@ fn late_reference_definition_corrects_only_the_stable_dependent() {
         })
         .collect::<Vec<_>>();
     assert_eq!(replacements, vec![reference_id]);
+    apply_with_transition_mirror(&mut reducer, &mut transition_reducer, output);
 
     let after = engine.snapshot().unwrap();
     let (after_id, after_version, after_target) = reference(&after, 0);
@@ -44,6 +64,10 @@ fn late_reference_definition_corrects_only_the_stable_dependent() {
         .find(|node| node.id == unrelated_id)
         .expect("unrelated node must survive");
     assert_eq!(unrelated.version, unrelated_version);
+    assert_eq!(
+        transition_reducer.document().unwrap().snapshot(),
+        reducer.document().unwrap().snapshot()
+    );
 }
 
 #[test]

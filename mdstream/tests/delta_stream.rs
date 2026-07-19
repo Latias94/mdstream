@@ -2,16 +2,23 @@ use mdstream::{EngineOutput, StreamEngine};
 use mdstream_conformance::{
     ChunkSchedule, NormalizedSnapshot, ProtocolTrace, TraceInputEvent, assert_trace_laws,
 };
-use mdstream_protocol::{ApplyOutcome, ChangeSet, Reducer};
+use mdstream_protocol::{ApplyOutcome, ChangeSet, Reducer, TransitionReducer};
 
-fn apply_output(reducer: &mut Reducer, output: EngineOutput) -> usize {
+fn apply_output(
+    reducer: &mut Reducer,
+    transition_reducer: &mut TransitionReducer,
+    output: EngineOutput,
+) -> usize {
     output
         .into_changes()
         .into_iter()
         .map(|change| {
             let source_bytes = change.source().suffix.len();
-            let outcome = reducer.apply(change).unwrap();
+            let outcome = reducer.apply(change.clone()).unwrap();
             assert!(matches!(outcome, ApplyOutcome::Applied { .. }));
+            let observed = transition_reducer.apply(change).unwrap();
+            assert_eq!(observed.outcome, outcome);
+            assert!(observed.facts.is_some());
             source_bytes
         })
         .sum()
@@ -20,11 +27,27 @@ fn apply_output(reducer: &mut Reducer, output: EngineOutput) -> usize {
 fn replay(source: &str, schedule: ChunkSchedule) -> NormalizedSnapshot {
     let mut engine = StreamEngine::new();
     let mut reducer = Reducer::new();
+    let mut transition_reducer = TransitionReducer::new();
     for chunk in schedule.slices(source).unwrap() {
-        apply_output(&mut reducer, engine.append(chunk).unwrap());
+        apply_output(
+            &mut reducer,
+            &mut transition_reducer,
+            engine.append(chunk).unwrap(),
+        );
     }
-    apply_output(&mut reducer, engine.finish().unwrap());
-    NormalizedSnapshot::from(reducer.document().unwrap().snapshot())
+    apply_output(
+        &mut reducer,
+        &mut transition_reducer,
+        engine.finish().unwrap(),
+    );
+    let snapshot = reducer.document().unwrap().snapshot();
+    assert_eq!(
+        Some(snapshot.clone()),
+        transition_reducer
+            .document()
+            .map(|document| document.snapshot())
+    );
+    NormalizedSnapshot::from(snapshot)
 }
 
 #[test]
@@ -51,20 +74,30 @@ fn one_byte_appends_emit_only_linear_normalized_source_suffixes() {
     let source = "x".repeat(4096);
     let mut engine = StreamEngine::new();
     let mut reducer = Reducer::new();
+    let mut transition_reducer = TransitionReducer::new();
     let mut emitted_source_bytes = 0usize;
 
     for byte in source.as_bytes() {
         emitted_source_bytes += apply_output(
             &mut reducer,
+            &mut transition_reducer,
             engine
                 .append(std::str::from_utf8(std::slice::from_ref(byte)).unwrap())
                 .unwrap(),
         );
     }
-    emitted_source_bytes += apply_output(&mut reducer, engine.finish().unwrap());
+    emitted_source_bytes += apply_output(
+        &mut reducer,
+        &mut transition_reducer,
+        engine.finish().unwrap(),
+    );
 
     assert_eq!(emitted_source_bytes, source.len());
     assert_eq!(reducer.document().unwrap().source(), source);
+    assert_eq!(
+        transition_reducer.document().unwrap().snapshot(),
+        reducer.document().unwrap().snapshot()
+    );
 }
 
 fn extend_trace(changes: &mut Vec<ChangeSet>, output: EngineOutput) -> usize {

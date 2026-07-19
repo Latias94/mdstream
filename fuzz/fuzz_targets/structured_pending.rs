@@ -10,7 +10,8 @@ use mdstream_conformance::{
     ProtocolTrace, TraceInputEvent, replay_protocol_trace, utf8_ranges_from_target_widths,
 };
 use mdstream_protocol::{
-    ApplyOutcome, ChangeSet, DocumentLifecycle, ProtocolLimits, Reducer, Snapshot,
+    ApplyOutcome, ChangeSet, DocumentLifecycle, ProtocolLimits, Reducer, Snapshot, TransitionFacts,
+    TransitionReducer,
 };
 
 const WIDTH_SELECTORS: usize = 16;
@@ -84,6 +85,7 @@ fn assert_transition_limits(
 fn consume_output(
     engine: &StreamEngine,
     reducer: &mut Reducer,
+    transition_reducer: &mut TransitionReducer,
     changes: &mut Vec<ChangeSet>,
     output: EngineOutput,
     protocol_limits: ProtocolLimits,
@@ -97,12 +99,24 @@ fn consume_output(
             .checked_add(change.source().suffix.len())
             .expect("canonical pending sources fit in usize");
         let replay_change = change.clone();
+        let outcome = reducer
+            .apply(change)
+            .expect("canonical engine output must apply to a consumer reducer");
         assert!(matches!(
-            reducer
-                .apply(change)
-                .expect("canonical engine output must apply to a consumer reducer"),
+            outcome,
             ApplyOutcome::Applied { .. } | ApplyOutcome::Recovered { .. }
         ));
+        let transition = transition_reducer
+            .apply(replay_change.clone())
+            .expect("capture-enabled reduction must accept canonical engine output");
+        assert_eq!(transition.outcome, outcome);
+        let facts = transition
+            .facts
+            .expect("state-changing engine output must produce transition facts");
+        let encoded = serde_json::to_vec(&facts).expect("transition facts must serialize");
+        let decoded: TransitionFacts =
+            serde_json::from_slice(&encoded).expect("transition facts must round-trip strictly");
+        assert_eq!(decoded, facts);
         changes.push(replay_change);
     }
     emitted_source_bytes
@@ -122,6 +136,7 @@ fn run_schedule(
         .build()
         .expect("default limits accept canonical pending scenarios");
     let mut reducer = Reducer::with_limits(protocol_limits);
+    let mut transition_reducer = TransitionReducer::with_limits(protocol_limits);
     let mut changes = Vec::new();
     let mut input_events = Vec::with_capacity(ranges.len() + 1);
     let mut emitted_source_bytes = 0usize;
@@ -134,6 +149,7 @@ fn run_schedule(
         emitted_source_bytes += consume_output(
             &engine,
             &mut reducer,
+            &mut transition_reducer,
             &mut changes,
             output,
             protocol_limits,
@@ -151,6 +167,7 @@ fn run_schedule(
     emitted_source_bytes += consume_output(
         &engine,
         &mut reducer,
+        &mut transition_reducer,
         &mut changes,
         output,
         protocol_limits,
@@ -164,6 +181,13 @@ fn run_schedule(
         .snapshot()
         .expect("finishing a canonical pending scenario installs a document");
     assert_eq!(Some(snapshot.clone()), reducer_snapshot(&reducer));
+    assert_eq!(
+        Some(snapshot.clone()),
+        transition_reducer
+            .document()
+            .map(|document| document.snapshot())
+    );
+    assert!(transition_reducer.transition_metrics().facts_built > 0);
     assert_eq!(snapshot.lifecycle(), DocumentLifecycle::Finalized);
     assert_eq!(snapshot.source(), source);
     assert_eq!(emitted_source_bytes, source.len());
