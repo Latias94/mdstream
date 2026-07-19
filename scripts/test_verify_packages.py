@@ -607,6 +607,21 @@ class PackageContractTests(unittest.TestCase):
             publish,
         )
 
+    def test_flutter_exact_archive_runs_linux_runtime_smoke(self) -> None:
+        workflow = (WORKFLOW_ROOT / "flutter-platforms.yml").read_text(
+            encoding="utf-8"
+        )
+        smoke = indented_block(workflow, "package-linux-smoke:")
+        archive_runtime = (
+            'package_smoke.py --archive "$FLUTTER_ARCHIVE" '
+            "--platform linux --device linux --skip-native-build"
+        )
+
+        self.assertIn("needs: package", smoke)
+        self.assertIn("name: mdstream-flutter-package", smoke)
+        self.assertIn(archive_runtime, smoke)
+        self.assertNotIn("--skip-runtime", smoke)
+
     def test_every_pub_dev_request_has_connection_and_total_timeouts(self) -> None:
         release = (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8")
         requests = [

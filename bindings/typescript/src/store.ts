@@ -273,14 +273,11 @@ export class RustBackedStore implements MdstreamStore {
 
     const pending = createStoreOperation();
     this.#operation = pending;
-    let succeeded = false;
     try {
-      const result = operation();
-      succeeded = true;
-      return result;
+      return operation();
     } finally {
       this.#operation = undefined;
-      this.#finishDocumentOperation(pending, succeeded);
+      this.#finishDocumentOperation(pending);
     }
   }
 
@@ -319,9 +316,11 @@ export class RustBackedStore implements MdstreamStore {
   }
 
   createRecoverySnapshot(): CanonicalSnapshotBytes | undefined {
-    this.#assertOpen();
-    const output = this.#invoke(() => this.#session.snapshot());
-    return output.snapshots[0];
+    return this.runDocumentOperation(() => {
+      this.#assertOpen();
+      const output = this.#invoke(() => this.#session.snapshot());
+      return output.snapshots[0];
+    });
   }
 
   getPendingSourceSnapshot(): PendingSourceView | undefined {
@@ -802,9 +801,9 @@ export class RustBackedStore implements MdstreamStore {
     notifyKeyed(this.#artifactListeners, notifications.artifacts);
   }
 
-  #finishDocumentOperation(operation: StoreOperation, succeeded: boolean): void {
+  #finishDocumentOperation(operation: StoreOperation): void {
     const batch = Object.freeze({
-      facts: Object.freeze(succeeded ? [...operation.facts] : []),
+      facts: Object.freeze([...operation.facts]),
     });
     this.#publishingTransitions = true;
     try {

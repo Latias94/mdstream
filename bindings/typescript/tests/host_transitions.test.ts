@@ -111,6 +111,35 @@ describe("framework-neutral transition feed", () => {
     engine.close();
   });
 
+  it("publishes empty batches for direct recovery snapshot operations", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine(capturedOptions);
+    engine.append("snapshot source");
+    const engineBatches: TransitionBatchView[] = [];
+    engine.store.subscribeTransitions((batch) => {
+      engineBatches.push(batch);
+      expect(() => engine.createRecoverySnapshot()).toThrowError(
+        expect.objectContaining({ detailCode: "bindings.transition_reentry" }),
+      );
+    });
+    expect(engine.createRecoverySnapshot()).toBeDefined();
+    expect(engineBatches).toEqual([{ facts: [] }]);
+
+    const store = runtime.createStore(capturedOptions);
+    const storeBatches: TransitionBatchView[] = [];
+    store.subscribeTransitions((batch) => {
+      storeBatches.push(batch);
+      expect(() => store.createRecoverySnapshot()).toThrowError(
+        expect.objectContaining({ detailCode: "bindings.transition_reentry" }),
+      );
+    });
+    expect(store.createRecoverySnapshot()).toBeUndefined();
+    expect(storeBatches).toEqual([{ facts: [] }]);
+
+    store.close();
+    engine.close();
+  });
+
   it("coalesces every reducer commit made by one batcher operation", async () => {
     const runtime = await initMdstream({ loader: nodeWasmLoader });
     const engine = runtime.createEngine(capturedOptions);

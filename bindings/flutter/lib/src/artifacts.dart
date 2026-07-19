@@ -925,7 +925,7 @@ final class _ProcessorScheduler {
   }
 
   void _complete(_InFlightProcessor entry, ProcessorOutput output) {
-    if (_closed || !identical(_inFlight[entry.request.requestId], entry)) {
+    if (!_isCurrent(entry)) {
       return;
     }
     try {
@@ -965,7 +965,9 @@ final class _ProcessorScheduler {
         error: error,
         stackTrace: stackTrace,
       );
-      _cancel(entry, ProcessorErrorPhase.cancel);
+      if (_isCurrent(entry)) {
+        _cancel(entry, ProcessorErrorPhase.cancel);
+      }
     }
   }
 
@@ -974,7 +976,7 @@ final class _ProcessorScheduler {
     Object error,
     StackTrace stackTrace,
   ) {
-    if (_closed || !identical(_inFlight[entry.request.requestId], entry)) {
+    if (!_isCurrent(entry)) {
       return;
     }
     _emitError(
@@ -985,6 +987,9 @@ final class _ProcessorScheduler {
       error: error,
       stackTrace: stackTrace,
     );
+    if (!_isCurrent(entry)) {
+      return;
+    }
     try {
       onResult(
         backend.failProcessor(
@@ -1002,9 +1007,16 @@ final class _ProcessorScheduler {
         error: completionError,
         stackTrace: completionStackTrace,
       );
-      _cancel(entry, ProcessorErrorPhase.cancel);
+      if (_isCurrent(entry)) {
+        _cancel(entry, ProcessorErrorPhase.cancel);
+      }
     }
   }
+
+  bool _isCurrent(_InFlightProcessor entry) =>
+      !_closed &&
+      entry.registration.active &&
+      identical(_inFlight[entry.request.requestId], entry);
 
   void _disposeRegistration(_RegisteredProcessor registration) {
     if (!registration.active) {

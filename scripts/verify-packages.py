@@ -182,6 +182,17 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 '--ecosystem flutter --archive "$FLUTTER_ARCHIVE"',
             ),
         ),
+        ("flutter-platforms.yml", "package-linux-smoke"): WorkflowJobContract(
+            run_markers=(
+                'package_smoke.py --archive "$FLUTTER_ARCHIVE" '
+                "--platform linux --device linux --skip-native-build",
+            ),
+            job_markers=(
+                "name: mdstream-flutter-package",
+                "flutter-version: 3.32.1",
+            ),
+            required_needs=frozenset(("package",)),
+        ),
         ("release.yml", "publish-rust"): WorkflowJobContract(
             run_markers=(
                 "scripts/verify-packages.py --print-rust-order",

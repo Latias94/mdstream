@@ -41,7 +41,7 @@ than silently changing canonical behavior.
 
 ## Versioning
 
-`mdstream.protocol/0.4` and `mdstream.bindings/0.4` are separate contracts.
+`mdstream.content/0.4` and `mdstream.bindings/0.4` are separate contracts.
 Protocol changes require fixture/schema updates and cross-runtime replay. A
 binding-envelope change does not implicitly change canonical Content IR.
 Breaking public changes require a new contract version; unknown schema or

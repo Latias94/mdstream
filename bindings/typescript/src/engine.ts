@@ -277,26 +277,28 @@ export class MdstreamEngine {
   }
 
   createRecoverySnapshot(): CanonicalSnapshotBytes | undefined {
-    this.#assertOpen();
-    let output: WasmOutput;
-    try {
-      output = this.#engine.snapshot();
-    } catch (error) {
-      throw MdstreamError.from(error);
-    }
-    const drained = drainOutput(output);
-    let snapshot: CanonicalSnapshotBytes | undefined;
-    for (const payload of drained.payloads) {
-      if (payload.kind !== BindingPayloadKind.Snapshot || snapshot !== undefined) {
-        throw new MdstreamError("engine snapshot returned an unexpected payload", {
-          status: 12,
-          statusName: "MDSTREAM_INTERNAL_ERROR",
-          detailCode: "bindings.unexpected_payload",
-        });
+    return this.#rustStore.runDocumentOperation(() => {
+      this.#assertOpen();
+      let output: WasmOutput;
+      try {
+        output = this.#engine.snapshot();
+      } catch (error) {
+        throw MdstreamError.from(error);
       }
-      snapshot = asCanonicalSnapshotBytes(payload.bytes);
-    }
-    return snapshot;
+      const drained = drainOutput(output);
+      let snapshot: CanonicalSnapshotBytes | undefined;
+      for (const payload of drained.payloads) {
+        if (payload.kind !== BindingPayloadKind.Snapshot || snapshot !== undefined) {
+          throw new MdstreamError("engine snapshot returned an unexpected payload", {
+            status: 12,
+            statusName: "MDSTREAM_INTERNAL_ERROR",
+            detailCode: "bindings.unexpected_payload",
+          });
+        }
+        snapshot = asCanonicalSnapshotBytes(payload.bytes);
+      }
+      return snapshot;
+    });
   }
 
   registerProcessor(processor: ContentProcessor): ProcessorRegistration {

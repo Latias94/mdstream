@@ -6,6 +6,7 @@ import {
   MdstreamError,
   utf8ByteLength,
   type EngineResult,
+  type TransitionBatchView,
 } from "../src/index.js";
 import {
   decodeJson,
@@ -62,12 +63,29 @@ describe("lossless UTF-8 input batching", () => {
   it("preserves committed results when an oversized forward fails", async () => {
     const runtime = await initMdstream({ loader: nodeWasmLoader });
     const engine = runtime.createEngine({
-      protocol: { maxSourceBytes: 3n },
+      captureTransitions: true,
+      protocol: {
+        maxSourceBytes: 3n,
+        maxNodes: 64n,
+        maxResources: 16n,
+        maxOperations: 64n,
+        maxChangeStructuralItems: 64n,
+        maxChildrenPerList: 64n,
+      },
     });
     const replica = runtime.createStore();
     const batcher = engine.createBatcher(2);
+    const batches: TransitionBatchView[] = [];
+    const order: string[] = [];
+    engine.store.subscribeTransitions((batch) => {
+      batches.push(batch);
+      order.push("transition");
+    });
+    engine.store.subscribe(() => order.push("invalidation"));
 
     expect(batcher.push("a")).toEqual([]);
+    expect(batches).toEqual([{ facts: [] }]);
+    order.length = 0;
     let failure: unknown;
     try {
       batcher.push("bbbb");
@@ -79,6 +97,9 @@ describe("lossless UTF-8 input batching", () => {
     const batchError = failure as BatchOperationError;
     expect(batchError.completedResults).toHaveLength(1);
     expect(batchError.cause).toBeInstanceOf(MdstreamError);
+    expect(batches).toHaveLength(2);
+    expect(batches[1]!.facts.length).toBeGreaterThan(0);
+    expect(order).toEqual(["transition", "invalidation"]);
     for (const result of batchError.completedResults) {
       for (const change of result.changes) {
         replica.applyChange(change);

@@ -190,6 +190,39 @@ void main() {
   );
 
   test(
+    'process error listener can dispose its in-flight registration once',
+    () async {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: _capturedOptions,
+      );
+      final phases = <ProcessorErrorPhase>[];
+      int? revisionAfterDisposal;
+      late final ProcessorRegistration registration;
+      registration = controller.registerProcessor(_ThrowingProcessProcessor());
+      controller.processorErrors.addListener(() {
+        phases.add(controller.processorErrors.value!.phase);
+        registration.dispose();
+        revisionAfterDisposal = controller.transitions.value.revision;
+      });
+
+      final reportedErrors = await _captureFlutterErrors(() async {
+        controller.append('paragraph');
+        await controller.whenProcessorsIdle();
+      });
+
+      expect(reportedErrors, isEmpty);
+      expect(phases, <ProcessorErrorPhase>[ProcessorErrorPhase.process]);
+      expect(revisionAfterDisposal, isNotNull);
+      expect(controller.transitions.value.revision, revisionAfterDisposal);
+      controller.dispose();
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: skip,
+  );
+
+  test(
     'transition listeners unsubscribe and isolate failures without reentry',
     () async {
       final runtime = MdstreamRuntime.openPath(libraryPath!);
@@ -378,6 +411,30 @@ final class _ThrowingMatchesProcessor implements ContentProcessor {
     ProcessorRequestView request,
     ProcessorContext context,
   ) => throw StateError('throwing matcher must not process');
+}
+
+final class _ThrowingProcessProcessor implements ContentProcessor {
+  @override
+  ContentProcessorDescriptor get descriptor => const ContentProcessorDescriptor(
+    id: 'test.flutter.dispose.throwing-process',
+    version: 'v1',
+    acceptsProvisional: true,
+  );
+
+  @override
+  String get configurationVersion => 'default-v1';
+
+  @override
+  bool get allowProvisional => true;
+
+  @override
+  bool matches(ContentNodeView node) => true;
+
+  @override
+  FutureOr<ProcessorOutput> process(
+    ProcessorRequestView request,
+    ProcessorContext context,
+  ) => throw StateError('processor failed');
 }
 
 final class _PendingTransitionProcessor implements ContentProcessor {
