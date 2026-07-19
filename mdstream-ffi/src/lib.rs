@@ -31,6 +31,7 @@ pub const MDSTREAM_ABI_VERSION: u32 = 1;
 const PACKAGE_VERSION: &[u8] = concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes();
 const BINDING_SCHEMA: &[u8] = b"mdstream.bindings/0.4\0";
 const BINDING_OPTIONS_SCHEMA: &[u8] = b"mdstream.bindings-options/0.4\0";
+const TRANSITION_SCHEMA: &[u8] = b"mdstream.transitions/1\0";
 
 #[unsafe(no_mangle)]
 pub extern "C" fn mdstream_abi_version() -> u32 {
@@ -53,6 +54,12 @@ pub extern "C" fn mdstream_binding_schema() -> *const c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn mdstream_binding_options_schema() -> *const c_char {
     BINDING_OPTIONS_SCHEMA.as_ptr().cast()
+}
+
+/// Returns the final transition subprotocol schema as a static null-terminated string.
+#[unsafe(no_mangle)]
+pub extern "C" fn mdstream_transition_schema() -> *const c_char {
+    TRANSITION_SCHEMA.as_ptr().cast()
 }
 
 #[unsafe(no_mangle)]
@@ -165,7 +172,9 @@ pub unsafe extern "C" fn mdstream_buffer_free(buffer: MdstreamBuffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mdstream_bindings_core::{BINDING_OPTIONS_SCHEMA, BINDING_SCHEMA, BindingOutput};
+    use mdstream_bindings_core::{
+        BINDING_OPTIONS_SCHEMA, BINDING_SCHEMA, BindingOutput, TRANSITION_SCHEMA,
+    };
 
     #[test]
     fn static_schema_probes_track_the_safe_binding_facade() {
@@ -176,6 +185,10 @@ mod tests {
         assert_eq!(
             &super::BINDING_OPTIONS_SCHEMA[..super::BINDING_OPTIONS_SCHEMA.len() - 1],
             BINDING_OPTIONS_SCHEMA.as_bytes()
+        );
+        assert_eq!(
+            &super::TRANSITION_SCHEMA[..super::TRANSITION_SCHEMA.len() - 1],
+            TRANSITION_SCHEMA.as_bytes()
         );
     }
 

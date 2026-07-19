@@ -124,6 +124,7 @@ int main(void) {
 
     if (
         mdstream_abi_version() != MDSTREAM_ABI_VERSION ||
+        MDSTREAM_PAYLOAD_REDUCER_UPDATE != 3 ||
         recover_snapshot == NULL
     ) {
         return 1;
@@ -131,7 +132,8 @@ int main(void) {
     if (
         mdstream_package_version() == NULL ||
         strcmp(mdstream_binding_schema(), "mdstream.bindings/0.4") != 0 ||
-        strcmp(mdstream_binding_options_schema(), "mdstream.bindings-options/0.4") != 0
+        strcmp(mdstream_binding_options_schema(), "mdstream.bindings-options/0.4") != 0 ||
+        strcmp(mdstream_transition_schema(), "mdstream.transitions/1") != 0
     ) {
         return 2;
     }

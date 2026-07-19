@@ -1,7 +1,7 @@
 use std::{ffi::CStr, mem::size_of, ptr};
 
 use mdstream_bindings_core::{
-    BINDING_OPTIONS_SCHEMA, BINDING_SCHEMA, BindingPayloadKind, BindingStatus,
+    BINDING_OPTIONS_SCHEMA, BINDING_SCHEMA, BindingPayloadKind, BindingStatus, TRANSITION_SCHEMA,
 };
 use mdstream_ffi::{
     MDSTREAM_ABI_VERSION, MdstreamAllocationMetrics, MdstreamBuffer, MdstreamCallResult,
@@ -14,9 +14,12 @@ use mdstream_ffi::{
     mdstream_output_remaining, mdstream_output_take, mdstream_package_version,
     mdstream_payload_result_struct_size, mdstream_reducer_apply_change, mdstream_reducer_execute,
     mdstream_reducer_free, mdstream_reducer_new, mdstream_reducer_recover_snapshot,
-    mdstream_reducer_result_struct_size,
+    mdstream_reducer_result_struct_size, mdstream_transition_schema,
 };
-use mdstream_protocol::{ProtocolLimits, decode_snapshot_json};
+use mdstream_protocol::{
+    ChangeId, ChangeSet, Epoch, ProtocolLimits, SourceCursor, SourceDelta, TransitionFacts,
+    decode_snapshot_json, encode_change_json,
+};
 
 #[path = "support/ffi.rs"]
 mod ffi_support;
@@ -74,6 +77,10 @@ fn c_abi_metadata_errors_outputs_and_stateful_roundtrip_match_the_frozen_contrac
         static_string(mdstream_binding_options_schema()),
         BINDING_OPTIONS_SCHEMA
     );
+    assert_eq!(
+        static_string(mdstream_transition_schema()),
+        TRANSITION_SCHEMA
+    );
     assert_eq!(mdstream_buffer_struct_size(), size_of::<MdstreamBuffer>());
     assert_eq!(
         mdstream_call_result_struct_size(),
@@ -114,6 +121,23 @@ fn c_abi_metadata_errors_outputs_and_stateful_roundtrip_match_the_frozen_contrac
         "bindings.invalid_options",
     );
 
+    let transition_options = transition_options();
+    let wrong_options_schema = String::from_utf8(transition_options.clone())
+        .unwrap()
+        .replace(BINDING_OPTIONS_SCHEMA, "mdstream.bindings-options/999");
+    let schema_mismatch =
+        unsafe { mdstream_reducer_new(wrong_options_schema.as_ptr(), wrong_options_schema.len()) };
+    assert_eq!(
+        schema_mismatch.status,
+        BindingStatus::UnsupportedSchema.code()
+    );
+    assert!(schema_mismatch.reducer.is_null());
+    assert_error(
+        schema_mismatch.error,
+        "MDSTREAM_UNSUPPORTED_SCHEMA",
+        "bindings.unsupported_options_schema",
+    );
+
     let null_handle = unsafe { mdstream_engine_append(ptr::null_mut(), ptr::null(), 0) };
     assert_eq!(null_handle.status, BindingStatus::InvalidArgument.code());
     assert_error(
@@ -149,6 +173,48 @@ fn c_abi_metadata_errors_outputs_and_stateful_roundtrip_match_the_frozen_contrac
     assert_eq!(reducer.status, BindingStatus::Ok.code());
     assert!(!reducer.reducer.is_null());
     assert!(reducer.error.data.is_null());
+
+    let captured =
+        unsafe { mdstream_reducer_new(transition_options.as_ptr(), transition_options.len()) };
+    assert_eq!(captured.status, BindingStatus::Ok.code());
+    assert!(!captured.reducer.is_null());
+    let transition_change = encode_change_json(
+        &ChangeSet::start_epoch(
+            Epoch::new(1),
+            ChangeId::new("ffi:transition:start").unwrap(),
+            None,
+            SourceDelta::append(SourceCursor::new(0), "A"),
+            Vec::new(),
+        )
+        .unwrap(),
+        usize::MAX,
+        ProtocolLimits::default(),
+    )
+    .unwrap();
+    let transition_update = take_output(unsafe {
+        mdstream_reducer_apply_change(
+            captured.reducer,
+            transition_change.as_ptr(),
+            transition_change.len(),
+        )
+    });
+    assert_eq!(transition_update.len(), 1);
+    assert_eq!(
+        transition_update[0].0,
+        BindingPayloadKind::ReducerUpdate as u32
+    );
+    let transition_update: serde_json::Value =
+        serde_json::from_slice(&transition_update[0].1).unwrap();
+    assert_eq!(transition_update["schema"], BINDING_SCHEMA);
+    assert_eq!(transition_update["kind"], "reducer_update");
+    assert_eq!(transition_update["transition"]["schema"], TRANSITION_SCHEMA);
+    let facts: TransitionFacts =
+        serde_json::from_value(transition_update["transition"]["facts"].clone()).unwrap();
+    assert!(matches!(
+        facts,
+        TransitionFacts::Continuous { before: None, .. }
+    ));
+    unsafe { mdstream_reducer_free(captured.reducer) };
 
     let invalid_utf8 = unsafe { mdstream_engine_append(engine.engine, [0xff].as_ptr(), 1) };
     assert_eq!(invalid_utf8.status, BindingStatus::Utf8.code());
@@ -344,4 +410,23 @@ fn assert_error(buffer: MdstreamBuffer, status_name: &str, detail_code: &str) {
 fn static_string(pointer: *const std::ffi::c_char) -> &'static str {
     assert!(!pointer.is_null());
     unsafe { CStr::from_ptr(pointer) }.to_str().unwrap()
+}
+
+fn transition_options() -> Vec<u8> {
+    format!(
+        r#"{{
+          "schema":"{BINDING_OPTIONS_SCHEMA}",
+          "capture_transitions":true,
+          "protocol":{{
+            "max_source_bytes":"1024",
+            "max_nodes":"16",
+            "max_resources":"16",
+            "max_operations":"32",
+            "max_change_structural_items":"64",
+            "max_children_per_list":"16"
+          }},
+          "wire":{{"max_reducer_update_bytes":"1048576"}}
+        }}"#
+    )
+    .into_bytes()
 }

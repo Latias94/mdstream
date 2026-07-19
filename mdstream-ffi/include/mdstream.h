@@ -108,6 +108,7 @@ uint32_t mdstream_abi_version(void);
 const char* mdstream_package_version(void);
 const char* mdstream_binding_schema(void);
 const char* mdstream_binding_options_schema(void);
+const char* mdstream_transition_schema(void);
 size_t mdstream_buffer_struct_size(void);
 size_t mdstream_call_result_struct_size(void);
 size_t mdstream_engine_result_struct_size(void);

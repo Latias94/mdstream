@@ -22,6 +22,7 @@ fn public_header_compiles_with_exact_constants_layouts_and_function_signatures()
 _Static_assert(MDSTREAM_OK == 0, "status drift");
 _Static_assert(MDSTREAM_PANIC == 13, "status drift");
 _Static_assert(MDSTREAM_PAYLOAD_CHANGE == 1, "payload drift");
+_Static_assert(MDSTREAM_PAYLOAD_REDUCER_UPDATE == 3, "payload drift");
 _Static_assert(MDSTREAM_PAYLOAD_ARTIFACT_VIEW == 9, "payload drift");
 _Static_assert(MDSTREAM_PAYLOAD_PENDING_SOURCE_VIEW == 10, "payload drift");
 
@@ -36,6 +37,7 @@ int mdstream_header_smoke(void) {
     const char* (*package_version)(void) = &mdstream_package_version;
     const char* (*binding_schema)(void) = &mdstream_binding_schema;
     const char* (*binding_options_schema)(void) = &mdstream_binding_options_schema;
+    const char* (*transition_schema)(void) = &mdstream_transition_schema;
     size_t (*buffer_size)(void) = &mdstream_buffer_struct_size;
     size_t (*call_size)(void) = &mdstream_call_result_struct_size;
     size_t (*engine_result_size)(void) = &mdstream_engine_result_struct_size;
@@ -66,6 +68,7 @@ int mdstream_header_smoke(void) {
     (void)package_version;
     (void)binding_schema;
     (void)binding_options_schema;
+    (void)transition_schema;
     (void)buffer_size;
     (void)call_size;
     (void)engine_result_size;
