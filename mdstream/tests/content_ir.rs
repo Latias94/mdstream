@@ -1,4 +1,9 @@
 use mdstream::{CompilerError, CustomBlockSpec, EngineError, EngineOutput, StreamEngine};
+use mdstream_processors::{
+    ArtifactHost, CompletionOutcome, ConfigurationVersion, ContentProcessor, ProcessingPolicy,
+    ProcessorArtifact, ProcessorCapabilities, ProcessorDescriptor, ProcessorFailure,
+    ProcessorFailureCode, ProcessorLimits, ProcessorRequest, run_catching,
+};
 use mdstream_protocol::{
     ApplyOutcome, CodeBlockSyntax, CodeFenceMarker, ContentKind, ContentNode, NodeId,
     NodeStability, ProtocolLimits, Reducer, SemanticText, Snapshot, TableAlignment,
@@ -59,6 +64,63 @@ fn semantic_value(snapshot: &Snapshot, owner: &ContentNode, text: &SemanticText)
         }
         SemanticText::Normalized { value } => value.clone(),
     }
+}
+
+const THINKING_ARTIFACT_PROTOCOL: &str = "app.thinking.text/1";
+const THINKING_ARTIFACT_MEDIA_TYPE: &str = "text/plain";
+
+struct ThinkingProcessor {
+    descriptor: ProcessorDescriptor,
+}
+
+impl ThinkingProcessor {
+    fn new() -> Self {
+        Self {
+            descriptor: ProcessorDescriptor::new(
+                "app.thinking",
+                "v1",
+                ProcessorCapabilities::stable_only(),
+            )
+            .unwrap(),
+        }
+    }
+}
+
+impl ContentProcessor for ThinkingProcessor {
+    fn descriptor(&self) -> &ProcessorDescriptor {
+        &self.descriptor
+    }
+
+    fn process(&self, request: &ProcessorRequest) -> Result<ProcessorArtifact, ProcessorFailure> {
+        match &request.input().node().content {
+            ContentKind::Custom {
+                namespace, name, ..
+            } if namespace == "app.thinking/1" && name == "thinking" => ProcessorArtifact::text(
+                THINKING_ARTIFACT_PROTOCOL,
+                THINKING_ARTIFACT_MEDIA_TYPE,
+                request.input().body().trim(),
+            )
+            .map_err(|error| {
+                ProcessorFailure::new(ProcessorFailureCode::Processor, error.to_string())
+            }),
+            _ => Err(ProcessorFailure::new(
+                ProcessorFailureCode::UnsupportedContent,
+                "thinking processor requires typed app.thinking/1 content",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HostDisplay<'a> {
+    PlainText(&'a str),
+}
+
+fn dispatch_thinking_artifact(artifact: &ProcessorArtifact) -> Option<HostDisplay<'_>> {
+    (artifact.protocol() == THINKING_ARTIFACT_PROTOCOL
+        && artifact.media_type() == THINKING_ARTIFACT_MEDIA_TYPE)
+        .then(|| artifact.as_text().map(HostDisplay::PlainText))
+        .flatten()
 }
 
 #[test]
@@ -746,6 +808,77 @@ fn unclosed_custom_block_is_provisional_and_keeps_identity_when_closed() {
         document.coordinate().source_cursor
     );
     assert!(document.pending_source().is_empty());
+}
+
+#[test]
+fn custom_block_reaches_versioned_host_dispatch_without_entering_canonical_state() {
+    let mut engine = StreamEngine::builder()
+        .custom_block(CustomBlockSpec::try_new("app.thinking/1", "thinking").unwrap())
+        .build()
+        .unwrap();
+    let mut reducer = Reducer::new();
+    apply_output(
+        &mut reducer,
+        engine
+            .append("<thinking role=analysis>\nprivate reasoning\n")
+            .unwrap(),
+    );
+
+    let provisional = reducer
+        .document()
+        .unwrap()
+        .nodes()
+        .find(|node| matches!(node.content, ContentKind::Custom { .. }))
+        .expect("the sealed grammar must produce typed provisional custom IR");
+    let node_id = provisional.id;
+    assert_eq!(provisional.stability, NodeStability::Provisional);
+    assert!(matches!(
+        &provisional.content,
+        ContentKind::Custom {
+            namespace,
+            name,
+            attributes,
+            ..
+        } if namespace == "app.thinking/1"
+            && name == "thinking"
+            && attributes.get("role").map(String::as_str) == Some("analysis")
+    ));
+
+    apply_output(&mut reducer, engine.append("</thinking>\n").unwrap());
+    let document = reducer.document().unwrap();
+    let stable = document
+        .node(node_id)
+        .expect("closing must retain custom identity");
+    assert_eq!(stable.stability, NodeStability::Stable);
+    let canonical_before = document.snapshot();
+
+    let processor = ThinkingProcessor::new();
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
+    host.begin_epoch(document.coordinate().epoch).unwrap();
+    let request = host
+        .begin(
+            document,
+            processor.descriptor().clone(),
+            node_id,
+            ConfigurationVersion::new("app.thinking.default.v1").unwrap(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    let slot = request.key().slot().clone();
+    assert_eq!(
+        host.complete(document, run_catching(&processor, &request))
+            .unwrap(),
+        CompletionOutcome::Applied
+    );
+
+    let artifact = host
+        .artifact(&slot)
+        .expect("processor artifact must be retained");
+    assert_eq!(
+        dispatch_thinking_artifact(artifact),
+        Some(HostDisplay::PlainText("private reasoning"))
+    );
+    assert_eq!(reducer.document().unwrap().snapshot(), canonical_before);
 }
 
 #[test]

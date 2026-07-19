@@ -320,6 +320,84 @@ fn replacement_and_epoch_reset_reject_old_render_results_as_stale() {
 }
 
 #[test]
+fn request_generation_retains_only_g3_after_real_a_b_a_renders() {
+    let first_a = mermaid_document("flowchart LR\nInput --> A");
+    let middle_b = mermaid_document("flowchart LR\nInput --> B");
+    let final_a = mermaid_document("flowchart LR\nInput --> A");
+    let first_document = first_a.document().unwrap();
+    let middle_document = middle_b.document().unwrap();
+    let final_document = final_a.document().unwrap();
+    let canonical_a = final_document.snapshot();
+    let processor = MermaidProcessor::default();
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
+    host.begin_epoch(EPOCH).unwrap();
+
+    let g1 = host
+        .begin(
+            first_document,
+            processor.descriptor().clone(),
+            NODE_ID,
+            configuration(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    let g1_result = run_catching(&processor, &g1);
+
+    let g2 = host
+        .begin(
+            middle_document,
+            processor.descriptor().clone(),
+            NODE_ID,
+            configuration(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    assert!(g1.is_cancelled());
+    let g2_result = run_catching(&processor, &g2);
+
+    let g3 = host
+        .begin(
+            final_document,
+            processor.descriptor().clone(),
+            NODE_ID,
+            configuration(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    assert!(g2.is_cancelled());
+    let g3_result = run_catching(&processor, &g3);
+
+    assert_eq!(g1.key().node_version(), g3.key().node_version());
+    assert_eq!(g1.key().input_version(), g3.key().input_version());
+    assert_ne!(g1.key().generation(), g3.key().generation());
+    let slot = g3.key().slot().clone();
+    let current_key = g3.key().clone();
+    assert_eq!(
+        host.complete(final_document, g3_result).unwrap(),
+        CompletionOutcome::Applied
+    );
+    let g3_artifact = host.artifact(&slot).unwrap().clone();
+    assert!(g3_artifact.as_text().unwrap().starts_with("<svg"));
+
+    assert_eq!(
+        host.complete(final_document, g1_result).unwrap(),
+        CompletionOutcome::Stale
+    );
+    assert_eq!(
+        host.complete(final_document, g2_result).unwrap(),
+        CompletionOutcome::Stale
+    );
+    assert_eq!(host.state(&slot).unwrap().key(), &current_key);
+    assert_eq!(host.artifact(&slot), Some(&g3_artifact));
+    assert_eq!(host.metrics().slots, 1);
+    assert_eq!(host.metrics().retained_artifacts, 1);
+    assert_eq!(host.metrics().accepted_results, 1);
+    assert_eq!(host.metrics().stale_results, 2);
+    assert_eq!(processor.metrics().renderer_invocations, 3);
+    assert_eq!(final_document.snapshot(), canonical_a);
+}
+
+#[test]
 fn manifests_keep_merman_out_of_the_core_workspace() {
     let adapter = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = adapter.parent().unwrap();

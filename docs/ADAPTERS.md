@@ -34,6 +34,23 @@ typed ContentNode
 - `full_replace` invalidates all retained canonical and derived host views,
   including state from a prior epoch.
 
+## Transition Observations
+
+`ChangeImpact` remains the cache-invalidation surface. Hosts that need to
+classify visible change can opt into a separate atomic transition feed. Facts
+carry continuity-qualified keys, before/after stamps, exact projection-append
+text, normalized child-list splices, resource corrections, lifecycle changes,
+and coarse full-replace barriers. They do not carry timing, easing, geometry,
+colors, scrolling policy, or framework component metadata.
+
+Language adapters publish an operation batch only after the batch-tail state
+and cache invalidations are coherent, and before ordinary invalidation
+listeners. Facts inside a batch stay ordered and are not deduplicated. The
+current view is only the tail view; an intermediate `A -> B -> A` fact sequence
+does not make an intermediate B view queryable. Different legal chunk schedules
+may produce different intermediate batches while converging to the same final
+canonical state.
+
 ## Recovery
 
 Ordered changes are the normal transport. If a consumer receives a gap, fork,
@@ -93,6 +110,33 @@ and never appear in canonical snapshots.
 lane. The default Rust, WASM, TypeScript, Dart, and Flutter dependency graphs do
 not contain Merman. Applications may process the typed Mermaid code-block node
 with Merman and render its SVG artifact without changing Content IR.
+
+Generated SVG remains opaque and untrusted until a host-owned sanitizer or
+isolated renderer accepts it. Active content, external references, URL loading,
+and embedding policy are outside the processor protocol. Merman cancellation is
+cooperative and cannot interrupt synchronous parse/layout/render work, so
+untrusted input requires host-owned timeout and worker/process isolation.
+
+## AI Message Parts
+
+mdstream owns a Markdown content session, not an AI message envelope. The host
+keeps message IDs, text/reasoning/tool/attachment part types, global ordering,
+token pacing, layout, and scrolling. Each Markdown-capable part owns one
+independent session identified by a stable host `partKey` plus a monotonically
+new part generation:
+
+- create on the part's first content and append only to that session;
+- finish each part independently;
+- preserve the session when stable part keys reorder around tool or reasoning
+  parts;
+- for historical replacement, reset/replay only the affected part;
+- on removal, close that part and cancel its processor work;
+- if a removed key is reused, allocate a new generation and reject callbacks
+  from the retired generation.
+
+There is intentionally no cross-session transition order in mdstream. The
+message host composes per-part batches with tool state and its own presentation
+clock.
 
 ## Adoption Evidence
 

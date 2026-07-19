@@ -20,6 +20,23 @@ not used in the Markdown path: a generated LR grammar would not supply
 CommonMark semantics, streaming checkpoints, lifecycle, or stable identity. It
 remains a possible implementation tool for a future independent closed DSL.
 
+## Four Separate Extension Planes
+
+A complete custom content feature composes four contracts instead of adding a
+parser callback or renderer registry:
+
+1. A setup-only `CustomBlockSpec` declares sealed source framing.
+2. The compiler emits a typed `ContentKind::Custom` node with a namespace,
+   name, opacity flag, and bounded string attributes.
+3. An optional versioned processor derives an artifact from the typed node.
+4. The host maps the typed node and artifact protocol to its own display code.
+
+The first two planes are canonical. Processor artifacts and host display state
+are derived. A host may replace its renderer or discard an artifact without
+rewriting Markdown history, node identity, Content IR, or transition facts.
+Custom nodes therefore do not carry framework component names, arbitrary JSON,
+animation metadata, or executable callbacks.
+
 ## Content Processors
 
 Processors consume typed `ContentNode` input after canonical reduction and
@@ -58,3 +75,18 @@ process isolation.
 
 The default Rust, WASM, npm, Dart, and Flutter packages do not depend on
 Merman. Applications opt into `mdstream-merman` on its separate Rust 1.95 lane.
+
+## SVG Trust Boundary
+
+Merman returns an opaque `image/svg+xml` artifact. mdstream does not sanitize,
+execute, mount, or inspect that markup. A web host must pass the bytes through a
+named `sanitizeSvgArtifact` boundary that rejects active content and unwanted
+external references, or render them in a separately isolated document/process.
+An embedded host owns the equivalent allowlist and resource-loading policy.
+Direct insertion into an unrestricted HTML sink is not an adoption pattern.
+
+Source, model, label, edge, output, and retention limits make resource use
+accountable, but they do not preempt synchronous parser/layout/render work or
+bound allocator peaks. Cancellation is cooperative. Hosts accepting untrusted
+diagram or custom processor input must own a timeout plus worker/process
+isolation; an in-process byte limit is not a compute sandbox.
