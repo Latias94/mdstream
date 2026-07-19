@@ -1,7 +1,20 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mdstream_flutter/mdstream_flutter.dart';
 
 import 'support/native_library.dart';
+
+final _capturedOptions = MdstreamSessionOptions(
+  captureTransitions: true,
+  protocol: const {
+    'max_source_bytes': '1048576',
+    'max_nodes': '4096',
+    'max_resources': '256',
+    'max_operations': '4096',
+    'max_change_structural_items': '4096',
+    'max_children_per_list': '4096',
+  },
+);
 
 void main() {
   final libraryPath = nativeLibraryPath();
@@ -110,6 +123,7 @@ void main() {
         );
         expect(
           MdstreamNodeKey(
+            continuityGeneration: firstKey.continuityGeneration,
             epoch: controller.value.document!.coordinate.epoch,
             nodeId: firstId,
           ),
@@ -200,4 +214,178 @@ void main() {
         ? 'run dart run ../dart/tool/build_native.dart first'
         : false,
   );
+
+  test(
+    'transition batches are opt-in, coherent, ordered, and revisioned',
+    () {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final disabled = MdstreamController.fromRuntime(runtime);
+      var disabledNotifications = 0;
+      disabled.transitions.addListener(() => disabledNotifications += 1);
+      disabled.append('disabled');
+      expect(disabled.transitions.value.revision, 0);
+      expect(disabled.transitions.value.facts, isEmpty);
+      expect(disabledNotifications, 0);
+      disabled.dispose();
+
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: _capturedOptions,
+      );
+      final order = <String>[];
+      var inspectTail = false;
+      ValueListenable<NodeView?>? focusedNode;
+      NodeId? focusedNodeId;
+      controller.transitions.addListener(() {
+        order.add('transition');
+        if (!inspectTail) {
+          return;
+        }
+        final facts = controller.transitions.value.facts;
+        expect(facts, isNotEmpty);
+        final tail = facts.last;
+        expect(
+          controller.value.document?.coordinate.epoch,
+          tail.after.coordinate.epoch,
+        );
+        expect(
+          controller.value.document?.coordinate.sequence,
+          tail.after.coordinate.sequence,
+        );
+        expect(focusedNode!.value, same(controller.nodeView(focusedNodeId!)));
+        expect(() => controller.append('reentrant'), throwsStateError);
+        expect(controller.createRecoverySnapshot, throwsStateError);
+      });
+      controller.addListener(() => order.add('root'));
+
+      final first = controller.append('hello');
+      expect(order, <String>['transition', 'root']);
+      expect(controller.transitions.value.revision, 1);
+      expect(controller.transitions.value.facts, _transitionFacts(first));
+      expect(controller.transitions.value.facts, isNotEmpty);
+      expect(
+        () => controller.transitions.value.facts.add(
+          controller.transitions.value.facts.first,
+        ),
+        throwsUnsupportedError,
+      );
+
+      focusedNodeId = controller.value.document!.roots!.children.single;
+      focusedNode = controller.node(focusedNodeId);
+      focusedNode.addListener(() => order.add('node'));
+      order.clear();
+      inspectTail = true;
+      final second = controller.append(' world');
+
+      expect(order, <String>['transition', 'node', 'root']);
+      expect(controller.transitions.value.revision, 2);
+      expect(controller.transitions.value.facts, _transitionFacts(second));
+      expect(
+        controller.value.impact.changedNodeIds,
+        second.updates.single.impact.changedNodeIds,
+      );
+
+      inspectTail = false;
+      order.clear();
+      final revisionBeforeNoOp = controller.transitions.value.revision;
+      controller.append('');
+      expect(order, <String>['transition']);
+      expect(controller.transitions.value.revision, revisionBeforeNoOp + 1);
+      expect(controller.transitions.value.facts, isEmpty);
+
+      controller.finish();
+      order.clear();
+      final revisionBeforeError = controller.transitions.value.revision;
+      expect(
+        () => controller.append('late'),
+        throwsA(isA<MdstreamException>()),
+      );
+      expect(order, <String>['transition', 'root']);
+      expect(controller.transitions.value.revision, revisionBeforeError + 1);
+      expect(controller.transitions.value.facts, isEmpty);
+      expect(controller.value.lastError, isNotNull);
+
+      controller.dispose();
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'processor-only results publish empty transition batches',
+    () async {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: _capturedOptions,
+      );
+      final batches = <MdstreamTransitionBatch>[];
+      final processor = _ArtifactProcessor();
+      controller.transitions.addListener(() {
+        batches.add(controller.transitions.value);
+      });
+      controller.registerProcessor(processor);
+
+      controller.append('artifact input');
+      await controller.whenProcessorsIdle();
+
+      expect(processor.processCalls, 1);
+      expect(batches.first.facts, isNotEmpty);
+      expect(
+        batches.where((batch) => batch.facts.isEmpty).length,
+        greaterThan(1),
+      );
+      expect(
+        batches.map((batch) => batch.revision),
+        orderedEquals(List<int>.generate(batches.length, (index) => index + 1)),
+      );
+      controller.dispose();
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+}
+
+List<TransitionFactsView> _transitionFacts(EngineResult result) =>
+    List.unmodifiable(
+      result.reducerResults.expand(
+        (reducerResult) => reducerResult.transitionFacts,
+      ),
+    );
+
+final class _ArtifactProcessor implements ContentProcessor {
+  int processCalls = 0;
+
+  @override
+  ContentProcessorDescriptor get descriptor => const ContentProcessorDescriptor(
+    id: 'test.flutter.transition-artifact',
+    version: 'v1',
+    acceptsProvisional: true,
+  );
+
+  @override
+  String get configurationVersion => 'default-v1';
+
+  @override
+  bool get allowProvisional => true;
+
+  @override
+  bool matches(ContentNodeView node) => node.content.kind == 'paragraph';
+
+  @override
+  ProcessorOutput process(
+    ProcessorRequestView request,
+    ProcessorContext context,
+  ) {
+    processCalls += 1;
+    return const ProcessorTextOutput(
+      protocol: 'test.flutter.transition-artifact/1',
+      mediaType: 'text/plain',
+      text: 'derived',
+    );
+  }
 }

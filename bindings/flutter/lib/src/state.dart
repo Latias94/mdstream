@@ -41,6 +41,30 @@ final class MdstreamControllerError {
   final StackTrace stackTrace;
 }
 
+/// Ordered renderer-neutral transition facts published for one operation.
+@immutable
+final class MdstreamTransitionBatch {
+  MdstreamTransitionBatch._({
+    required this.revision,
+    required Iterable<TransitionFactsView> facts,
+  }) : facts = List<TransitionFactsView>.unmodifiable(facts);
+
+  /// Monotonic operation revision, starting at zero before the first batch.
+  final int revision;
+
+  /// Ordered facts from every reducer update committed by the operation.
+  ///
+  /// The list is empty for no-op, failed, artifact-only, and same-floor
+  /// operations. Intermediate facts are observations; readable views represent
+  /// only the state at the tail of this batch.
+  final List<TransitionFactsView> facts;
+
+  static final MdstreamTransitionBatch _initial = MdstreamTransitionBatch._(
+    revision: 0,
+    facts: const <TransitionFactsView>[],
+  );
+}
+
 /// Exact invalidations aggregated across one public controller operation.
 @immutable
 final class MdstreamNotificationImpact {

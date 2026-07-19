@@ -1,10 +1,17 @@
 part of '../mdstream_flutter.dart';
 
-/// Flutter key for one canonical node identity within a document epoch.
+/// Flutter key for one canonical node identity within a continuity generation.
 @immutable
 final class MdstreamNodeKey extends LocalKey {
-  /// Creates an epoch-qualified node key.
-  const MdstreamNodeKey({required this.epoch, required this.nodeId});
+  /// Creates a continuity- and epoch-qualified node key.
+  const MdstreamNodeKey({
+    required this.continuityGeneration,
+    required this.epoch,
+    required this.nodeId,
+  });
+
+  /// Controller-local generation advanced by every full replacement.
+  final int continuityGeneration;
 
   /// Document epoch that owns the node.
   final Epoch epoch;
@@ -15,18 +22,33 @@ final class MdstreamNodeKey extends LocalKey {
   @override
   bool operator ==(Object other) =>
       other is MdstreamNodeKey &&
+      continuityGeneration == other.continuityGeneration &&
       epoch == other.epoch &&
       nodeId == other.nodeId;
 
   @override
-  int get hashCode => Object.hash(epoch, nodeId);
+  int get hashCode => Object.hash(continuityGeneration, epoch, nodeId);
 
   @override
-  String toString() => 'MdstreamNodeKey($epoch/$nodeId)';
+  String toString() =>
+      'MdstreamNodeKey($continuityGeneration/$epoch/$nodeId)';
 }
 
 abstract interface class _ControllerBackend implements _ProcessorBackend {
   void close();
+}
+
+final class _GuardedProcessorRegistration implements ProcessorRegistration {
+  const _GuardedProcessorRegistration(this._delegate, this._guard);
+
+  final ProcessorRegistration _delegate;
+  final VoidCallback _guard;
+
+  @override
+  void dispose() {
+    _guard();
+    _delegate.dispose();
+  }
 }
 
 final class _EngineBackend implements _ControllerBackend {
@@ -179,11 +201,15 @@ final class _ReducerBackend implements _ControllerBackend {
 
 abstract class _MdstreamControllerBase extends ChangeNotifier
     implements ValueListenable<MdstreamControllerState> {
-  _MdstreamControllerBase(this._backend)
+  _MdstreamControllerBase(this._backend, {required bool captureTransitions})
     : _value = MdstreamControllerState(
         snapshot: _backend.state.currentState,
         impact: MdstreamNotificationImpact._empty,
         lastError: null,
+      ),
+      _captureTransitions = captureTransitions,
+      _transitions = _DirectedValueListenable<MdstreamTransitionBatch>(
+        MdstreamTransitionBatch._initial,
       ) {
     artifacts = MdstreamArtifacts._(artifactView, artifact);
     _processors = _ProcessorScheduler(
@@ -193,9 +219,14 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
   }
 
   final _ControllerBackend _backend;
+  final bool _captureTransitions;
+  final _DirectedValueListenable<MdstreamTransitionBatch> _transitions;
   MdstreamControllerState _value;
   bool _disposed = false;
   int _activeNotificationDepth = 0;
+  int _activeTransitionNotificationDepth = 0;
+  int _transitionRevision = 0;
+  int _continuityGeneration = 0;
 
   final Map<NodeId, _DirectedValueListenable<NodeView?>> _nodes =
       <NodeId, _DirectedValueListenable<NodeView?>>{};
@@ -214,6 +245,12 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
 
   @override
   MdstreamControllerState get value => _value;
+
+  /// Ordered transition facts for the latest public operation.
+  ///
+  /// The revision stays at zero and this listenable remains silent when the
+  /// session was created without transition capture.
+  ValueListenable<MdstreamTransitionBatch> get transitions => _transitions;
 
   /// Most recent host-side processor failure.
   ValueListenable<ProcessorErrorEvent?> get processorErrors =>
@@ -255,7 +292,11 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     if (epoch == null) {
       throw StateError('mdstream document is not initialized');
     }
-    final candidate = MdstreamNodeKey(epoch: epoch, nodeId: id);
+    final candidate = MdstreamNodeKey(
+      continuityGeneration: _continuityGeneration,
+      epoch: epoch,
+      nodeId: id,
+    );
     return _nodeKeys.putIfAbsent(candidate, () => candidate);
   }
 
@@ -294,8 +335,13 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
   }
 
   /// Registers a host-side content processor.
-  ProcessorRegistration registerProcessor(ContentProcessor processor) =>
-      _processors.register(processor);
+  ProcessorRegistration registerProcessor(ContentProcessor processor) {
+    _assertMutationAllowed();
+    return _GuardedProcessorRegistration(
+      _processors.register(processor),
+      _assertNoTransitionReentry,
+    );
+  }
 
   /// Completes after all scheduled processor scans and jobs settle.
   Future<void> whenProcessorsIdle() => _processors.whenIdle();
@@ -305,7 +351,7 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     T Function() operation,
     Iterable<ReducerResult> Function(T result) results,
   ) {
-    _assertOpen();
+    _assertMutationAllowed();
     try {
       final result = operation();
       _publish(results(result));
@@ -328,6 +374,9 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     for (final result in results) {
       for (final update in result.updates) {
         impactBuilder.add(update.impact);
+        if (update.impact.fullReplace) {
+          _continuityGeneration += 1;
+        }
       }
       for (final change in result.artifactChanges) {
         artifactSlots.add(
@@ -350,9 +399,22 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
         lastError: null,
       );
     }
-    _updateFocusedViews(impact, artifactSlots);
+    final focusedNotifications = _prepareFocusedViews(impact, artifactSlots);
+    _publishTransition(
+      _captureTransitions
+          // Keep every reducer observation ordered even though the current
+          // native engine emits at most one reducer result per document call.
+          ? results.expand((result) => result.transitionFacts)
+          : const <TransitionFactsView>[],
+    );
     if (_disposed) {
       return;
+    }
+    for (final notify in focusedNotifications) {
+      if (_disposed) {
+        return;
+      }
+      notify();
     }
     if (controllerChanged) {
       _notifyControllerListeners();
@@ -363,7 +425,7 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     _processors.handleResults(results);
   }
 
-  void _updateFocusedViews(
+  List<VoidCallback> _prepareFocusedViews(
     MdstreamNotificationImpact impact,
     Set<ArtifactSlot> artifactSlots,
   ) {
@@ -424,15 +486,7 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
         notifications.add(listenable.emit);
       }
     }
-    for (final notify in notifications) {
-      if (_disposed) {
-        return;
-      }
-      notify();
-      if (_disposed) {
-        return;
-      }
-    }
+    return notifications;
   }
 
   void _consumeProcessorResult(ReducerResult result) {
@@ -458,7 +512,28 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
         stackTrace: stackTrace,
       ),
     );
+    _publishTransition(const <TransitionFactsView>[]);
+    if (_disposed) {
+      return;
+    }
     _notifyControllerListeners();
+  }
+
+  void _publishTransition(Iterable<TransitionFactsView> facts) {
+    if (!_captureTransitions || _disposed) {
+      return;
+    }
+    _transitionRevision += 1;
+    _transitions.replace(
+      MdstreamTransitionBatch._(revision: _transitionRevision, facts: facts),
+      force: true,
+    );
+    _activeTransitionNotificationDepth += 1;
+    try {
+      _transitions.emit();
+    } finally {
+      _activeTransitionNotificationDepth -= 1;
+    }
   }
 
   void _notifyControllerListeners() {
@@ -482,6 +557,19 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     }
   }
 
+  void _assertMutationAllowed() {
+    _assertOpen();
+    _assertNoTransitionReentry();
+  }
+
+  void _assertNoTransitionReentry() {
+    if (_activeTransitionNotificationDepth > 0) {
+      throw StateError(
+        'mdstream mutation is not allowed during a transition notification',
+      );
+    }
+  }
+
   @override
   void dispose() {
     if (_disposed) {
@@ -490,6 +578,7 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     _disposed = true;
     _processors.close();
     _backend.close();
+    _transitions.dispose();
     _pendingSource?.dispose();
     _pendingSource = null;
     for (final listenable in _nodes.values) {
@@ -513,7 +602,8 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
 
 /// Local streaming producer with Flutter state notifications.
 final class MdstreamController extends _MdstreamControllerBase {
-  MdstreamController._(this._engine) : super(_EngineBackend(_engine));
+  MdstreamController._(this._engine, {required bool captureTransitions})
+    : super(_EngineBackend(_engine), captureTransitions: captureTransitions);
 
   final MdstreamEngine _engine;
 
@@ -528,7 +618,10 @@ final class MdstreamController extends _MdstreamControllerBase {
   factory MdstreamController.fromRuntime(
     MdstreamRuntime runtime, {
     MdstreamSessionOptions? options,
-  }) => MdstreamController._(runtime.createEngine(options: options));
+  }) => MdstreamController._(
+    runtime.createEngine(options: options),
+    captureTransitions: options?.captureTransitions ?? false,
+  );
 
   /// Appends one source chunk.
   EngineResult append(String chunk) => runTransition(
@@ -561,7 +654,8 @@ final class MdstreamController extends _MdstreamControllerBase {
 
 /// Canonical replica with explicit gap/fork snapshot recovery.
 final class MdstreamReplicaController extends _MdstreamControllerBase {
-  MdstreamReplicaController._(this._reducer) : super(_ReducerBackend(_reducer));
+  MdstreamReplicaController._(this._reducer, {required bool captureTransitions})
+    : super(_ReducerBackend(_reducer), captureTransitions: captureTransitions);
 
   final MdstreamReducer _reducer;
 
@@ -576,7 +670,10 @@ final class MdstreamReplicaController extends _MdstreamControllerBase {
   factory MdstreamReplicaController.fromRuntime(
     MdstreamRuntime runtime, {
     MdstreamSessionOptions? options,
-  }) => MdstreamReplicaController._(runtime.createReducer(options: options));
+  }) => MdstreamReplicaController._(
+    runtime.createReducer(options: options),
+    captureTransitions: options?.captureTransitions ?? false,
+  );
 
   /// Applies one canonical change.
   ReducerResult applyChange(CanonicalChangeBytes change) => runTransition(
