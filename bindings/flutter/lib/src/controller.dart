@@ -30,8 +30,7 @@ final class MdstreamNodeKey extends LocalKey {
   int get hashCode => Object.hash(continuityGeneration, epoch, nodeId);
 
   @override
-  String toString() =>
-      'MdstreamNodeKey($continuityGeneration/$epoch/$nodeId)';
+  String toString() => 'MdstreamNodeKey($continuityGeneration/$epoch/$nodeId)';
 }
 
 abstract interface class _ControllerBackend implements _ProcessorBackend {
@@ -371,11 +370,16 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     final nextSnapshot = _backend.state.currentState;
     final impactBuilder = _ImpactBuilder();
     final artifactSlots = <ArtifactSlot>{};
+    List<TransitionFactsView>? transitionFacts;
     for (final result in results) {
       for (final update in result.updates) {
         impactBuilder.add(update.impact);
         if (update.impact.fullReplace) {
           _continuityGeneration += 1;
+        }
+        final transition = update.transition;
+        if (_captureTransitions && transition != null) {
+          (transitionFacts ??= <TransitionFactsView>[]).add(transition.facts);
         }
       }
       for (final change in result.artifactChanges) {
@@ -400,13 +404,7 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
       );
     }
     final focusedNotifications = _prepareFocusedViews(impact, artifactSlots);
-    _publishTransition(
-      _captureTransitions
-          // Keep every reducer observation ordered even though the current
-          // native engine emits at most one reducer result per document call.
-          ? results.expand((result) => result.transitionFacts)
-          : const <TransitionFactsView>[],
-    );
+    _publishTransition(transitionFacts ?? const <TransitionFactsView>[]);
     if (_disposed) {
       return;
     }

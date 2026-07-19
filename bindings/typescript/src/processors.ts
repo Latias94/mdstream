@@ -15,6 +15,11 @@ import {
   type RequestGeneration,
 } from "./views.js";
 
+const RESOURCE_LIMIT_STATUS = Object.freeze({
+  status: 11,
+  statusName: "MDSTREAM_RESOURCE_LIMIT_EXCEEDED",
+} as const);
+
 export interface ContentProcessorDescriptor {
   readonly id: string;
   readonly version: string;
@@ -482,8 +487,7 @@ export class ProcessorScheduler {
         error: new MdstreamError(
           `processor candidate queue limit ${this.#maxCandidates} exceeded`,
           {
-            status: 11,
-            statusName: "MDSTREAM_RESOURCE_LIMIT_EXCEEDED",
+            ...RESOURCE_LIMIT_STATUS,
             detailCode: "processor.candidate_queue_limit",
           },
         ),
@@ -526,7 +530,7 @@ export class ProcessorScheduler {
   }
 
   #removeNodeCandidates(nodeId: NodeId): void {
-    for (const registration of [...this.#candidates.keys()]) {
+    for (const registration of this.#candidates.keys()) {
       this.#removeCandidate(registration, nodeId);
     }
   }
@@ -568,7 +572,7 @@ export class ProcessorScheduler {
   }
 
   #removeRejectedNode(nodeId: NodeId): void {
-    for (const registration of [...this.#rejectedCandidates.keys()]) {
+    for (const registration of this.#rejectedCandidates.keys()) {
       this.#removeRejectedCandidate(registration, nodeId);
     }
   }
@@ -701,7 +705,10 @@ export class ProcessorScheduler {
       this.#removeRejectedCandidate(registration, nodeId);
     } catch (error) {
       const normalized = MdstreamError.from(error);
-      if (normalized.status === 11 && this.#inFlight.size > 0) {
+      if (
+        normalized.status === RESOURCE_LIMIT_STATUS.status &&
+        this.#inFlight.size > 0
+      ) {
         this.#enqueueCandidate(
           registration,
           expectedEpoch,

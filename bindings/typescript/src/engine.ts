@@ -417,7 +417,7 @@ export class LosslessInputBatcher {
       return emptyEngineResults;
     }
     if (this.#pendingBytes > 0 && this.#pendingBytes + bytes > this.#maxBatchBytes) {
-      const flushed = this.flush();
+      const flushed = this.#flush();
       if (flushed !== undefined) {
         (results ??= []).push(flushed);
       }
@@ -433,7 +433,7 @@ export class LosslessInputBatcher {
     this.#chunks.push(chunk);
     this.#pendingBytes += bytes;
     if (this.#pendingBytes === this.#maxBatchBytes) {
-      const flushed = this.flush();
+      const flushed = this.#flush();
       if (flushed !== undefined) {
         (results ??= []).push(flushed);
       }

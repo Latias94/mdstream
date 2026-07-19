@@ -1227,14 +1227,7 @@ fn build_continuous_transition(
         .transition
         .as_ref()
         .expect("capture-enabled staging retains transition edit windows");
-    work.splice_ids_copied = transition_journal
-        .splices
-        .values()
-        .fold(0_u64, |total, splice| {
-            total.saturating_add(usize_to_u64(
-                splice.removed.len().saturating_add(splice.inserted.len()),
-            ))
-        });
+    work.splice_ids_copied = transition_journal.splice_ids_copied;
     let structures = transition_journal
         .splices
         .iter()
@@ -1564,6 +1557,7 @@ struct StagedChange {
 #[derive(Default)]
 struct StagedTransitionJournal {
     splices: BTreeMap<ChildListOwner, StagedSplice>,
+    splice_ids_copied: u64,
 }
 
 struct StagedSplice {
@@ -1865,10 +1859,11 @@ fn stage_document(
                     StructureEdit::Replace(replacement)
                 };
                 if let Some(journal) = &mut transition {
-                    journal.splices.insert(
-                        *owner,
-                        staged_splice(current, start, end, insert, new_version),
+                    let splice = staged_splice(current, start, end, insert, new_version);
+                    journal.splice_ids_copied = journal.splice_ids_copied.saturating_add(
+                        usize_to_u64(splice.removed.len().saturating_add(splice.inserted.len())),
                     );
+                    journal.splices.insert(*owner, splice);
                 }
                 structures.insert(*owner, edit);
             }

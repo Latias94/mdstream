@@ -28,7 +28,14 @@ jobs:
           fetch-depth: 0
 
       - name: Verify versions, package graph, workflows, and docs
-        run: python3 scripts/verify-packages.py --phase static
+        id: package_contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$(python3 scripts/verify-packages.py --phase static)"
+          printf '%s\n' "$report"
+          version="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])' <<<"$report")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Validate tag and changelog
         id: release
@@ -36,16 +43,14 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          python3 - "$version" <<'PY'
+          manifest_version="${{ steps.package_contract.outputs.version }}"
+          python3 - "$version" "$manifest_version" <<'PY'
           import re
           import sys
-          import tomllib
 
-          version = sys.argv[1]
+          version, manifest_version = sys.argv[1:]
           if not re.fullmatch(r"\d+\.\d+\.\d+", version):
               raise SystemExit(f"invalid release version: {version}")
-          with open("mdstream-protocol/Cargo.toml", "rb") as handle:
-              manifest_version = tomllib.load(handle)["package"]["version"]
           if manifest_version != version:
               raise SystemExit(
                   f"tag version {version} does not match package version {manifest_version}"

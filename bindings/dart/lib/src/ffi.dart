@@ -512,7 +512,7 @@ final class NativeBindings {
         }
         payloads.add(NativePayload(payload.kind, _copyAndFree(payload.data)));
       }
-      return List.unmodifiable(payloads);
+      return payloads;
     } finally {
       _outputFree(result.output);
     }

@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write as _,
     fs,
     path::PathBuf,
     process::Command,
@@ -60,12 +61,14 @@ fn obsolete_zero_three_surface_is_not_available() {
         ("snapshot_blocks", "engine.snapshot_blocks()"),
         ("committed_mut", "engine.committed_mut()"),
     ];
-    let method_probes = methods
-        .iter()
-        .map(|(_, invocation)| {
-            format!("{{ let mut engine = StreamEngine::new(); let _ = {invocation}; }}")
-        })
-        .collect::<String>();
+    let mut method_probes = String::new();
+    for (_, invocation) in &methods {
+        write!(
+            method_probes,
+            "{{ let mut engine = StreamEngine::new(); let _ = {invocation}; }}"
+        )
+        .expect("writing to a String cannot fail");
+    }
     let method_names = methods.map(|(name, _)| name);
     project.assert_rejected(
         "obsolete methods",

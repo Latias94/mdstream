@@ -1,6 +1,6 @@
 use mdstream::{EngineOutput, StreamEngine};
 use mdstream_conformance::{
-    HostReconstructionTrace, NormalizedSnapshot, ProtocolTrace, TraceInputEvent,
+    ChunkSchedule, HostReconstructionTrace, NormalizedSnapshot, ProtocolTrace, TraceInputEvent,
     reconstruct_host_trace,
 };
 use serde_json::json;
@@ -9,7 +9,7 @@ const SOURCE: &str = "# Transition trace\n\nStreaming caf\u{e9} with [a late lin
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let whole = compile_schedule("whole", [SOURCE])?;
-    let scalar_chunks = utf8_scalar_chunks(SOURCE);
+    let scalar_chunks = ChunkSchedule::Characters.slices(SOURCE)?;
     let scalar = compile_schedule("utf8-scalar", scalar_chunks.iter().copied())?;
 
     if whole.final_snapshot != scalar.final_snapshot {
@@ -74,18 +74,6 @@ fn append_changes(changes: &mut Vec<mdstream_protocol::ChangeSet>, output: Engin
     changes.extend(output.into_changes());
 }
 
-fn utf8_scalar_chunks(source: &str) -> Vec<&str> {
-    let mut boundaries = source.char_indices().map(|(index, _)| index).skip(1);
-    let mut start = 0usize;
-    let mut chunks = Vec::new();
-    for end in boundaries.by_ref() {
-        chunks.push(&source[start..end]);
-        start = end;
-    }
-    chunks.push(&source[start..]);
-    chunks
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,7 +82,7 @@ mod tests {
     #[test]
     fn whole_and_utf8_scalar_schedules_converge() {
         let whole = compile_schedule("whole", [SOURCE]).unwrap();
-        let scalar_chunks = utf8_scalar_chunks(SOURCE);
+        let scalar_chunks = ChunkSchedule::Characters.slices(SOURCE).unwrap();
         let scalar = compile_schedule("utf8-scalar", scalar_chunks.iter().copied()).unwrap();
 
         assert_eq!(whole.final_snapshot, scalar.final_snapshot);
