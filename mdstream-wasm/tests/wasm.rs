@@ -9,7 +9,7 @@ use mdstream_protocol::{
 };
 use mdstream_wasm::{
     MdstreamEngineSession, MdstreamOutput, MdstreamPayloadKind, MdstreamReducerSession,
-    abi_version, binding_options_schema, binding_schema, package_version,
+    abi_version, binding_options_schema, binding_schema, package_version, transition_schema,
 };
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
@@ -52,11 +52,11 @@ fn encode(change: &ChangeSet) -> Vec<u8> {
     encode_change_json(change, usize::MAX, ProtocolLimits::default()).unwrap()
 }
 
-fn initialize_single_stable_node(reducer: &mut MdstreamReducerSession) {
+fn single_stable_node_change() -> ChangeSet {
     let node_id = NodeId::new(1);
     let range = SourceRange::new(SourceCursor::new(0), SourceCursor::new(0));
     let roots = ChildList::new(vec![node_id]);
-    let change = ChangeSet::start_epoch(
+    ChangeSet::start_epoch(
         Epoch::new(1),
         ChangeId::new("wasm:processor:start").unwrap(),
         None,
@@ -80,8 +80,13 @@ fn initialize_single_stable_node(reducer: &mut MdstreamReducerSession) {
             },
         ],
     )
-    .unwrap();
-    reducer.apply_change(&encode(&change)).unwrap();
+    .unwrap()
+}
+
+fn initialize_single_stable_node(reducer: &mut MdstreamReducerSession) {
+    reducer
+        .apply_change(&encode(&single_stable_node_change()))
+        .unwrap();
 }
 
 fn begin_processor(reducer: &mut MdstreamReducerSession, processor_id: &str) -> String {
@@ -120,7 +125,9 @@ fn metadata_payload_kinds_and_consumption_are_stable() {
     assert_eq!(package_version(), "0.4.0");
     assert_eq!(binding_schema(), "mdstream.bindings/0.4");
     assert_eq!(binding_options_schema(), "mdstream.bindings-options/0.4");
+    assert_eq!(transition_schema(), "mdstream.transitions/draft");
     assert_eq!(MdstreamPayloadKind::Change as u32, 1);
+    assert_eq!(MdstreamPayloadKind::ReducerUpdate as u32, 3);
     assert_eq!(MdstreamPayloadKind::ArtifactView as u32, 9);
     assert_eq!(MdstreamPayloadKind::PendingSourceView as u32, 10);
 
@@ -138,6 +145,35 @@ fn metadata_payload_kinds_and_consumption_are_stable() {
     }
     let change: ChangeSet = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(change.sequence().get(), 0);
+}
+
+#[wasm_bindgen_test]
+fn transition_facts_use_the_existing_reducer_update_transport() {
+    let options = format!(
+        r#"{{
+          "schema":"{}",
+          "capture_transitions":true,
+          "protocol":{{
+            "max_source_bytes":"1024",
+            "max_nodes":"16",
+            "max_resources":"16",
+            "max_operations":"32",
+            "max_change_structural_items":"64",
+            "max_children_per_list":"16"
+          }},
+          "wire":{{"max_reducer_update_bytes":"1048576"}}
+        }}"#,
+        binding_options_schema()
+    );
+    let mut reducer = MdstreamReducerSession::new(Some(options)).unwrap();
+    let mut output = reducer
+        .apply_change(&encode(&single_stable_node_change()))
+        .unwrap();
+    assert_eq!(output.payload_count(), 1);
+    let update = json_payload(&mut output, MdstreamPayloadKind::ReducerUpdate);
+    assert_eq!(update["transition"]["schema"], transition_schema());
+    assert_eq!(update["transition"]["facts"]["scope"], "continuous");
+    assert_eq!(MdstreamPayloadKind::ReducerUpdate as u32, 3);
 }
 
 #[wasm_bindgen_test]
@@ -356,6 +392,34 @@ fn maximum_decimal_ids_and_opaque_versions_survive_js_transport() {
             .unwrap()
             .starts_with("sha256:")
     );
+
+    let options = format!(
+        r#"{{
+          "schema":"{}",
+          "capture_transitions":true,
+          "protocol":{{
+            "max_source_bytes":"0",
+            "max_nodes":"1",
+            "max_resources":"0",
+            "max_operations":"2",
+            "max_change_structural_items":"1",
+            "max_children_per_list":"1"
+          }},
+          "wire":{{"max_reducer_update_bytes":"1048576"}}
+        }}"#,
+        binding_options_schema()
+    );
+    let mut captured = MdstreamReducerSession::new(Some(options)).unwrap();
+    let mut transition = captured.apply_change(&encode(&change)).unwrap();
+    let transition = json_payload(&mut transition, MdstreamPayloadKind::ReducerUpdate);
+    assert_eq!(
+        transition["transition"]["facts"]["nodes"][0]["key"]["epoch"],
+        u64::MAX.to_string()
+    );
+    assert_eq!(
+        transition["transition"]["facts"]["nodes"][0]["key"]["node_id"],
+        u128::MAX.to_string()
+    );
 }
 
 #[wasm_bindgen_test]
@@ -471,6 +535,23 @@ fn typed_processor_transport_preserves_leases_and_owned_binary_payloads() {
 fn invalid_options_and_oversized_input_fail_without_engine_mutation() {
     let error = MdstreamEngineSession::new(Some("{}".to_string())).unwrap_err();
     assert_eq!(error_status(&error), 3.0);
+
+    let wrong_schema = MdstreamReducerSession::new(Some(
+        r#"{"schema":"mdstream.bindings-options/999"}"#.to_string(),
+    ))
+    .unwrap_err();
+    assert_eq!(error_status(&wrong_schema), 5.0);
+    assert_eq!(
+        error_detail_code(&wrong_schema),
+        "bindings.unsupported_options_schema"
+    );
+
+    let old_budget = MdstreamReducerSession::new(Some(format!(
+        r#"{{"schema":"{}","wire":{{"max_impact_bytes":"1048576"}}}}"#,
+        binding_options_schema()
+    )))
+    .unwrap_err();
+    assert_eq!(error_status(&old_budget), 3.0);
 
     let options = format!(
         r#"{{

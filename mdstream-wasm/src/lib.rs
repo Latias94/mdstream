@@ -7,7 +7,7 @@ use std::str::FromStr;
 use mdstream_bindings_core::{
     BINDING_OPTIONS_SCHEMA, BINDING_SCHEMA, BindingError, BindingMetrics, BindingOutput,
     BindingPayload, BindingPayloadKind, BindingStatus, EngineSession, ProcessorExpectation,
-    ProcessorFailureCode, ReducerSession, error_payload_json_bytes,
+    ProcessorFailureCode, ReducerSession, TRANSITION_SCHEMA_DRAFT, error_payload_json_bytes,
 };
 use mdstream_protocol::{DecimalIdError, NodeVersion, RequestGeneration};
 use wasm_bindgen::prelude::*;
@@ -41,6 +41,11 @@ pub fn binding_schema() -> String {
 #[wasm_bindgen(js_name = bindingOptionsSchema)]
 pub fn binding_options_schema() -> String {
     BINDING_OPTIONS_SCHEMA.to_string()
+}
+
+#[wasm_bindgen(js_name = transitionSchema)]
+pub fn transition_schema() -> String {
+    TRANSITION_SCHEMA_DRAFT.to_string()
 }
 
 #[wasm_bindgen]

@@ -10,6 +10,11 @@ const MAX_OPTIONS_BYTES: usize = 64 * 1024;
 const JSON_ESCAPE_FACTOR: usize = 6;
 const BINDING_ENVELOPE_BYTES: usize = 4 * 1024;
 const IMPACT_ID_BYTES: usize = 96;
+const TRANSITION_ENVELOPE_BYTES: usize = 8 * 1024;
+const TRANSITION_KEY_BYTES: usize = 192;
+const NODE_TRANSITION_BYTES: usize = 2 * 1024;
+const RESOURCE_TRANSITION_BYTES: usize = 1024;
+const STRUCTURE_TRANSITION_BYTES: usize = 1024;
 const NODE_STRUCTURAL_ITEM_BYTES: usize = 64;
 const NODE_STRUCTURAL_LISTS: usize = 2;
 
@@ -18,7 +23,7 @@ pub(crate) struct WireLimits {
     pub max_command_bytes: usize,
     pub max_encoded_change_bytes: usize,
     pub max_encoded_snapshot_bytes: usize,
-    pub max_impact_bytes: usize,
+    pub max_reducer_update_bytes: usize,
     pub max_processor_payload_bytes: usize,
     pub max_artifact_event_bytes: usize,
     pub max_view_bytes: usize,
@@ -30,7 +35,7 @@ impl Default for WireLimits {
             max_command_bytes: 512 * 1024 * 1024,
             max_encoded_change_bytes: 384 * 1024 * 1024,
             max_encoded_snapshot_bytes: 256 * 1024 * 1024,
-            max_impact_bytes: 64 * 1024 * 1024,
+            max_reducer_update_bytes: 64 * 1024 * 1024,
             max_processor_payload_bytes: 32 * 1024 * 1024,
             max_artifact_event_bytes: 8 * 1024 * 1024,
             max_view_bytes: 128 * 1024 * 1024,
@@ -44,6 +49,7 @@ pub(crate) struct BindingOptions {
     engine: EngineLimits,
     processor: ProcessorLimits,
     wire: WireLimits,
+    capture_transitions: bool,
     custom_blocks: Vec<CustomBlockSpec>,
 }
 
@@ -84,6 +90,7 @@ impl BindingOptions {
         if let Some(wire) = raw.wire {
             wire.apply(&mut options.wire)?;
         }
+        options.capture_transitions = raw.capture_transitions;
         options.custom_blocks = raw
             .custom_blocks
             .into_iter()
@@ -128,22 +135,20 @@ impl BindingOptions {
         Ok((engine, protocol, self.wire))
     }
 
+    pub(crate) const fn capture_transitions(&self) -> bool {
+        self.capture_transitions
+    }
+
     pub(crate) fn into_reducer(
         self,
     ) -> Result<(Reducer, ArtifactHost, ProtocolLimits, WireLimits), BindingError> {
-        let id_count = self
-            .protocol
-            .max_nodes
-            .checked_add(self.protocol.max_resources)
-            .and_then(|count| count.checked_mul(2))
-            .ok_or_else(|| BindingError::options("impact identifier bound overflowed"))?;
-        let impact_bound = id_count
-            .checked_mul(IMPACT_ID_BYTES)
-            .and_then(|bytes| bytes.checked_add(BINDING_ENVELOPE_BYTES))
-            .ok_or_else(|| BindingError::options("impact wire bound overflowed"))?;
-        if self.wire.max_impact_bytes < impact_bound {
+        let reducer_update_bound =
+            minimum_reducer_update_bytes(self.protocol, self.capture_transitions)
+                .ok_or_else(|| BindingError::options("reducer update wire bound overflowed"))?;
+        if self.wire.max_reducer_update_bytes < reducer_update_bound {
             return Err(BindingError::options(format!(
-                "wire.max_impact_bytes must be at least {impact_bound} for configured protocol limits"
+                "wire.max_reducer_update_bytes must be at least {reducer_update_bound} for configured protocol limits with capture_transitions={}",
+                self.capture_transitions
             )));
         }
 
@@ -218,6 +223,8 @@ struct RawBindingOptions {
     processor: Option<RawProcessorLimits>,
     #[serde(default)]
     wire: Option<RawWireLimits>,
+    #[serde(default)]
+    capture_transitions: bool,
     #[serde(default)]
     custom_blocks: Vec<RawCustomBlock>,
 }
@@ -320,11 +327,53 @@ raw_limits!(RawWireLimits => WireLimits {
     max_command_bytes,
     max_encoded_change_bytes,
     max_encoded_snapshot_bytes,
-    max_impact_bytes,
+    max_reducer_update_bytes,
     max_processor_payload_bytes,
     max_artifact_event_bytes,
     max_view_bytes,
 });
+
+fn minimum_reducer_update_bytes(
+    protocol: ProtocolLimits,
+    capture_transitions: bool,
+) -> Option<usize> {
+    // Old and new populations cover transitions that replace every legal node or resource.
+    // Fixed record allowances include opaque IDs and continuity-qualified parent keys; only
+    // source text needs the full JSON escape multiplier.
+    let two_node_populations = protocol.max_nodes.checked_mul(2)?;
+    let two_resource_populations = protocol.max_resources.checked_mul(2)?;
+    // `changed_*` can contain disjoint before/after populations, while each
+    // `removed_*` list can repeat the complete before population.
+    let impact_ids = protocol
+        .max_nodes
+        .checked_mul(3)?
+        .checked_add(protocol.max_resources.checked_mul(3)?)?;
+    let root_ids = protocol.max_children_per_list.min(protocol.max_nodes);
+    let mut bytes = impact_ids
+        .checked_add(root_ids)?
+        .checked_mul(IMPACT_ID_BYTES)?
+        .checked_add(BINDING_ENVELOPE_BYTES)?;
+
+    if !capture_transitions {
+        return Some(bytes);
+    }
+
+    let resource_facts = two_resource_populations.min(protocol.max_operations);
+    let structure_owners = protocol.max_nodes.checked_add(1)?;
+    let structure_facts = structure_owners.min(protocol.max_operations);
+    let inserted_splice_ids = protocol.max_change_structural_items.min(protocol.max_nodes);
+    let splice_ids = protocol.max_nodes.checked_add(inserted_splice_ids)?;
+
+    bytes = bytes
+        .checked_add(TRANSITION_ENVELOPE_BYTES)?
+        .checked_add(two_node_populations.checked_mul(NODE_TRANSITION_BYTES)?)?
+        .checked_add(resource_facts.checked_mul(RESOURCE_TRANSITION_BYTES)?)?
+        .checked_add(structure_facts.checked_mul(STRUCTURE_TRANSITION_BYTES)?)?
+        .checked_add(two_node_populations.checked_mul(TRANSITION_KEY_BYTES)?)?
+        .checked_add(splice_ids.checked_mul(TRANSITION_KEY_BYTES)?)?
+        .checked_add(protocol.max_source_bytes.checked_mul(JSON_ESCAPE_FACTOR)?)?;
+    Some(bytes)
+}
 
 fn parse_decimal_usize(value: &str, field: &'static str) -> Result<usize, BindingError> {
     let canonical = value == "0"

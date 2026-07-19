@@ -301,14 +301,14 @@ fn invalid_options_commands_utf8_and_encoded_inputs_are_atomic() {
         BindingStatus::Options
     );
 
-    let undersized_impact = format!(
+    let undersized_reducer_update = format!(
         r#"{{
           "schema":"{BINDING_OPTIONS_SCHEMA}",
-          "wire":{{"max_impact_bytes":"1"}}
+          "wire":{{"max_reducer_update_bytes":"1"}}
         }}"#
     );
     assert_eq!(
-        ReducerSession::new(undersized_impact.as_bytes())
+        ReducerSession::new(undersized_reducer_update.as_bytes())
             .unwrap_err()
             .status(),
         BindingStatus::Options

@@ -11,8 +11,9 @@ use mdstream_processors::{
     ProcessorRequest, ProcessorRequestKey, ProcessorResult, ProcessorSlotKey,
 };
 use mdstream_protocol::{
-    ApplyOutcome, ChangeImpact, NodeId, NodeVersion, ProtocolLimits, Reducer, ReducerStatus,
-    RequestGeneration, ResourceId, decode_change_json, decode_snapshot_json, encode_change_json,
+    ApplyOutcome, ChangeImpact, ChangeSet, Document, NodeId, NodeVersion, ProtocolLimits, Reducer,
+    ReducerStatus, RequestGeneration, ResourceId, Snapshot, TransitionError, TransitionOutcome,
+    TransitionReducer, decode_change_json, decode_snapshot_json, encode_change_json,
     encode_snapshot_json,
 };
 
@@ -145,8 +146,64 @@ impl EngineSession {
     }
 }
 
+enum SessionReducer {
+    Plain(Reducer),
+    Captured(TransitionReducer),
+}
+
+impl SessionReducer {
+    fn status(&self) -> ReducerStatus {
+        match self {
+            Self::Plain(reducer) => reducer.status(),
+            Self::Captured(reducer) => reducer.status(),
+        }
+    }
+
+    fn document(&self) -> Option<&Document> {
+        match self {
+            Self::Plain(reducer) => reducer.document(),
+            Self::Captured(reducer) => reducer.document(),
+        }
+    }
+
+    fn apply(&mut self, change: ChangeSet) -> Result<TransitionOutcome, BindingError> {
+        match self {
+            Self::Plain(reducer) => reducer
+                .apply(change)
+                .map(|outcome| TransitionOutcome {
+                    outcome,
+                    facts: None,
+                })
+                .map_err(protocol_error),
+            Self::Captured(reducer) => reducer.apply(change).map_err(transition_error),
+        }
+    }
+
+    fn recover_snapshot(&mut self, snapshot: Snapshot) -> Result<TransitionOutcome, BindingError> {
+        match self {
+            Self::Plain(reducer) => reducer
+                .recover_snapshot(snapshot)
+                .map(|outcome| TransitionOutcome {
+                    outcome,
+                    facts: None,
+                })
+                .map_err(protocol_error),
+            Self::Captured(reducer) => reducer.recover_snapshot(snapshot).map_err(transition_error),
+        }
+    }
+}
+
+fn transition_error(error: TransitionError) -> BindingError {
+    match error {
+        TransitionError::Protocol(error) => protocol_error(error),
+        TransitionError::ContinuityOverflow => {
+            BindingError::internal("transition continuity generation overflowed")
+        }
+    }
+}
+
 pub struct ReducerSession {
-    reducer: Reducer,
+    reducer: SessionReducer,
     host: ArtifactHost,
     protocol_limits: ProtocolLimits,
     wire_limits: WireLimits,
@@ -170,7 +227,13 @@ impl fmt::Debug for ReducerSession {
 impl ReducerSession {
     pub fn new(options_json: &[u8]) -> Result<Self, BindingError> {
         let options = BindingOptions::parse(options_json)?;
+        let capture_transitions = options.capture_transitions();
         let (reducer, host, protocol_limits, wire_limits) = options.into_reducer()?;
+        let reducer = if capture_transitions {
+            SessionReducer::Captured(TransitionReducer::with_limits(protocol_limits))
+        } else {
+            SessionReducer::Plain(reducer)
+        };
         Ok(Self {
             reducer,
             host,
@@ -192,7 +255,7 @@ impl ReducerSession {
         .map_err(protocol_error)?;
         self.metrics.decoded_change_payloads =
             self.metrics.decoded_change_payloads.saturating_add(1);
-        let outcome = self.reducer.apply(change).map_err(protocol_error)?;
+        let outcome = self.reducer.apply(change)?;
         self.finish_reducer_transition(outcome)
     }
 
@@ -209,10 +272,7 @@ impl ReducerSession {
         .map_err(protocol_error)?;
         self.metrics.decoded_snapshot_payloads =
             self.metrics.decoded_snapshot_payloads.saturating_add(1);
-        let outcome = self
-            .reducer
-            .recover_snapshot(snapshot)
-            .map_err(protocol_error)?;
+        let outcome = self.reducer.recover_snapshot(snapshot)?;
         self.finish_reducer_transition(outcome)
     }
 
@@ -646,8 +706,9 @@ impl ReducerSession {
 
     fn finish_reducer_transition(
         &mut self,
-        outcome: ApplyOutcome,
+        transition: TransitionOutcome,
     ) -> Result<BindingOutput, BindingError> {
+        let TransitionOutcome { outcome, facts } = transition;
         let empty_impact = ChangeImpact::default();
         let impact = match &outcome {
             ApplyOutcome::Applied { impact, .. } | ApplyOutcome::Recovered { impact, .. } => impact,
@@ -674,7 +735,8 @@ impl ReducerSession {
             &self.reducer.status(),
             impact,
             self.reducer.document(),
-            self.wire_limits.max_impact_bytes,
+            facts.as_ref(),
+            self.wire_limits.max_reducer_update_bytes,
         )?;
         let mut output = BindingOutput::default();
         push_recorded(

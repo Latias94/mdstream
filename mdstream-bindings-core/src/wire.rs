@@ -7,13 +7,14 @@ use mdstream_processors::{
 use mdstream_protocol::{
     ApplyOutcome, ChangeImpact, ChildList, ContentNode, Coordinate, Document, DocumentLifecycle,
     Epoch, NodeId, RecoveryReason, ReducerStatus, RequestGeneration, SemanticResource, Sequence,
-    SourceCursor,
+    SourceCursor, TransitionFacts,
 };
 use serde::Serialize;
 
 use crate::{BindingError, errors::protocol_error};
 
 pub const BINDING_SCHEMA: &str = "mdstream.bindings/0.4";
+pub const TRANSITION_SCHEMA_DRAFT: &str = "mdstream.transitions/draft";
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +162,7 @@ pub(crate) fn encode_reducer_update(
     status: &ReducerStatus,
     impact: &ChangeImpact,
     document: Option<&Document>,
+    transition: Option<&TransitionFacts>,
     max_bytes: usize,
 ) -> Result<Vec<u8>, BindingError> {
     let document = document.map(|document| DocumentView {
@@ -177,6 +179,10 @@ pub(crate) fn encode_reducer_update(
             status: StatusView::from(status),
             impact: ImpactView::from(impact),
             document,
+            transition: transition.map(|facts| TransitionView {
+                schema: TRANSITION_SCHEMA_DRAFT,
+                facts,
+            }),
         },
         max_bytes,
         "bindings.reducer_update_bytes",
@@ -379,6 +385,14 @@ struct ReducerUpdate<'a> {
     status: StatusView,
     impact: ImpactView<'a>,
     document: Option<DocumentView<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transition: Option<TransitionView<'a>>,
+}
+
+#[derive(Serialize)]
+struct TransitionView<'a> {
+    schema: &'static str,
+    facts: &'a TransitionFacts,
 }
 
 #[derive(Serialize)]
