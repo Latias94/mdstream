@@ -858,12 +858,7 @@ impl Reducer {
         }
         change.validate_complete(self.limits)?;
 
-        match stage_document::<CAPTURE_TRANSITIONS>(
-            document,
-            change,
-            self.limits,
-            CAPTURE_TRANSITIONS,
-        ) {
+        match stage_document(document, change, self.limits, CAPTURE_TRANSITIONS) {
             Ok(staged) => self.commit_ready_internal::<CAPTURE_TRANSITIONS>(
                 change,
                 staged,
@@ -950,7 +945,7 @@ impl Reducer {
         };
         let digest = change.payload_digest();
         let blank = Document::blank(change.epoch(), change.change_id().clone(), digest);
-        let staged = stage_document::<CAPTURE_TRANSITIONS>(
+        let staged = stage_document(
             &blank,
             change,
             self.limits,
@@ -1587,7 +1582,7 @@ enum StructureEdit {
     Replace(ChildList),
 }
 
-fn stage_document<const CAPTURE_TRANSITIONS: bool>(
+fn stage_document(
     document: &Document,
     change: &ChangeSet,
     limits: ProtocolLimits,
@@ -1621,8 +1616,7 @@ fn stage_document<const CAPTURE_TRANSITIONS: bool>(
     let mut nodes = BTreeMap::<NodeId, Option<ContentNode>>::new();
     let mut resources = BTreeMap::<ResourceId, Option<SemanticResource>>::new();
     let mut structures = BTreeMap::<ChildListOwner, StructureEdit>::new();
-    let mut transition =
-        (CAPTURE_TRANSITIONS && capture_details).then(StagedTransitionJournal::default);
+    let mut transition = capture_details.then(StagedTransitionJournal::default);
     let mut projection_cursor = document.projection_cursor;
     let mut finish = false;
     let mut staging_work_steps = 0usize;
