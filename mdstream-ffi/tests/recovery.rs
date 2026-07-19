@@ -1,7 +1,8 @@
-use std::{path::PathBuf, ptr};
+use std::{path::PathBuf, ptr, sync::Mutex};
 
 use mdstream_bindings_core::{
-    BINDING_OPTIONS_SCHEMA, BindingPayloadKind, BindingStatus, TRANSITION_SCHEMA,
+    BINDING_OPTIONS_SCHEMA, BindingOutput, BindingPayloadKind, BindingStatus, ReducerSession,
+    TRANSITION_SCHEMA,
 };
 use mdstream_conformance::load_fixture;
 use mdstream_ffi::{
@@ -18,20 +19,12 @@ mod ffi_support;
 use ffi_support::{free_success, take_buffer};
 
 const SNAPSHOT: &[u8] = br#"{"schema":"mdstream.bindings/0.4","kind":"snapshot"}"#;
+static FFI_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn gap_blocks_continuation_until_explicit_snapshot_recovery() {
-    let fixture = load_fixture(fixture_path()).unwrap();
-    let trace = fixture
-        .traces
-        .iter()
-        .find(|trace| trace.id == "characters")
-        .unwrap();
-    let changes = trace
-        .changes
-        .iter()
-        .map(|change| encode_change_json(change, usize::MAX, ProtocolLimits::default()).unwrap())
-        .collect::<Vec<_>>();
+    let _ffi_guard = FFI_TEST_LOCK.lock().unwrap();
+    let changes = character_changes();
 
     let primary = new_reducer(None);
     for change in changes.iter().take(3) {
@@ -119,6 +112,87 @@ fn gap_blocks_continuation_until_explicit_snapshot_recovery() {
         mdstream_reducer_free(primary);
     }
     assert_eq!(mdstream_allocation_metrics(), Default::default());
+}
+
+#[test]
+fn c_ffi_reducer_updates_are_byte_identical_to_the_direct_core() {
+    let _ffi_guard = FFI_TEST_LOCK.lock().unwrap();
+    let changes = character_changes();
+
+    let mut producer = ReducerSession::new(b"").unwrap();
+    for change in changes.iter().take(3) {
+        producer.apply_change(change).unwrap();
+    }
+    let advanced_snapshot =
+        take_core_payload(producer.snapshot().unwrap(), BindingPayloadKind::Snapshot);
+
+    let options = transition_options();
+    let mut direct = ReducerSession::new(&options).unwrap();
+    let ffi = new_reducer(Some(&options));
+
+    let continuous = assert_ffi_reducer_update_parity(
+        direct.apply_change(&changes[0]).unwrap(),
+        apply(ffi, &changes[0]),
+    );
+    let continuous = decode_update(&continuous);
+    assert_eq!(continuous["transition"]["facts"]["scope"], "continuous");
+
+    let gap = assert_ffi_reducer_update_parity(
+        direct.apply_change(&changes[2]).unwrap(),
+        apply(ffi, &changes[2]),
+    );
+    let gap = decode_update(&gap);
+    assert_eq!(gap["outcome"]["kind"], "recovery_required");
+
+    let full_replace = assert_ffi_reducer_update_parity(
+        direct.recover_snapshot(&advanced_snapshot).unwrap(),
+        unsafe {
+            mdstream_reducer_recover_snapshot(
+                ffi,
+                advanced_snapshot.as_ptr(),
+                advanced_snapshot.len(),
+            )
+        },
+    );
+    let full_replace = decode_update(&full_replace);
+    assert_eq!(full_replace["transition"]["facts"]["scope"], "full_replace");
+
+    unsafe { mdstream_reducer_free(ffi) };
+    assert_eq!(mdstream_allocation_metrics(), Default::default());
+}
+
+fn character_changes() -> Vec<Vec<u8>> {
+    let fixture = load_fixture(fixture_path()).unwrap();
+    let trace = fixture
+        .traces
+        .iter()
+        .find(|trace| trace.id == "characters")
+        .unwrap();
+    trace
+        .changes
+        .iter()
+        .map(|change| encode_change_json(change, usize::MAX, ProtocolLimits::default()).unwrap())
+        .collect()
+}
+
+fn take_core_payload(output: BindingOutput, expected_kind: BindingPayloadKind) -> Vec<u8> {
+    let mut payloads = output.into_payloads();
+    assert_eq!(payloads.len(), 1);
+    let payload = payloads.pop().unwrap();
+    assert_eq!(payload.kind(), expected_kind);
+    payload.into_bytes()
+}
+
+fn assert_ffi_reducer_update_parity(
+    expected: BindingOutput,
+    actual: MdstreamCallResult,
+) -> Vec<u8> {
+    let expected = take_core_payload(expected, BindingPayloadKind::ReducerUpdate);
+    let (kind, actual) = take_single_payload(actual);
+    assert_eq!(BindingPayloadKind::ReducerUpdate as u32, 3);
+    assert_eq!(kind, BindingPayloadKind::ReducerUpdate as u32);
+    assert_eq!(actual, expected);
+    actual
 }
 
 fn new_reducer(options: Option<&[u8]>) -> *mut MdstreamReducer {

@@ -1,5 +1,6 @@
 #![cfg(target_arch = "wasm32")]
 
+use mdstream_bindings_core::{BindingOutput, BindingPayloadKind, ReducerSession};
 use mdstream_conformance::{Fixture, NormalizedSnapshot};
 use mdstream_protocol::{
     ApplyOutcome, ChangeId, ChangeSet, ChildList, ChildListOwner, ContentKind, ContentNode,
@@ -119,6 +120,47 @@ fn linear_fixture() -> Fixture {
     fixture
 }
 
+fn transition_options_json() -> String {
+    format!(
+        r#"{{
+          "schema":"{}",
+          "capture_transitions":true,
+          "protocol":{{
+            "max_source_bytes":"1024",
+            "max_nodes":"16",
+            "max_resources":"16",
+            "max_operations":"32",
+            "max_change_structural_items":"64",
+            "max_children_per_list":"16"
+          }},
+          "wire":{{"max_reducer_update_bytes":"1048576"}}
+        }}"#,
+        binding_options_schema()
+    )
+}
+
+fn take_core_payload(output: BindingOutput, expected_kind: BindingPayloadKind) -> Vec<u8> {
+    let mut payloads = output.into_payloads();
+    assert_eq!(payloads.len(), 1);
+    let payload = payloads.pop().unwrap();
+    assert_eq!(payload.kind(), expected_kind);
+    payload.into_bytes()
+}
+
+fn assert_wasm_reducer_update_parity(
+    expected: BindingOutput,
+    mut actual: MdstreamOutput,
+) -> Vec<u8> {
+    let expected = take_core_payload(expected, BindingPayloadKind::ReducerUpdate);
+    assert_eq!(BindingPayloadKind::ReducerUpdate as u32, 3);
+    assert_eq!(MdstreamPayloadKind::ReducerUpdate as u32, 3);
+    assert_eq!(actual.payload_count(), 1);
+    assert_eq!(actual.kind(0).unwrap(), MdstreamPayloadKind::ReducerUpdate);
+    let actual = actual.take(0).unwrap();
+    assert_eq!(actual, expected);
+    actual
+}
+
 #[wasm_bindgen_test]
 fn metadata_payload_kinds_and_consumption_are_stable() {
     assert_eq!(abi_version(), 1);
@@ -149,22 +191,7 @@ fn metadata_payload_kinds_and_consumption_are_stable() {
 
 #[wasm_bindgen_test]
 fn transition_facts_use_the_existing_reducer_update_transport() {
-    let options = format!(
-        r#"{{
-          "schema":"{}",
-          "capture_transitions":true,
-          "protocol":{{
-            "max_source_bytes":"1024",
-            "max_nodes":"16",
-            "max_resources":"16",
-            "max_operations":"32",
-            "max_change_structural_items":"64",
-            "max_children_per_list":"16"
-          }},
-          "wire":{{"max_reducer_update_bytes":"1048576"}}
-        }}"#,
-        binding_options_schema()
-    );
+    let options = transition_options_json();
     let mut reducer = MdstreamReducerSession::new(Some(options)).unwrap();
     let mut output = reducer
         .apply_change(&encode(&single_stable_node_change()))
@@ -174,6 +201,49 @@ fn transition_facts_use_the_existing_reducer_update_transport() {
     assert_eq!(update["transition"]["schema"], transition_schema());
     assert_eq!(update["transition"]["facts"]["scope"], "continuous");
     assert_eq!(MdstreamPayloadKind::ReducerUpdate as u32, 3);
+}
+
+#[wasm_bindgen_test]
+fn wasm_reducer_updates_are_byte_identical_to_the_direct_core() {
+    let fixture = linear_fixture();
+    let trace = fixture
+        .traces
+        .iter()
+        .find(|trace| trace.id == "characters")
+        .unwrap();
+    let changes = trace.changes.iter().map(encode).collect::<Vec<_>>();
+
+    let mut producer = ReducerSession::new(b"").unwrap();
+    for change in changes.iter().take(3) {
+        producer.apply_change(change).unwrap();
+    }
+    let advanced_snapshot =
+        take_core_payload(producer.snapshot().unwrap(), BindingPayloadKind::Snapshot);
+
+    let options = transition_options_json();
+    let mut direct = ReducerSession::new(options.as_bytes()).unwrap();
+    let mut wasm = MdstreamReducerSession::new(Some(options)).unwrap();
+
+    let continuous = assert_wasm_reducer_update_parity(
+        direct.apply_change(&changes[0]).unwrap(),
+        wasm.apply_change(&changes[0]).unwrap(),
+    );
+    let continuous: serde_json::Value = serde_json::from_slice(&continuous).unwrap();
+    assert_eq!(continuous["transition"]["facts"]["scope"], "continuous");
+
+    let gap = assert_wasm_reducer_update_parity(
+        direct.apply_change(&changes[2]).unwrap(),
+        wasm.apply_change(&changes[2]).unwrap(),
+    );
+    let gap: serde_json::Value = serde_json::from_slice(&gap).unwrap();
+    assert_eq!(gap["outcome"]["kind"], "recovery_required");
+
+    let full_replace = assert_wasm_reducer_update_parity(
+        direct.recover_snapshot(&advanced_snapshot).unwrap(),
+        wasm.recover_snapshot(&advanced_snapshot).unwrap(),
+    );
+    let full_replace: serde_json::Value = serde_json::from_slice(&full_replace).unwrap();
+    assert_eq!(full_replace["transition"]["facts"]["scope"], "full_replace");
 }
 
 #[wasm_bindgen_test]
