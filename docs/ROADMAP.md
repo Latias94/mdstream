@@ -8,6 +8,7 @@ The 0.4 line establishes the durable product boundary:
 - chunk-invariant identity and deterministic node versions;
 - explicit finish, reset, correction, replay, and snapshot recovery;
 - bounded processor/artifact lifecycle with citation and optional Merman paths;
+- optional atomic host transition facts with continuity-qualified identity;
 - Rust, Tokio, WASM/TypeScript, C FFI, Dart, and Flutter integrations;
 - cross-runtime conformance, deterministic work gates, and package budgets.
 
@@ -29,6 +30,10 @@ policy. Candidates include:
 mdstream does not plan to own themes, widgets, syntax highlighting, math
 layout, browser layout, networking, persistence, CRDT/OT editing, or arbitrary
 historical source mutation.
+
+Presentation effects remain an explicit non-goal. Hosts may use transition facts
+for reveal, correction, layout, or accessibility policy, but mdstream will not
+own timing, easing, color, geometry, scrolling, or reduced-motion decisions.
 
 A first-party React package or Markdown renderer is not on the roadmap.
 Streamdown, Incremark, and framework-native renderers remain valid consumer

@@ -285,7 +285,7 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     );
   }
 
-  /// Returns the epoch-qualified Flutter key for [id].
+  /// Returns the continuity- and epoch-qualified Flutter key for [id].
   MdstreamNodeKey nodeKey(NodeId id) {
     _assertOpen();
     final epoch = _value.document?.coordinate.epoch;

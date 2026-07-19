@@ -11,6 +11,7 @@ token chunks
     -> mdstream_protocol::ChangeSet
     -> mdstream_protocol::Reducer
     -> Content IR views and ChangeImpact
+    -> optional atomic TransitionFacts
     -> native or foreign-language state adapter
 
 ContentNode + semantic resource
@@ -48,10 +49,15 @@ CommonMark parser. See [ADR 0002](ADR_0002_PROJECTION_FRONTIER.md).
 
 ## Identity
 
-`NodeId` is stable across chunk schedules and semantic correction. It is the UI
-key. `NodeVersion` is a deterministic opaque compare-and-set value and changes
-when the node projection changes. Source offsets may guide reconciliation but
-are not identity.
+`NodeId` is stable across chunk schedules and semantic correction inside one
+continuity generation. `NodeVersion` is a deterministic opaque compare-and-set
+value and changes when the node projection changes. Source offsets may guide
+reconciliation but are not identity.
+
+Across advanced recovery or another full replacement, hosts qualify UI identity
+with `(continuity generation, epoch, NodeId)`. A capture-disabled host advances
+its own generation whenever `ChangeImpact.full_replace` is true. A
+capture-enabled host receives the authoritative generation in transition facts.
 
 Document lifecycle, node stability, and correction are independent axes:
 
@@ -75,3 +81,6 @@ bind its external stores to their native state primitive. mdstream does not
 ship a React package or renderer. Flutter is first-party because the package
 also owns native binary delivery and platform loading; it still ships no
 widgets or rendering policy. See [ADR 0004](ADR_0004_FRAMEWORK_NEUTRAL_WEB_BINDINGS.md).
+Hosts that need change classification opt into the same transition-facts
+contract without adopting an mdstream renderer. See
+[ADR 0005](ADR_0005_HOST_TRANSITION_FACTS.md).

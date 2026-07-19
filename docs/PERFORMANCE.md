@@ -27,6 +27,24 @@ and document.
 Canonical input transport is lossless. Tokio may block or coalesce continuous
 changes but cannot use a drop-new content policy.
 
+## Transition Capture
+
+Host transition facts are opt-in. With capture disabled, reducers do not stage,
+allocate, or encode transition records. With capture enabled, work is
+proportional to the facts produced by the current reducer operation; facts are
+not retained as a replay log and are not synthesized by diffing canonical
+snapshots.
+
+Advanced recovery emits one constant-shape `full_replace` fact and advances the
+continuity generation. Same-floor recovery emits no fact and does not advance
+continuity. Hosts that retain transition batches must bound their own queues and
+release facts after scheduling presentation work.
+
+Encoded transition facts share the reducer update envelope limit. Configure
+`wire.max_reducer_update_bytes` for the largest accepted atomic operation and
+reject oversized updates transactionally; do not add a second transition-only
+budget that could make one logical update partially observable.
+
 ## Frozen Evidence
 
 `conformance/budgets/streaming.json` records deterministic calibration and

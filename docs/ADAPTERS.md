@@ -20,7 +20,9 @@ typed ContentNode
 
 ## Stable State
 
-- `NodeId` is the UI key. Source offsets and collection positions are not keys.
+- Within one continuity generation, `NodeId` is the stable identity. Across a
+  full replacement, use `(continuity generation, epoch, NodeId)` as the UI key.
+  Source offsets and collection positions are never keys.
 - `NodeVersion` invalidates a cached node view and processor input.
 - `changed_nodes` is the set of invalidated node keys. It includes removed
   nodes; `removed_nodes` is the subset that no longer has a view. Resource
@@ -50,6 +52,14 @@ current view is only the tail view; an intermediate `A -> B -> A` fact sequence
 does not make an intermediate B view queryable. Different legal chunk schedules
 may produce different intermediate batches while converging to the same final
 canonical state.
+
+Capture is disabled by default. With capture enabled, TypeScript exposes
+`store.subscribeTransitions` and Flutter exposes a revisioned `transitions`
+listenable. A no-op, failed, artifact-only, or same-floor operation publishes a
+new empty enabled-capture batch; capture-disabled sessions publish nothing.
+Mutation during a transition callback is rejected, while reads and synchronous
+listener disposal remain safe. See
+[ADR 0005](ADR_0005_HOST_TRANSITION_FACTS.md).
 
 ## Recovery
 
@@ -94,10 +104,16 @@ batching, and explicit recovery without depending on Flutter.
 
 `mdstream_flutter` adds native library delivery and no-path loading for Android,
 iOS, macOS, Linux, and Windows. Its producer and replica controllers implement
-`ValueListenable`, publish epoch-qualified node keys, and expose focused
+`ValueListenable`, publish continuity-qualified node keys, and expose focused
 pending-source/node/resource/artifact listenables. Processor scheduling
 snapshots registration identity and rejects late generations. The package
 contains no widgets, renderer, theme, or default Merman binary.
+
+When transition capture is enabled, Dart keeps ordered facts on reducer results
+and Flutter publishes a `MdstreamTransitionBatch` before ordinary invalidation
+listeners. Flutter node keys include a controller-local continuity generation,
+so same-epoch advanced recovery cannot retain stale widget identity even when
+capture is disabled.
 
 ## Processors and Merman
 

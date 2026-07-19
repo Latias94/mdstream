@@ -14,6 +14,7 @@ token chunks
     -> StreamEngine
     -> ChangeSet batches
     -> canonical Reducer / Content IR
+    -> optional atomic transition facts
     -> GPUI, egui, TUI, WASM / TypeScript, Flutter
     -> optional code, math, citation, and Mermaid processors
 ```
@@ -98,7 +99,8 @@ neither parser-specific types nor renderer artifacts enter the public protocol.
 
 ## UI State and Artifacts
 
-- `NodeId` is the stable UI key.
+- `NodeId` is stable inside one continuity generation; full-replacement UI keys
+  also include continuity generation and epoch.
 - `NodeVersion` is the deterministic cache and compare-and-set version.
 - `ChangeImpact` identifies changed and removed nodes/resources.
 - `Snapshot` is explicit recovery state, not a payload emitted on every append.
@@ -125,6 +127,9 @@ For web applications, `@mdstream/core` is the first-party integration surface.
 It exposes Rust/WASM-backed external stores, focused node/resource/artifact
 views, an on-demand pending-source store, and explicit recovery without a
 renderer or UI-framework dependency.
+Hosts can opt into ordered `mdstream.transitions/1` operation batches to
+classify append, correction, stabilization, structure, resource, lifecycle, and
+replacement changes without retaining an old canonical tree.
 React consumers can bind these stores with `useSyncExternalStore`; mdstream does
 not ship React hooks, components, themes, or a competing Markdown renderer. See
 [`ADR 0004`](docs/ADR_0004_FRAMEWORK_NEUTRAL_WEB_BINDINGS.md) for the boundary.
@@ -136,6 +141,9 @@ Android, iOS, macOS, Linux, and Windows. Its controllers expose
 `ValueListenable` state and focused node/resource/artifact subscriptions; the
 package also exposes pending source as a lazy focused listenable and contains
 no Markdown widgets, themes, renderer, or default Merman binary.
+Capture-enabled controllers add a revisioned transition listenable and
+continuity-qualified node keys. Animation timing, color, geometry, scroll, and
+reduced-motion behavior remain application policy.
 
 ## Migration From 0.3
 
@@ -153,6 +161,9 @@ no Markdown widgets, themes, renderer, or default Merman binary.
 There are no deprecated aliases for the removed surface. Consumers must apply
 the protocol through the reducer so sequence gaps, resets, recovery, and
 semantic corrections remain observable.
+
+Consumers of an unreleased 0.4 binding checkout must rename
+`wire.max_impact_bytes` to `wire.max_reducer_update_bytes`.
 
 ## Conformance and Limits
 
@@ -175,6 +186,7 @@ lossless; lossy policies are not available for canonical document input.
 - [Performance and resource contracts](docs/PERFORMANCE.md)
 - [Cross-language usage](docs/USAGE.md)
 - [Roadmap and non-goals](docs/ROADMAP.md)
+- [Host transition facts decision](docs/ADR_0005_HOST_TRANSITION_FACTS.md)
 
 ## Rust Versions and License
 

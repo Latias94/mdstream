@@ -39,6 +39,11 @@ sending ordinary deltas to that reducer, obtain one current snapshot from the
 producer, call `recover_snapshot`, and resume with the next continuous change.
 Do not stream snapshots during normal append.
 
+Use `TransitionReducer` only when a host needs renderer-neutral change
+classification. Its facts are atomic observations; do not replay intermediate
+facts as documents or query intermediate node views. Leave capture disabled for
+consumers that only need latest-state invalidation.
+
 ## Processors
 
 Use `ArtifactHost` or a language adapter's processor scheduler to process typed
@@ -56,6 +61,12 @@ suffix on demand without reparsing it. React can pass `subscribe` and
 `useSyncExternalStore`; Vue, Svelte, and Solid use their native equivalent.
 There is no first-party React package or renderer.
 
+Set `captureTransitions: true` when the host needs insertion, correction,
+stability, structure, resource, lifecycle, or full-replacement facts. Subscribe
+with `engine.store.subscribeTransitions(...)`. The callback runs against the
+coherent batch-tail store before ordinary invalidation subscribers. Pacing,
+color, layout animation, reduced motion, and scrolling remain host policy.
+
 ## Dart and Flutter
 
 The standalone Dart `mdstream` package requires a host-supplied path to a
@@ -63,7 +74,19 @@ compatible `mdstream-ffi` library:
 
 ```dart
 final runtime = MdstreamRuntime.openPath(nativeLibraryPath);
-final engine = runtime.createEngine();
+final engine = runtime.createEngine(
+  options: MdstreamSessionOptions(
+    captureTransitions: true,
+    protocol: const {
+      'max_source_bytes': '1048576',
+      'max_nodes': '4096',
+      'max_resources': '256',
+      'max_operations': '4096',
+      'max_change_structural_items': '4096',
+      'max_children_per_list': '4096',
+    },
+  ),
+);
 try {
   engine.append('# Title');
   engine.finish();
@@ -79,9 +102,17 @@ views plus the lazy `pendingSource` listenable to avoid rebuilding unchanged
 host views. The package intentionally contains no widgets, themes, Markdown
 renderer, or default Merman binary.
 
+Capture-enabled Flutter controllers expose a revisioned `transitions`
+`ValueListenable`. Treat an empty batch as a new operation with no canonical
+transition, not as permission to reuse the preceding animation trigger. Use
+`MdstreamNodeKey`, which includes continuity generation, for keyed host state.
+
 ## Migrating From 0.3
 
 Replace `MdStream`/`Update`/`DocumentState` flows with `StreamEngine`, ordered
 `ChangeSet` values, and `Reducer`. Replace block positions with `NodeId`, cache
 versions with `NodeVersion`, analyzers with typed processors, and runtime parser
 mutation with setup-only custom blocks. No deprecated aliases are available.
+For consumers of an unreleased 0.4 binding checkout,
+`wire.max_impact_bytes` becomes `wire.max_reducer_update_bytes`; transition
+capture remains opt-in.

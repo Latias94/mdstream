@@ -78,6 +78,43 @@ Use `runtime.createReducer()` for replication. A gap or conflicting current
 sequence moves the reducer to `needs_snapshot`; only
 `recoverSnapshot(CanonicalSnapshotBytes)` resumes it.
 
+## Transition facts
+
+Transition capture is optional and disabled by default. Enable it with a finite
+protocol profile whose worst legal reducer update fits the configured wire
+budget:
+
+```dart
+final options = MdstreamSessionOptions(
+  captureTransitions: true,
+  protocol: const {
+    'max_source_bytes': '1048576',
+    'max_nodes': '4096',
+    'max_resources': '256',
+    'max_operations': '4096',
+    'max_change_structural_items': '4096',
+    'max_children_per_list': '4096',
+  },
+);
+final engine = runtime.createEngine(options: options);
+
+final result = engine.append('streamed text');
+for (final facts in result.transitionFacts) {
+  scheduleHostPresentation(facts, engine.state);
+}
+```
+
+`EngineResult.transitionFacts` and `ReducerResult.transitionFacts` preserve
+wire order and are immutable. Facts distinguish projected text append,
+replacement, insertion/removal, stability, child-list changes, resource
+correction, lifecycle, and full replacement. Current node/resource values stay
+lazy on `engine.state`; facts do not duplicate complete Content IR views.
+
+The host owns grapheme pacing, color, opacity, easing, layout measurement,
+scrolling, and reduced-motion behavior. A full replacement clears host
+presentation continuity. An immediate mode must preserve the same content and
+state meaning as an animated mode.
+
 ## Batching and processors
 
 `engine.createBatcher(maxBatchBytes)` coalesces small token chunks without

@@ -35,6 +35,47 @@ ordered canonical changes, gap/fork detection, and explicit snapshot
 recovery. Keeping those roles separate prevents producer and replica state
 from diverging.
 
+## Transition facts
+
+Applications that need host-defined reveal, correction, or layout effects can
+enable transition capture with a finite protocol profile:
+
+```dart
+final controller = MdstreamController.open(
+  options: MdstreamSessionOptions(
+    captureTransitions: true,
+    protocol: const {
+      'max_source_bytes': '1048576',
+      'max_nodes': '4096',
+      'max_resources': '256',
+      'max_operations': '4096',
+      'max_change_structural_items': '4096',
+      'max_children_per_list': '4096',
+    },
+  ),
+);
+
+controller.transitions.addListener(() {
+  final batch = controller.transitions.value;
+  scheduleHostPresentation(batch, controller);
+});
+```
+
+`transitions` is a revisioned `ValueListenable<MdstreamTransitionBatch>`.
+Capture-enabled public operations publish one batch even when its facts are
+empty; capture-disabled controllers remain at revision zero. Tail state and
+focused values are coherent before transition listeners run, and ordinary
+focused/root listeners run afterward. Transition callbacks may read state or
+unsubscribe, and may dispose the controller synchronously. Document mutation,
+processor registration, and processor-registration disposal are rejected until
+the callback returns.
+
+Use `MdstreamNodeKey`, which combines continuity generation, epoch, and node ID,
+for keyed widget state. Advanced recovery crosses a continuity barrier even
+inside the same epoch; same-floor recovery preserves the key. Flutter retains
+ownership of animation controllers, timing, colors, geometry, scrolling, and
+accessibility policy. mdstream supplies facts, not widgets or motion behavior.
+
 ## Focused state
 
 The controller itself is a `ValueListenable<MdstreamControllerState>`. Use

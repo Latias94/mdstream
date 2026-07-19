@@ -16,6 +16,15 @@ Every accepted document state has:
 Decimal IDs and counters cross JavaScript and Dart bindings as decimal strings.
 Opaque versions and change IDs remain strings.
 
+## Continuity
+
+`Epoch` orders producer resets. `ContinuityGeneration` is a reducer-local host
+identity barrier. Advanced snapshot recovery can replace canonical state inside
+the same epoch, so `(epoch, NodeId)` alone is not a safe component key across a
+full replacement. Transition facts use `(continuity generation, epoch, NodeId)`
+and the equivalent resource key. Hosts without transition capture increment a
+local generation whenever `ChangeImpact.full_replace` is true.
+
 ## Projection Frontier
 
 Accepted source may temporarily advance beyond `projection_cursor` when an
@@ -57,7 +66,8 @@ definition. Correction preserves `NodeId` and changes `NodeVersion`.
 | `Idempotent` | None | Ignore exact retry |
 | `Stale` | None | Ignore an older sequence |
 | `RecoveryRequired` | Status only; last-good document is retained | Request a snapshot |
-| `Recovered` | Atomically replaces canonical state | Invalidate all materialized views |
+| `Recovered` (same floor) | Readiness only; retained document is unchanged | Resume ordered changes |
+| `Recovered` (advanced) | Atomically replaces canonical state | Invalidate all materialized views |
 
 A same-sequence change with a different ID is a fork. A future sequence is a
 gap. Either moves the reducer to `NeedsSnapshot`. Ordinary deltas are rejected
@@ -72,9 +82,23 @@ removed IDs because any cached view under that identity is invalid. A host
 materializes only those views; a missing view removes its cached object.
 
 On `full_replace`, hosts invalidate every retained canonical and derived view.
-Flutter keys include both epoch and node ID. TypeScript stores and Flutter
-controllers publish the new root snapshot before notifying focused listeners,
-so callbacks observe one coherent transition.
+Flutter keys include continuity generation, epoch, and node ID. TypeScript
+stores and Flutter controllers publish the new root snapshot before notifying
+focused listeners, so callbacks observe one coherent transition.
+
+## Transition Facts
+
+`ChangeImpact` answers which cached views are invalid. Capture-enabled
+`TransitionReducer` sessions additionally emit one atomic
+`mdstream.transitions/1` fact set for a document-changing commit. Continuous
+facts classify before/after node state, source-backed text append versus
+replacement, child-list splices, resource correction, lifecycle, and cursors.
+Advanced replacement emits only `full_replace`; same-floor recovery and every
+non-changing outcome emit no facts.
+
+Facts are schedule-local observations, not a replay stream. Intermediate facts
+inside one binding operation remain ordered and self-contained, while readable
+views represent only the batch tail. Pending raw source stays an on-demand view.
 
 ## Processor Freshness
 
