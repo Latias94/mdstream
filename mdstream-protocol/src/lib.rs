@@ -17,6 +17,7 @@ mod error;
 mod ids;
 mod ir;
 mod lifecycle;
+mod transition;
 mod wire;
 
 pub use delta::*;
@@ -25,4 +26,5 @@ pub use error::*;
 pub use ids::*;
 pub use ir::*;
 pub use lifecycle::*;
+pub use transition::*;
 pub use wire::*;

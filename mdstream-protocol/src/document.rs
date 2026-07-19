@@ -3,11 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ir::RetainedTextMetrics;
 use crate::{
     ApplyOutcome, ChangeId, ChangeImpact, ChangeSet, ChildList, ChildListOwner,
-    ChildSequenceCompleteness, ChildSequenceValidator, ContentKind, ContentNode, Coordinate,
-    DocumentLifecycle, Epoch, NodeId, NodeStability, PayloadDigest, ProjectionOp, ProtocolError,
-    ProtocolLimits, ProtocolMaturity, RecoveryReason, ReducerStatus, ResourceId, SemanticResource,
-    SemanticResourceKind, Sequence, Snapshot, SourceCursor, validate_child_kind,
-    validate_table_row_width,
+    ChildSequenceCompleteness, ChildSequenceValidator, ContentKind, ContentNode,
+    ContinuityGeneration, Coordinate, DocumentLifecycle, DocumentStateStamp, Epoch, NodeId,
+    NodeStability, NodeStateStamp, NodeTransition, PayloadDigest, ProjectionOp, ProtocolError,
+    ProtocolLimits, ProtocolMaturity, RecoveryReason, ReducerStatus, ResourceId,
+    ResourceTransition, SemanticResource, SemanticResourceKind, SemanticText, Sequence, Snapshot,
+    SourceCursor, SourceRange, StructureTransition, TextTransition, TransitionError,
+    TransitionFacts, TransitionMetrics, TransitionNodeKey, TransitionOutcome,
+    TransitionResourceKey, qualify_owner, validate_child_kind, validate_table_row_width,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,6 +266,125 @@ pub struct Reducer {
     metrics: ReducerMetrics,
 }
 
+#[derive(Debug)]
+/// Canonical reducer with atomic, continuity-qualified transition capture.
+///
+/// This owning wrapper deliberately cannot be mixed with capture-disabled
+/// [`Reducer::apply`] calls, so its local continuity generation cannot miss a
+/// full-replace barrier.
+pub struct TransitionReducer {
+    reducer: Reducer,
+    continuity_generation: ContinuityGeneration,
+    transition_metrics: TransitionMetrics,
+}
+
+impl Default for TransitionReducer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TransitionReducer {
+    pub fn new() -> Self {
+        Self::with_limits(ProtocolLimits::default())
+    }
+
+    pub fn with_limits(limits: ProtocolLimits) -> Self {
+        Self {
+            reducer: Reducer::with_limits(limits),
+            continuity_generation: ContinuityGeneration::new(0),
+            transition_metrics: TransitionMetrics::default(),
+        }
+    }
+
+    pub fn status(&self) -> ReducerStatus {
+        self.reducer.status()
+    }
+
+    pub fn document(&self) -> Option<&Document> {
+        self.reducer.document()
+    }
+
+    pub const fn reducer_metrics(&self) -> ReducerMetrics {
+        self.reducer.metrics()
+    }
+
+    pub const fn transition_metrics(&self) -> TransitionMetrics {
+        self.transition_metrics
+    }
+
+    pub const fn continuity_generation(&self) -> ContinuityGeneration {
+        self.continuity_generation
+    }
+
+    pub fn apply(&mut self, change: ChangeSet) -> Result<TransitionOutcome, TransitionError> {
+        let commit = self
+            .reducer
+            .apply_internal::<true>(&change, self.continuity_generation)?;
+        Ok(self.record_transition_commit(commit))
+    }
+
+    pub fn recover_snapshot(
+        &mut self,
+        snapshot: Snapshot,
+    ) -> Result<TransitionOutcome, TransitionError> {
+        let commit = self
+            .reducer
+            .recover_snapshot_internal::<true>(snapshot, self.continuity_generation)?;
+        Ok(self.record_transition_commit(commit))
+    }
+
+    fn record_transition_commit(&mut self, commit: TransitionCommit) -> TransitionOutcome {
+        self.continuity_generation = commit.continuity_generation;
+        self.transition_metrics.facts_built = self
+            .transition_metrics
+            .facts_built
+            .saturating_add(commit.work.facts_built);
+        self.transition_metrics.entity_visits = self
+            .transition_metrics
+            .entity_visits
+            .saturating_add(commit.work.entity_visits);
+        self.transition_metrics.splice_ids_copied = self
+            .transition_metrics
+            .splice_ids_copied
+            .saturating_add(commit.work.splice_ids_copied);
+        self.transition_metrics.owned_text_bytes_copied = self
+            .transition_metrics
+            .owned_text_bytes_copied
+            .saturating_add(commit.work.owned_text_bytes_copied);
+        TransitionOutcome {
+            outcome: commit.outcome,
+            facts: commit.facts,
+        }
+    }
+}
+
+struct TransitionCommit {
+    outcome: ApplyOutcome,
+    facts: Option<TransitionFacts>,
+    continuity_generation: ContinuityGeneration,
+    work: TransitionWork,
+}
+
+impl TransitionCommit {
+    fn without_facts(outcome: ApplyOutcome, continuity_generation: ContinuityGeneration) -> Self {
+        Self {
+            outcome,
+            facts: None,
+            continuity_generation,
+            work: TransitionWork::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TransitionWork {
+    facts_built: u64,
+    entity_visits: u64,
+    splice_ids_copied: u64,
+    owned_text_bytes_copied: u64,
+}
+
 impl Default for Reducer {
     fn default() -> Self {
         Self::new()
@@ -304,6 +426,16 @@ impl Reducer {
         self.metrics
     }
 
+    /// Facts-specific work is structurally disabled for the ordinary reducer.
+    pub const fn transition_metrics(&self) -> TransitionMetrics {
+        TransitionMetrics {
+            facts_built: 0,
+            entity_visits: 0,
+            splice_ids_copied: 0,
+            owned_text_bytes_copied: 0,
+        }
+    }
+
     /// Applies one ordered change or classifies it as retry, stale, or recovery.
     ///
     /// Invalid changes never partially mutate the retained document.
@@ -312,15 +444,36 @@ impl Reducer {
     }
 
     fn apply_ref(&mut self, change: &ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
+        match self.apply_internal::<false>(change, ContinuityGeneration::new(0)) {
+            Ok(commit) => Ok(commit.outcome),
+            Err(TransitionError::Protocol(error)) => Err(error),
+            Err(TransitionError::ContinuityOverflow) => {
+                unreachable!("capture-disabled reduction does not advance continuity")
+            }
+        }
+    }
+
+    fn apply_internal<const CAPTURE_TRANSITIONS: bool>(
+        &mut self,
+        change: &ChangeSet,
+        continuity_generation: ContinuityGeneration,
+    ) -> Result<TransitionCommit, TransitionError> {
         if matches!(self.control, Control::NeedsSnapshot { .. }) && change.epoch_start().is_none() {
-            return Err(ProtocolError::NeedsSnapshot);
+            return Err(ProtocolError::NeedsSnapshot.into());
         }
         change.validate_envelope()?;
 
         match &self.control {
-            Control::Uninitialized => self.apply_initial_epoch(change),
-            Control::NeedsSnapshot { .. } => self.apply_recovery_epoch(change),
-            Control::Ready => self.apply_ready(change),
+            Control::Uninitialized => self
+                .apply_initial_epoch_internal::<CAPTURE_TRANSITIONS>(change, continuity_generation),
+            Control::NeedsSnapshot { .. } => self
+                .apply_recovery_epoch_internal::<CAPTURE_TRANSITIONS>(
+                    change,
+                    continuity_generation,
+                ),
+            Control::Ready => {
+                self.apply_ready_internal::<CAPTURE_TRANSITIONS>(change, continuity_generation)
+            }
         }
     }
 
@@ -369,8 +522,22 @@ impl Reducer {
     /// Ready reducers reject snapshot replacement so callers cannot bypass the
     /// ordered change protocol.
     pub fn recover_snapshot(&mut self, snapshot: Snapshot) -> Result<ApplyOutcome, ProtocolError> {
+        match self.recover_snapshot_internal::<false>(snapshot, ContinuityGeneration::new(0)) {
+            Ok(commit) => Ok(commit.outcome),
+            Err(TransitionError::Protocol(error)) => Err(error),
+            Err(TransitionError::ContinuityOverflow) => {
+                unreachable!("capture-disabled recovery does not advance continuity")
+            }
+        }
+    }
+
+    fn recover_snapshot_internal<const CAPTURE_TRANSITIONS: bool>(
+        &mut self,
+        snapshot: Snapshot,
+        continuity_generation: ContinuityGeneration,
+    ) -> Result<TransitionCommit, TransitionError> {
         if matches!(self.control, Control::Ready) {
-            return Err(ProtocolError::SnapshotNotAllowed);
+            return Err(ProtocolError::SnapshotNotAllowed.into());
         }
 
         let validation = validate_snapshot(&snapshot, self.limits)?;
@@ -394,19 +561,48 @@ impl Reducer {
                 .clone();
             self.control = Control::Ready;
             self.record_snapshot_validation(validation, snapshot.source().len());
-            return Ok(ApplyOutcome::Recovered {
-                coordinate,
-                impact: ChangeImpact::default(),
-            });
+            return Ok(TransitionCommit::without_facts(
+                ApplyOutcome::Recovered {
+                    coordinate,
+                    impact: ChangeImpact::default(),
+                },
+                continuity_generation,
+            ));
         }
 
         let replacement = Document::from_validated_snapshot(&snapshot, validation);
+        let (next_generation, facts, work) = if CAPTURE_TRANSITIONS {
+            let next_generation = continuity_generation
+                .checked_add(1)
+                .ok_or(TransitionError::ContinuityOverflow)?;
+            let before = self
+                .document
+                .as_ref()
+                .map(|document| document_state_stamp(document, continuity_generation));
+            let after = document_state_stamp(&replacement, next_generation);
+            (
+                next_generation,
+                Some(TransitionFacts::FullReplace { before, after }),
+                TransitionWork {
+                    facts_built: 1,
+                    entity_visits: 1,
+                    ..TransitionWork::default()
+                },
+            )
+        } else {
+            (continuity_generation, None, TransitionWork::default())
+        };
         let impact = replacement_impact(self.document.as_ref(), &replacement, true);
         let coordinate = replacement.coordinate.clone();
         self.document = Some(replacement);
         self.control = Control::Ready;
         self.record_snapshot_validation(validation, snapshot.source().len());
-        Ok(ApplyOutcome::Recovered { coordinate, impact })
+        Ok(TransitionCommit {
+            outcome: ApplyOutcome::Recovered { coordinate, impact },
+            facts,
+            continuity_generation: next_generation,
+            work,
+        })
     }
 
     fn record_snapshot_validation(&mut self, validation: ValidationStats, source_bytes: usize) {
@@ -534,24 +730,34 @@ impl Reducer {
         Ok(SnapshotProgression::Advanced)
     }
 
-    fn apply_initial_epoch(&mut self, change: &ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
+    fn apply_initial_epoch_internal<const CAPTURE_TRANSITIONS: bool>(
+        &mut self,
+        change: &ChangeSet,
+        continuity_generation: ContinuityGeneration,
+    ) -> Result<TransitionCommit, TransitionError> {
         let Some(epoch_start) = change.epoch_start() else {
             return Err(ProtocolError::InvalidEpochStart {
                 current: None,
                 received: change.epoch(),
-            });
+            }
+            .into());
         };
         if epoch_start.predecessor.is_some() {
             return Err(ProtocolError::InvalidEpochStart {
                 current: None,
                 received: change.epoch(),
-            });
+            }
+            .into());
         }
         change.validate_complete(self.limits)?;
-        self.install_epoch(change, false)
+        self.install_epoch_internal::<CAPTURE_TRANSITIONS>(change, false, continuity_generation)
     }
 
-    fn apply_ready(&mut self, change: &ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
+    fn apply_ready_internal<const CAPTURE_TRANSITIONS: bool>(
+        &mut self,
+        change: &ChangeSet,
+        continuity_generation: ContinuityGeneration,
+    ) -> Result<TransitionCommit, TransitionError> {
         let document = self
             .document
             .as_ref()
@@ -559,94 +765,126 @@ impl Reducer {
         let current = document.coordinate.clone();
 
         if change.epoch() < current.epoch {
-            return Ok(ApplyOutcome::Stale {
-                current,
-                received_epoch: change.epoch(),
-                received_sequence: change.sequence(),
-            });
+            return Ok(TransitionCommit::without_facts(
+                ApplyOutcome::Stale {
+                    current,
+                    received_epoch: change.epoch(),
+                    received_sequence: change.sequence(),
+                },
+                continuity_generation,
+            ));
         }
         if change.epoch() > current.epoch {
             if change.epoch_start().is_some() {
                 self.validate_ready_predecessor(change, &current)?;
                 change.validate_complete(self.limits)?;
-                return self.install_epoch(change, true);
+                return self.install_epoch_internal::<CAPTURE_TRANSITIONS>(
+                    change,
+                    true,
+                    continuity_generation,
+                );
             }
-            return Ok(self.enter_recovery(RecoveryReason::UnannouncedEpoch {
+            let outcome = self.enter_recovery(RecoveryReason::UnannouncedEpoch {
                 current: current.epoch,
                 received: change.epoch(),
-            }));
+            });
+            return Ok(TransitionCommit::without_facts(
+                outcome,
+                continuity_generation,
+            ));
         }
         if change.sequence() < current.sequence {
-            return Ok(ApplyOutcome::Stale {
-                current,
-                received_epoch: change.epoch(),
-                received_sequence: change.sequence(),
-            });
+            return Ok(TransitionCommit::without_facts(
+                ApplyOutcome::Stale {
+                    current,
+                    received_epoch: change.epoch(),
+                    received_sequence: change.sequence(),
+                },
+                continuity_generation,
+            ));
         }
         if change.sequence() == current.sequence {
             if change.change_id() != &current.change_id {
-                return Ok(self.enter_recovery(RecoveryReason::SequenceFork {
+                let outcome = self.enter_recovery(RecoveryReason::SequenceFork {
                     sequence: change.sequence(),
-                }));
+                });
+                return Ok(TransitionCommit::without_facts(
+                    outcome,
+                    continuity_generation,
+                ));
             }
             change.validate_complete(self.limits)?;
             if change.payload_digest() == document.last_payload_digest {
-                return Ok(ApplyOutcome::Idempotent);
+                return Ok(TransitionCommit::without_facts(
+                    ApplyOutcome::Idempotent,
+                    continuity_generation,
+                ));
             }
-            return Ok(self.enter_recovery(RecoveryReason::SequenceFork {
+            let outcome = self.enter_recovery(RecoveryReason::SequenceFork {
                 sequence: change.sequence(),
-            }));
+            });
+            return Ok(TransitionCommit::without_facts(
+                outcome,
+                continuity_generation,
+            ));
         }
 
         if document.lifecycle == DocumentLifecycle::Finalized {
             return Err(ProtocolError::IllegalLifecycle(
                 "a finalized document accepts only a new epoch".to_string(),
-            ));
+            )
+            .into());
         }
         let expected = current
             .sequence
             .checked_add(1)
             .ok_or(ProtocolError::SequenceOverflow)?;
         if change.sequence() != expected {
-            return Ok(self.enter_recovery(RecoveryReason::SequenceGap {
+            let outcome = self.enter_recovery(RecoveryReason::SequenceGap {
                 expected,
                 received: change.sequence(),
-            }));
+            });
+            return Ok(TransitionCommit::without_facts(
+                outcome,
+                continuity_generation,
+            ));
         }
         if change.epoch_start().is_some() {
             return Err(ProtocolError::InvalidEpochStart {
                 current: Some(current.epoch),
                 received: change.epoch(),
-            });
+            }
+            .into());
         }
         change.validate_complete(self.limits)?;
 
-        let staged = stage_document(document, change, self.limits);
-        match staged {
-            Ok(staged) => self.commit_ready(change, staged),
-            Err(StageFailure::Divergence(reason)) => Ok(self.enter_recovery(reason)),
-            Err(StageFailure::Invalid(error)) => Err(error),
+        match stage_document::<CAPTURE_TRANSITIONS>(
+            document,
+            change,
+            self.limits,
+            CAPTURE_TRANSITIONS,
+        ) {
+            Ok(staged) => self.commit_ready_internal::<CAPTURE_TRANSITIONS>(
+                change,
+                staged,
+                continuity_generation,
+            ),
+            Err(StageFailure::Divergence(reason)) => {
+                let outcome = self.enter_recovery(reason);
+                Ok(TransitionCommit::without_facts(
+                    outcome,
+                    continuity_generation,
+                ))
+            }
+            Err(StageFailure::Invalid(error)) => Err(error.into()),
         }
     }
 
-    fn validate_ready_predecessor(
-        &self,
+    fn apply_recovery_epoch_internal<const CAPTURE_TRANSITIONS: bool>(
+        &mut self,
         change: &ChangeSet,
-        current: &Coordinate,
-    ) -> Result<(), ProtocolError> {
-        let predecessor = change
-            .epoch_start()
-            .and_then(|start| start.predecessor.as_ref());
-        if predecessor != Some(current) || change.epoch() <= current.epoch {
-            return Err(ProtocolError::InvalidEpochStart {
-                current: Some(current.epoch),
-                received: change.epoch(),
-            });
-        }
-        Ok(())
-    }
-
-    fn apply_recovery_epoch(&mut self, change: &ChangeSet) -> Result<ApplyOutcome, ProtocolError> {
+        continuity_generation: ContinuityGeneration,
+    ) -> Result<TransitionCommit, TransitionError> {
         let Control::NeedsSnapshot {
             last_good,
             last_digest,
@@ -677,7 +915,8 @@ impl Reducer {
             return Err(ProtocolError::InvalidEpochStart {
                 current: Some(last_good.epoch),
                 received: change.epoch(),
-            });
+            }
+            .into());
         }
         if same_floor
             && self
@@ -688,54 +927,114 @@ impl Reducer {
             return Err(ProtocolError::InvalidEpochStart {
                 current: Some(last_good.epoch),
                 received: change.epoch(),
-            });
+            }
+            .into());
         }
         change.validate_complete(self.limits)?;
-        self.install_epoch(change, true)
+        self.install_epoch_internal::<CAPTURE_TRANSITIONS>(change, true, continuity_generation)
     }
 
-    fn install_epoch(
+    fn install_epoch_internal<const CAPTURE_TRANSITIONS: bool>(
         &mut self,
         change: &ChangeSet,
         recovered: bool,
-    ) -> Result<ApplyOutcome, ProtocolError> {
+        continuity_generation: ContinuityGeneration,
+    ) -> Result<TransitionCommit, TransitionError> {
+        let full_replace = recovered || self.document.is_some();
+        let next_generation = if CAPTURE_TRANSITIONS && full_replace {
+            continuity_generation
+                .checked_add(1)
+                .ok_or(TransitionError::ContinuityOverflow)?
+        } else {
+            continuity_generation
+        };
         let digest = change.payload_digest();
         let blank = Document::blank(change.epoch(), change.change_id().clone(), digest);
-        let staged =
-            stage_document(&blank, change, self.limits).map_err(|failure| match failure {
-                StageFailure::Divergence(_) => ProtocolError::InvalidChange(
-                    "EpochStart diverged from its empty document".to_string(),
-                ),
-                StageFailure::Invalid(error) => error,
-            })?;
+        let staged = stage_document::<CAPTURE_TRANSITIONS>(
+            &blank,
+            change,
+            self.limits,
+            CAPTURE_TRANSITIONS && !full_replace,
+        )
+        .map_err(|failure| match failure {
+            StageFailure::Divergence(_) => TransitionError::Protocol(ProtocolError::InvalidChange(
+                "EpochStart diverged from its empty document".to_string(),
+            )),
+            StageFailure::Invalid(error) => TransitionError::Protocol(error),
+        })?;
         let staged_impact = staged.impact.clone();
         let stats = staged.stats;
+        let continuous = (CAPTURE_TRANSITIONS && !full_replace).then(|| {
+            build_continuous_transition(&blank, change, &staged, continuity_generation, None)
+        });
         let mut replacement = blank;
         let source = commit_document(&mut replacement, change, staged);
-        let impact = if recovered || self.document.is_some() {
+        let impact = if full_replace {
             replacement_impact(self.document.as_ref(), &replacement, true)
         } else {
             staged_impact
         };
         let coordinate = replacement.coordinate.clone();
+        let (facts, work) = if let Some((facts, work)) = continuous {
+            (Some(facts), work)
+        } else if CAPTURE_TRANSITIONS {
+            let facts = TransitionFacts::FullReplace {
+                before: self
+                    .document
+                    .as_ref()
+                    .map(|document| document_state_stamp(document, continuity_generation)),
+                after: document_state_stamp(&replacement, next_generation),
+            };
+            (
+                Some(facts),
+                TransitionWork {
+                    facts_built: 1,
+                    entity_visits: 1,
+                    ..TransitionWork::default()
+                },
+            )
+        } else {
+            (None, TransitionWork::default())
+        };
         self.document = Some(replacement);
         self.control = Control::Ready;
         self.record_apply(change.operations().len(), stats, source);
-        if recovered {
-            Ok(ApplyOutcome::Recovered { coordinate, impact })
+        let outcome = if recovered {
+            ApplyOutcome::Recovered { coordinate, impact }
         } else {
-            Ok(ApplyOutcome::Applied { coordinate, impact })
-        }
+            ApplyOutcome::Applied { coordinate, impact }
+        };
+        Ok(TransitionCommit {
+            outcome,
+            facts,
+            continuity_generation: next_generation,
+            work,
+        })
     }
 
-    fn commit_ready(
+    fn commit_ready_internal<const CAPTURE_TRANSITIONS: bool>(
         &mut self,
         change: &ChangeSet,
         staged: StagedChange,
-    ) -> Result<ApplyOutcome, ProtocolError> {
+        continuity_generation: ContinuityGeneration,
+    ) -> Result<TransitionCommit, TransitionError> {
         let impact = staged.impact.clone();
         let stats = staged.stats;
         let operation_count = change.operations().len();
+        let (facts, work) = if CAPTURE_TRANSITIONS {
+            let (facts, work) = build_continuous_transition(
+                self.document
+                    .as_ref()
+                    .expect("ready reducer has a document"),
+                change,
+                &staged,
+                continuity_generation,
+                Some(continuity_generation),
+            );
+            (Some(facts), work)
+        } else {
+            (None, TransitionWork::default())
+        };
         let document = self
             .document
             .as_mut()
@@ -744,7 +1043,29 @@ impl Reducer {
         let coordinate = document.coordinate.clone();
         self.control = Control::Ready;
         self.record_apply(operation_count, stats, source);
-        Ok(ApplyOutcome::Applied { coordinate, impact })
+        Ok(TransitionCommit {
+            outcome: ApplyOutcome::Applied { coordinate, impact },
+            facts,
+            continuity_generation,
+            work,
+        })
+    }
+
+    fn validate_ready_predecessor(
+        &self,
+        change: &ChangeSet,
+        current: &Coordinate,
+    ) -> Result<(), ProtocolError> {
+        let predecessor = change
+            .epoch_start()
+            .and_then(|start| start.predecessor.as_ref());
+        if predecessor != Some(current) || change.epoch() <= current.epoch {
+            return Err(ProtocolError::InvalidEpochStart {
+                current: Some(current.epoch),
+                received: change.epoch(),
+            });
+        }
+        Ok(())
     }
 
     fn record_apply(
@@ -793,6 +1114,392 @@ impl Reducer {
         };
         ApplyOutcome::RecoveryRequired { last_good, reason }
     }
+}
+
+fn document_state_stamp(
+    document: &Document,
+    continuity_generation: ContinuityGeneration,
+) -> DocumentStateStamp {
+    DocumentStateStamp {
+        continuity_generation,
+        coordinate: document.coordinate.clone(),
+        lifecycle: document.lifecycle,
+        projection_cursor: document.projection_cursor,
+        roots_version: document.roots.version().clone(),
+    }
+}
+
+fn staged_document_state_stamp(
+    document: &Document,
+    change: &ChangeSet,
+    staged: &StagedChange,
+    continuity_generation: ContinuityGeneration,
+) -> DocumentStateStamp {
+    let roots_version = staged
+        .structures
+        .get(&ChildListOwner::Document)
+        .map(structure_edit_version)
+        .unwrap_or_else(|| document.roots.version().clone());
+    DocumentStateStamp {
+        continuity_generation,
+        coordinate: Coordinate {
+            epoch: change.epoch(),
+            sequence: change.sequence(),
+            change_id: change.change_id().clone(),
+            source_cursor: staged.resulting_cursor,
+        },
+        lifecycle: if staged.finish {
+            DocumentLifecycle::Finalized
+        } else {
+            document.lifecycle
+        },
+        projection_cursor: staged.projection_cursor,
+        roots_version,
+    }
+}
+
+fn structure_edit_version(edit: &StructureEdit) -> crate::StructureVersion {
+    match edit {
+        StructureEdit::Append { new_version, .. } => new_version.clone(),
+        StructureEdit::Replace(replacement) => replacement.version().clone(),
+    }
+}
+
+fn build_continuous_transition(
+    document: &Document,
+    change: &ChangeSet,
+    staged: &StagedChange,
+    continuity_generation: ContinuityGeneration,
+    before_generation: Option<ContinuityGeneration>,
+) -> (TransitionFacts, TransitionWork) {
+    let epoch = change.epoch();
+    let key_for = |node_id| TransitionNodeKey {
+        continuity_generation,
+        epoch,
+        node_id,
+    };
+    let mut work = TransitionWork {
+        facts_built: 1,
+        ..TransitionWork::default()
+    };
+
+    let mut changed_nodes = staged.nodes.keys().copied().collect::<BTreeSet<_>>();
+    changed_nodes.extend(staged.parents.keys().copied());
+    changed_nodes.extend(staged.structures.keys().filter_map(|owner| match owner {
+        ChildListOwner::Document => None,
+        ChildListOwner::Node { node_id } => Some(*node_id),
+    }));
+    let nodes = changed_nodes
+        .into_iter()
+        .map(|node_id| {
+            work.entity_visits = work.entity_visits.saturating_add(1);
+            let before_node = document.nodes.get(&node_id);
+            let after_node = view_node(node_id, document, &staged.nodes);
+            let before = before_node.map(|node| {
+                node_state_stamp(
+                    node,
+                    document.parents.get(&node_id).copied(),
+                    continuity_generation,
+                    epoch,
+                    None,
+                )
+            });
+            let after = after_node.map(|node| {
+                node_state_stamp(
+                    node,
+                    final_parent(node_id, document, &staged.parents),
+                    continuity_generation,
+                    epoch,
+                    staged.structures.get(&ChildListOwner::Node { node_id }),
+                )
+            });
+            let text = match (before_node, after_node) {
+                (Some(before), Some(after)) => {
+                    classify_text_transition(document, change, before, after, &mut work)
+                }
+                _ => None,
+            };
+            NodeTransition {
+                key: key_for(node_id),
+                before,
+                after,
+                text,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let transition_journal = staged
+        .transition
+        .as_ref()
+        .expect("capture-enabled staging retains transition edit windows");
+    work.splice_ids_copied = transition_journal
+        .splices
+        .values()
+        .fold(0_u64, |total, splice| {
+            total.saturating_add(usize_to_u64(
+                splice.removed.len().saturating_add(splice.inserted.len()),
+            ))
+        });
+    let structures = transition_journal
+        .splices
+        .iter()
+        .filter(|(owner, _)| match owner {
+            ChildListOwner::Document => true,
+            ChildListOwner::Node { node_id } => {
+                view_node(*node_id, document, &staged.nodes).is_some()
+            }
+        })
+        .map(|(owner, splice)| {
+            work.entity_visits = work.entity_visits.saturating_add(1);
+            work.splice_ids_copied = work.splice_ids_copied.saturating_add(usize_to_u64(
+                splice.removed.len().saturating_add(splice.inserted.len()),
+            ));
+            StructureTransition {
+                owner: qualify_owner(*owner, continuity_generation, epoch),
+                before_version: splice.before_version.clone(),
+                after_version: splice.after_version.clone(),
+                start: splice.start,
+                removed: splice.removed.iter().copied().map(key_for).collect(),
+                inserted: splice.inserted.iter().copied().map(key_for).collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut affected = staged
+        .resources
+        .keys()
+        .copied()
+        .map(|resource_id| {
+            let users = document
+                .resource_users
+                .get(&resource_id)
+                .cloned()
+                .unwrap_or_default();
+            (resource_id, users)
+        })
+        .collect::<BTreeMap<_, _>>();
+    for (node_id, replacement) in &staged.nodes {
+        work.entity_visits = work.entity_visits.saturating_add(1);
+        let before_resource = document
+            .nodes
+            .get(node_id)
+            .and_then(|node| node.content.referenced_resource());
+        let after_resource = replacement
+            .as_ref()
+            .and_then(|node| node.content.referenced_resource());
+        for resource_id in [before_resource, after_resource].into_iter().flatten() {
+            if let Some(users) = affected.get_mut(&resource_id) {
+                users.insert(*node_id);
+            }
+        }
+    }
+    let resources = staged
+        .resources
+        .iter()
+        .map(|(resource_id, replacement)| {
+            work.entity_visits = work.entity_visits.saturating_add(1);
+            let users = affected.remove(resource_id).unwrap_or_default();
+            work.entity_visits = work.entity_visits.saturating_add(usize_to_u64(users.len()));
+            ResourceTransition {
+                key: TransitionResourceKey {
+                    continuity_generation,
+                    epoch,
+                    resource_id: *resource_id,
+                },
+                before_version: document
+                    .resources
+                    .get(resource_id)
+                    .map(|resource| resource.version.clone()),
+                after_version: replacement
+                    .as_ref()
+                    .map(|resource| resource.version.clone()),
+                affected_nodes: users.into_iter().map(key_for).collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    (
+        TransitionFacts::Continuous {
+            before: before_generation.map(|generation| document_state_stamp(document, generation)),
+            after: staged_document_state_stamp(document, change, staged, continuity_generation),
+            nodes,
+            structures,
+            resources,
+        },
+        work,
+    )
+}
+
+fn node_state_stamp(
+    node: &ContentNode,
+    parent: Option<ChildListOwner>,
+    continuity_generation: ContinuityGeneration,
+    epoch: Epoch,
+    structure: Option<&StructureEdit>,
+) -> NodeStateStamp {
+    NodeStateStamp {
+        version: node.version.clone(),
+        stability: node.stability,
+        parent: parent.map(|owner| qualify_owner(owner, continuity_generation, epoch)),
+        children_version: structure
+            .map(structure_edit_version)
+            .unwrap_or_else(|| node.children.version().clone()),
+    }
+}
+
+fn classify_text_transition(
+    document: &Document,
+    change: &ChangeSet,
+    before: &ContentNode,
+    after: &ContentNode,
+    work: &mut TransitionWork,
+) -> Option<TextTransition> {
+    let before_text = semantic_text(&before.content);
+    let after_text = semantic_text(&after.content);
+    let (Some(before_text), Some(after_text)) = (before_text, after_text) else {
+        return (before_text.is_some() != after_text.is_some())
+            .then_some(TextTransition::Replacement);
+    };
+
+    if source_append_compatible(before, after, before_text, after_text) {
+        let range = SourceRange::new(before.body.end, after.body.end);
+        let text = copy_combined_source_range(document, change, range);
+        work.owned_text_bytes_copied = work
+            .owned_text_bytes_copied
+            .saturating_add(usize_to_u64(text.len()));
+        return Some(TextTransition::ProjectionAppend { range, text });
+    }
+
+    (!semantic_text_unchanged(before, after, before_text, after_text))
+        .then_some(TextTransition::Replacement)
+}
+
+fn semantic_text(content: &ContentKind) -> Option<&SemanticText> {
+    match content {
+        ContentKind::Text { text }
+        | ContentKind::InlineCode { text }
+        | ContentKind::CodeBlock { text, .. }
+        | ContentKind::Html { text, .. }
+        | ContentKind::Math { text, .. } => Some(text),
+        ContentKind::Image { alt, .. } => Some(alt),
+        _ => None,
+    }
+}
+
+fn source_append_compatible(
+    before: &ContentNode,
+    after: &ContentNode,
+    before_text: &SemanticText,
+    after_text: &SemanticText,
+) -> bool {
+    matches!(before_text, SemanticText::Source {})
+        && matches!(after_text, SemanticText::Source {})
+        && text_container_contract_equal(&before.content, &after.content)
+        && before.source.start == after.source.start
+        && before.source.end <= after.source.end
+        && before.body.start == after.body.start
+        && before.body.end < after.body.end
+}
+
+fn text_container_contract_equal(before: &ContentKind, after: &ContentKind) -> bool {
+    match (before, after) {
+        (ContentKind::Text { .. }, ContentKind::Text { .. })
+        | (ContentKind::InlineCode { .. }, ContentKind::InlineCode { .. }) => true,
+        (
+            ContentKind::CodeBlock {
+                syntax: before_syntax,
+                info: before_info,
+                ..
+            },
+            ContentKind::CodeBlock {
+                syntax: after_syntax,
+                info: after_info,
+                ..
+            },
+        ) => before_syntax == after_syntax && before_info == after_info,
+        (
+            ContentKind::Html {
+                block: before_block,
+                ..
+            },
+            ContentKind::Html {
+                block: after_block, ..
+            },
+        ) => before_block == after_block,
+        (
+            ContentKind::Math {
+                display: before_display,
+                ..
+            },
+            ContentKind::Math {
+                display: after_display,
+                ..
+            },
+        ) => before_display == after_display,
+        (
+            ContentKind::Image {
+                target: before_target,
+                reference_label: before_label,
+                style: before_style,
+                ..
+            },
+            ContentKind::Image {
+                target: after_target,
+                reference_label: after_label,
+                style: after_style,
+                ..
+            },
+        ) => {
+            before_target == after_target
+                && before_label == after_label
+                && before_style == after_style
+        }
+        _ => false,
+    }
+}
+
+fn semantic_text_unchanged(
+    before: &ContentNode,
+    after: &ContentNode,
+    before_text: &SemanticText,
+    after_text: &SemanticText,
+) -> bool {
+    if !text_container_contract_equal(&before.content, &after.content) {
+        return false;
+    }
+    match (before_text, after_text) {
+        (SemanticText::Source {}, SemanticText::Source {}) => before.body == after.body,
+        (
+            SemanticText::Normalized {
+                value: before_value,
+            },
+            SemanticText::Normalized { value: after_value },
+        ) => before_value == after_value,
+        _ => false,
+    }
+}
+
+fn copy_combined_source_range(
+    document: &Document,
+    change: &ChangeSet,
+    range: SourceRange,
+) -> String {
+    let prefix_len = document.source.len();
+    let start = usize::try_from(range.start.get())
+        .expect("validated source cursors fit the source address space");
+    let end = usize::try_from(range.end.get())
+        .expect("validated source cursors fit the source address space");
+    if end <= prefix_len {
+        return document.source[start..end].to_string();
+    }
+    if start >= prefix_len {
+        return change.source().suffix[start - prefix_len..end - prefix_len].to_string();
+    }
+
+    let mut text = String::with_capacity(end - start);
+    text.push_str(&document.source[start..]);
+    text.push_str(&change.source().suffix[..end - prefix_len]);
+    text
 }
 
 fn snapshot_matches_document(snapshot: &Snapshot, document: &Document) -> bool {
@@ -856,6 +1563,20 @@ struct StagedChange {
     finish: bool,
     impact: ChangeImpact,
     stats: ValidationStats,
+    transition: Option<StagedTransitionJournal>,
+}
+
+#[derive(Default)]
+struct StagedTransitionJournal {
+    splices: BTreeMap<ChildListOwner, StagedSplice>,
+}
+
+struct StagedSplice {
+    start: u32,
+    before_version: crate::StructureVersion,
+    after_version: crate::StructureVersion,
+    removed: Vec<NodeId>,
+    inserted: Vec<NodeId>,
 }
 
 enum StructureEdit {
@@ -866,10 +1587,11 @@ enum StructureEdit {
     Replace(ChildList),
 }
 
-fn stage_document(
+fn stage_document<const CAPTURE_TRANSITIONS: bool>(
     document: &Document,
     change: &ChangeSet,
     limits: ProtocolLimits,
+    capture_details: bool,
 ) -> Result<StagedChange, StageFailure> {
     if document.lifecycle == DocumentLifecycle::Finalized {
         return Err(ProtocolError::IllegalLifecycle(
@@ -899,6 +1621,8 @@ fn stage_document(
     let mut nodes = BTreeMap::<NodeId, Option<ContentNode>>::new();
     let mut resources = BTreeMap::<ResourceId, Option<SemanticResource>>::new();
     let mut structures = BTreeMap::<ChildListOwner, StructureEdit>::new();
+    let mut transition =
+        (CAPTURE_TRANSITIONS && capture_details).then(StagedTransitionJournal::default);
     let mut projection_cursor = document.projection_cursor;
     let mut finish = false;
     let mut staging_work_steps = 0usize;
@@ -1146,6 +1870,12 @@ fn stage_document(
                     }
                     StructureEdit::Replace(replacement)
                 };
+                if let Some(journal) = &mut transition {
+                    journal.splices.insert(
+                        *owner,
+                        staged_splice(current, start, end, insert, new_version),
+                    );
+                }
                 structures.insert(*owner, edit);
             }
             ProjectionOp::InsertResource { resource } => {
@@ -1448,7 +2178,42 @@ fn stage_document(
             structural_items,
             child_ids_copied,
         },
+        transition,
     })
+}
+
+fn staged_splice(
+    current: &ChildList,
+    start: usize,
+    end: usize,
+    inserted: &[NodeId],
+    after_version: &crate::StructureVersion,
+) -> StagedSplice {
+    let removed = &current.as_slice()[start..end];
+    let prefix = removed
+        .iter()
+        .zip(inserted)
+        .take_while(|(before, after)| before == after)
+        .count();
+    let remaining_removed = &removed[prefix..];
+    let remaining_inserted = &inserted[prefix..];
+    let suffix = remaining_removed
+        .iter()
+        .rev()
+        .zip(remaining_inserted.iter().rev())
+        .take_while(|(before, after)| before == after)
+        .count();
+    let removed_end = remaining_removed.len().saturating_sub(suffix);
+    let inserted_end = remaining_inserted.len().saturating_sub(suffix);
+
+    StagedSplice {
+        start: u32::try_from(start.saturating_add(prefix))
+            .expect("validated splice positions fit the protocol's u32 address space"),
+        before_version: current.version().clone(),
+        after_version: after_version.clone(),
+        removed: remaining_removed[..removed_end].to_vec(),
+        inserted: remaining_inserted[..inserted_end].to_vec(),
+    }
 }
 
 fn rebind_replaced_resource_users(
@@ -3013,5 +3778,47 @@ const fn usize_to_u64(value: usize) -> u64 {
         u64::MAX
     } else {
         value as u64
+    }
+}
+
+#[cfg(test)]
+mod transition_reducer_tests {
+    use super::*;
+    use crate::SourceDelta;
+
+    #[test]
+    fn continuity_overflow_is_rejected_before_a_full_replace_commit() {
+        let mut reducer = TransitionReducer {
+            reducer: Reducer::new(),
+            continuity_generation: ContinuityGeneration::new(u64::MAX),
+            transition_metrics: TransitionMetrics::default(),
+        };
+        let initial = ChangeSet::start_epoch(
+            Epoch::new(1),
+            ChangeId::new("transition:overflow-start").unwrap(),
+            None,
+            SourceDelta::unchanged(SourceCursor::new(0)),
+            Vec::new(),
+        )
+        .unwrap();
+        reducer.apply(initial).unwrap();
+        let before = reducer.document().unwrap().snapshot();
+        let metrics = reducer.transition_metrics();
+        let reset = ChangeSet::start_epoch(
+            Epoch::new(2),
+            ChangeId::new("transition:overflow-reset").unwrap(),
+            Some(reducer.document().unwrap().coordinate().clone()),
+            SourceDelta::unchanged(SourceCursor::new(0)),
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            reducer.apply(reset),
+            Err(TransitionError::ContinuityOverflow)
+        );
+        assert_eq!(reducer.document().unwrap().snapshot(), before);
+        assert_eq!(reducer.continuity_generation().get(), u64::MAX);
+        assert_eq!(reducer.transition_metrics(), metrics);
     }
 }

@@ -65,6 +65,7 @@ decimal_id!(Epoch);
 decimal_id!(Sequence);
 decimal_id!(SourceCursor);
 decimal_id!(RequestGeneration);
+decimal_id!(ContinuityGeneration);
 
 macro_rules! content_id {
     ($name:ident, $domain:literal) => {

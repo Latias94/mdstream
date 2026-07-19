@@ -12,9 +12,11 @@ mod budget;
 mod chunks;
 mod fixture;
 mod trace;
+mod transition;
 
 pub use assertions::*;
 pub use budget::*;
 pub use chunks::*;
 pub use fixture::*;
 pub use trace::*;
+pub use transition::*;
