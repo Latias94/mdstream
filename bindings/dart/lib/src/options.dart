@@ -45,6 +45,7 @@ final class MdstreamSessionOptions {
     Map<String, String> processor = const {},
     Map<String, String> wire = const {},
     List<MdstreamCustomBlock> customBlocks = const [],
+    this.captureTransitions = false,
   }) : protocol = _validatedLimits(protocol, 'protocol'),
        engine = _validatedLimits(engine, 'engine'),
        processor = _validatedLimits(processor, 'processor'),
@@ -70,6 +71,9 @@ final class MdstreamSessionOptions {
   /// Custom blocks sealed before the first input is appended.
   final List<MdstreamCustomBlock> customBlocks;
 
+  /// Whether reducer updates include ordered transition facts.
+  final bool captureTransitions;
+
   /// Encodes these options using the native binding-options [schema].
   Map<String, Object> toJson(String schema) {
     if (schema.isEmpty) {
@@ -81,6 +85,7 @@ final class MdstreamSessionOptions {
       if (engine.isNotEmpty) 'engine': engine,
       if (processor.isNotEmpty) 'processor': processor,
       if (wire.isNotEmpty) 'wire': wire,
+      if (captureTransitions) 'capture_transitions': true,
       if (customBlocks.isNotEmpty)
         'custom_blocks': customBlocks.map((block) => block._toJson()).toList(),
     };
@@ -96,14 +101,25 @@ Map<String, String> _validatedLimits(Map<String, String> source, String group) {
     if (!_optionNamePattern.hasMatch(key)) {
       throw ArgumentError.value(key, '$group option', 'must be snake_case');
     }
-    if (!_decimalPattern.hasMatch(value)) {
+    if (group == 'wire' && key == 'max_impact_bytes') {
       throw ArgumentError.value(
-        value,
-        '$group.$key',
-        'must be an unsigned canonical decimal string',
+        key,
+        '$group option',
+        'was removed; use max_reducer_update_bytes',
       );
     }
-    result[key] = value;
+    result[key] = _validatedDecimal(value, '$group.$key');
   }
   return Map.unmodifiable(result);
+}
+
+String _validatedDecimal(String value, String field) {
+  if (!_decimalPattern.hasMatch(value)) {
+    throw ArgumentError.value(
+      value,
+      field,
+      'must be an unsigned canonical decimal string',
+    );
+  }
+  return value;
 }

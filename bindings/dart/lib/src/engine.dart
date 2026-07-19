@@ -25,6 +25,10 @@ final class EngineResult {
   List<ReducerUpdateView> get updates =>
       List.unmodifiable(reducerResults.expand((result) => result.updates));
 
+  List<TransitionFactsView> get transitionFacts => List.unmodifiable(
+    reducerResults.expand((result) => result.transitionFacts),
+  );
+
   List<ProcessorRequestView> get processorRequests => List.unmodifiable(
     reducerResults.expand((result) => result.processorRequests),
   );

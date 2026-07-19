@@ -10,6 +10,9 @@ const bindingSchema = 'mdstream.bindings/0.4';
 /// Current JSON schema accepted for session options and commands.
 const bindingOptionsSchema = 'mdstream.bindings-options/0.4';
 
+/// Frozen transition-facts schema carried inside reducer updates.
+const transitionSchema = 'mdstream.transitions/1';
+
 /// Stable C ABI version implemented by this package.
 const mdstreamAbiVersion = 1;
 
@@ -26,6 +29,7 @@ typedef NodeVersion = String;
 typedef ResourceVersion = String;
 typedef StructureVersion = String;
 typedef ProcessorInputVersion = String;
+typedef ContinuityGeneration = String;
 
 /// Opaque canonical change bytes produced by the native engine.
 ///

@@ -6,6 +6,10 @@ import 'package:test/test.dart';
 
 void main() {
   group('binding protocol', () {
+    test('publishes the frozen transition schema', () {
+      expect(transitionSchema, 'mdstream.transitions/1');
+    });
+
     test('keeps C payload discriminants and view kinds aligned', () {
       expect(BindingPayloadKind.change.value, 1);
       expect(BindingPayloadKind.snapshot.value, 2);

@@ -65,6 +65,20 @@ final class ReducerResult {
   final List<ArtifactChangeView> artifactChanges;
   final DecimalCounter outputPayloadBytes;
 
+  /// Ordered transition facts from every reducer update in this result.
+  List<TransitionFactsView> get transitionFacts {
+    List<TransitionFactsView>? facts;
+    for (final update in updates) {
+      final transition = update.transition;
+      if (transition != null) {
+        (facts ??= <TransitionFactsView>[]).add(transition.facts);
+      }
+    }
+    return facts == null
+        ? const <TransitionFactsView>[]
+        : List<TransitionFactsView>.unmodifiable(facts);
+  }
+
   List<NodeId> get changedNodeIds => List.unmodifiable(
     LinkedHashSet<NodeId>.from(
       updates.expand((update) => update.impact.changedNodeIds),

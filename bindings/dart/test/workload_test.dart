@@ -20,14 +20,22 @@ void main() {
         for (var index = 0; index < 10000; index += 1) {
           source.write('paragraph $index\n\n');
         }
-        engine.append(source.toString());
-        engine.finish();
+        final appended = engine.append(source.toString());
+        final finished = engine.finish();
 
         final roots = engine.state.currentState.document?.roots?.children;
         expect(roots, hasLength(10000));
         expect(engine.reducerMetrics.nodeViewPayloads, '0');
         expect(engine.metrics.snapshotPayloads, '0');
         expect(engine.reducerMetrics.snapshotPayloads, '0');
+        expect(
+          appended.reducerResults.expand((result) => result.transitionFacts),
+          isEmpty,
+        );
+        expect(
+          finished.reducerResults.expand((result) => result.transitionFacts),
+          isEmpty,
+        );
 
         final accessed = roots!.take(16).toList(growable: false);
         final first = accessed

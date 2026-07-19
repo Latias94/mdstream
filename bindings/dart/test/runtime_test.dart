@@ -1,7 +1,11 @@
 import 'package:mdstream/mdstream.dart';
 import 'package:test/test.dart';
 
+import 'support/native_library.dart';
+
 void main() {
+  final libraryPath = nativeLibraryPath();
+
   test('runtime maps a missing host-supplied library to a typed error', () {
     expect(
       () => MdstreamRuntime.openPath(
@@ -37,4 +41,19 @@ void main() {
       throwsArgumentError,
     );
   });
+
+  test(
+    'runtime exposes the validated transition schema before sessions',
+    () {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      expect(runtime.transitionSchema, transitionSchema);
+
+      final reducer = runtime.createReducer();
+      reducer.close();
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run tool/build_native.dart before native tests'
+        : false,
+  );
 }

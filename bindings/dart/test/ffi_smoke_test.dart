@@ -12,6 +12,32 @@ import 'support/native_library.dart';
 void main() {
   final libraryPath = nativeLibraryPath();
 
+  test('rejects incompatible native transition schemas as status 5', () {
+    for (final schema in <String>[
+      'mdstream.transitions/draft',
+      'mdstream.transitions/2',
+    ]) {
+      expect(
+        () => validateNativeTransitionSchema(schema),
+        throwsA(
+          isA<MdstreamException>()
+              .having((error) => error.status, 'status', 5)
+              .having(
+                (error) => error.statusName,
+                'statusName',
+                'MDSTREAM_UNSUPPORTED_SCHEMA',
+              )
+              .having(
+                (error) => error.detailCode,
+                'detailCode',
+                'ffi.transition_schema',
+              )
+              .having((error) => error.schema, 'schema', schema),
+        ),
+      );
+    }
+  });
+
   test(
     'checked ABI streams, reduces, maps errors, and releases exact-once',
     () {
@@ -21,6 +47,7 @@ void main() {
       expect(bindings.abiVersion, mdstreamAbiVersion);
       expect(bindings.bindingSchema, bindingSchema);
       expect(bindings.optionsSchema, bindingOptionsSchema);
+      expect(bindings.transitionSchema, transitionSchema);
       expect(bindings.packageVersion, '0.4.0');
       expect(bindings.allocationMetrics().isZero, isTrue);
 

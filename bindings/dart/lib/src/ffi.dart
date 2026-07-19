@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 import 'errors.dart';
+import 'protocol.dart' as protocol;
 
 const int _expectedAbiVersion = 1;
 const String _expectedBindingSchema = 'mdstream.bindings/0.4';
@@ -190,6 +191,10 @@ final class NativeBindings {
           .lookupFunction<_StaticStringNative, _StaticStringDart>(
             'mdstream_binding_options_schema',
           ),
+      _transitionSchema = library
+          .lookupFunction<_StaticStringNative, _StaticStringDart>(
+            'mdstream_transition_schema',
+          ),
       _bufferSize = library.lookupFunction<_StructSizeNative, _StructSizeDart>(
         'mdstream_buffer_struct_size',
       ),
@@ -304,6 +309,7 @@ final class NativeBindings {
   final _StaticStringDart _packageVersion;
   final _StaticStringDart _bindingSchema;
   final _StaticStringDart _optionsSchema;
+  final _StaticStringDart _transitionSchema;
   final _StructSizeDart _bufferSize;
   final _StructSizeDart _callResultSize;
   final _StructSizeDart _engineResultSize;
@@ -332,6 +338,8 @@ final class NativeBindings {
   String get bindingSchema => _readStaticString(_bindingSchema(), 'schema');
   String get optionsSchema =>
       _readStaticString(_optionsSchema(), 'options schema');
+  String get transitionSchema =>
+      _readStaticString(_transitionSchema(), 'transition schema');
 
   NativeEngineHandle createEngine(Uint8List options) {
     final result = _withInput(options, _engineNew);
@@ -446,6 +454,7 @@ final class NativeBindings {
         schema: actualBindingSchema,
       );
     }
+    validateNativeTransitionSchema(transitionSchema);
     final sizes = <String, (int, int)>{
       'MdstreamBuffer': (_bufferSize(), ffi.sizeOf<_MdstreamBuffer>()),
       'MdstreamCallResult': (
@@ -545,6 +554,18 @@ final class NativeBindings {
     final bytes = _copyAndFree(buffer);
     throw _invalidNativeResult(
       '$operation returned an unexpected error payload: ${utf8.decode(bytes, allowMalformed: true)}',
+    );
+  }
+}
+
+void validateNativeTransitionSchema(String actual) {
+  if (actual != protocol.transitionSchema) {
+    throw MdstreamException(
+      'unsupported mdstream transition schema $actual',
+      status: 5,
+      statusName: 'MDSTREAM_UNSUPPORTED_SCHEMA',
+      detailCode: 'ffi.transition_schema',
+      schema: actual,
     );
   }
 }

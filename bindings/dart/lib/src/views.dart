@@ -119,6 +119,199 @@ final class DocumentSummaryView {
   final ChildListView? roots;
 }
 
+/// Continuity-qualified identity for one content node.
+final class TransitionNodeKeyView {
+  const TransitionNodeKeyView._({
+    required this.continuityGeneration,
+    required this.epoch,
+    required this.nodeId,
+  });
+
+  final ContinuityGeneration continuityGeneration;
+  final Epoch epoch;
+  final NodeId nodeId;
+}
+
+/// Continuity-qualified identity for one semantic resource.
+final class TransitionResourceKeyView {
+  const TransitionResourceKeyView._({
+    required this.continuityGeneration,
+    required this.epoch,
+    required this.resourceId,
+  });
+
+  final ContinuityGeneration continuityGeneration;
+  final Epoch epoch;
+  final ResourceId resourceId;
+}
+
+/// Owner of a versioned child list affected by one transition.
+sealed class TransitionChildListOwnerView {
+  const TransitionChildListOwnerView._(this.kind);
+
+  final String kind;
+}
+
+/// The document root child list.
+final class DocumentTransitionOwnerView extends TransitionChildListOwnerView {
+  const DocumentTransitionOwnerView._() : super._('document');
+}
+
+/// A child list owned by a continuity-qualified node.
+final class NodeTransitionOwnerView extends TransitionChildListOwnerView {
+  const NodeTransitionOwnerView._(this.key) : super._('node');
+
+  final TransitionNodeKeyView key;
+}
+
+/// Stable document fields before or after a reducer commit.
+final class DocumentStateStampView {
+  const DocumentStateStampView._({
+    required this.continuityGeneration,
+    required this.coordinate,
+    required this.lifecycle,
+    required this.projectionCursor,
+    required this.rootsVersion,
+  });
+
+  final ContinuityGeneration continuityGeneration;
+  final CoordinateView coordinate;
+  final String lifecycle;
+  final SourceCursor projectionCursor;
+  final StructureVersion rootsVersion;
+}
+
+/// Stable node fields before or after a reducer commit.
+final class NodeStateStampView {
+  const NodeStateStampView._({
+    required this.version,
+    required this.stability,
+    required this.parent,
+    required this.childrenVersion,
+  });
+
+  final NodeVersion version;
+  final String stability;
+  final TransitionChildListOwnerView? parent;
+  final StructureVersion childrenVersion;
+}
+
+/// Owned text delta attached to a node transition.
+sealed class TextTransitionView {
+  const TextTransitionView._(this.kind);
+
+  final String kind;
+}
+
+/// Append-only projected source text retained by the transition record.
+final class ProjectionAppendTransitionView extends TextTransitionView {
+  const ProjectionAppendTransitionView._({
+    required this.range,
+    required this.text,
+  }) : super._('projection_append');
+
+  final SourceRangeView range;
+  final String text;
+}
+
+/// A semantic replacement whose full text is available from the tail view.
+final class ReplacementTextTransitionView extends TextTransitionView {
+  const ReplacementTextTransitionView._() : super._('replacement');
+}
+
+/// Before/after stamps for one continuity-qualified node.
+final class NodeTransitionView {
+  const NodeTransitionView._({
+    required this.key,
+    required this.before,
+    required this.after,
+    required this.text,
+  });
+
+  final TransitionNodeKeyView key;
+  final NodeStateStampView? before;
+  final NodeStateStampView? after;
+  final TextTransitionView? text;
+}
+
+/// One ordered splice against a versioned child list.
+final class StructureTransitionView {
+  const StructureTransitionView._({
+    required this.owner,
+    required this.beforeVersion,
+    required this.afterVersion,
+    required this.start,
+    required this.removed,
+    required this.inserted,
+  });
+
+  final TransitionChildListOwnerView owner;
+  final StructureVersion beforeVersion;
+  final StructureVersion afterVersion;
+  final int start;
+  final List<TransitionNodeKeyView> removed;
+  final List<TransitionNodeKeyView> inserted;
+}
+
+/// Before/after version and affected nodes for one semantic resource.
+final class ResourceTransitionView {
+  const ResourceTransitionView._({
+    required this.key,
+    required this.beforeVersion,
+    required this.afterVersion,
+    required this.affectedNodes,
+  });
+
+  final TransitionResourceKeyView key;
+  final ResourceVersion? beforeVersion;
+  final ResourceVersion? afterVersion;
+  final List<TransitionNodeKeyView> affectedNodes;
+}
+
+/// Ordered transition facts produced by one reducer update.
+sealed class TransitionFactsView {
+  const TransitionFactsView._({
+    required this.scope,
+    required this.before,
+    required this.after,
+  });
+
+  final String scope;
+  final DocumentStateStampView? before;
+  final DocumentStateStampView after;
+}
+
+/// Incremental facts preserving every changed entity and owned text delta.
+final class ContinuousTransitionFactsView extends TransitionFactsView {
+  const ContinuousTransitionFactsView._({
+    required super.before,
+    required super.after,
+    required this.nodes,
+    required this.structures,
+    required this.resources,
+  }) : super._(scope: 'continuous');
+
+  final List<NodeTransitionView> nodes;
+  final List<StructureTransitionView> structures;
+  final List<ResourceTransitionView> resources;
+}
+
+/// Coarse facts emitted when advanced recovery replaces continuity.
+final class FullReplaceTransitionFactsView extends TransitionFactsView {
+  const FullReplaceTransitionFactsView._({
+    required super.before,
+    required super.after,
+  }) : super._(scope: 'full_replace');
+}
+
+/// Versioned transition payload embedded in a reducer update.
+final class TransitionEnvelopeView {
+  const TransitionEnvelopeView._({required this.schema, required this.facts});
+
+  final String schema;
+  final TransitionFactsView facts;
+}
+
 /// One typed reducer update and its precise invalidation set.
 final class ReducerUpdateView extends DecodedBindingView {
   const ReducerUpdateView._({
@@ -128,12 +321,14 @@ final class ReducerUpdateView extends DecodedBindingView {
     required this.status,
     required this.impact,
     required this.document,
+    required this.transition,
   }) : super(kind: 'reducer_update');
 
   final ApplyOutcomeView outcome;
   final ReducerStatusView status;
   final ChangeImpactView impact;
   final DocumentSummaryView? document;
+  final TransitionEnvelopeView? transition;
 }
 
 /// Half-open source range represented with exact decimal cursors.
@@ -654,6 +849,7 @@ const _processorFailureCodes = <String>{
   'invalid_context',
   'resource_limit',
 };
+final _opaqueIdentifierPattern = RegExp(r'^[A-Za-z0-9._:-]{1,128}$');
 
 /// Decodes one JSON view emitted by the binding facade.
 ///
@@ -703,15 +899,366 @@ DecodedBindingView decodeBindingView(
 ReducerUpdateView _decodeReducerUpdate(
   Map<String, Object?> value,
   String schema,
-) => ReducerUpdateView._(
-  schema: schema,
-  raw: value,
-  outcome: _decodeOutcome(_requiredRecord(value['outcome'], 'outcome')),
-  status: _decodeStatus(_requiredRecord(value['status'], 'status')),
-  impact: _decodeImpact(_requiredRecord(value['impact'], 'impact')),
-  document: value['document'] == null
-      ? null
-      : _decodeDocument(_requiredRecord(value['document'], 'document')),
+) {
+  final hasTransition = value.containsKey('transition');
+  _exactKeys(value, {
+    'schema',
+    'kind',
+    'outcome',
+    'status',
+    'impact',
+    'document',
+    if (hasTransition) 'transition',
+  }, 'reducer update');
+  _requireOwnKey(value, 'document', 'document');
+  return ReducerUpdateView._(
+    schema: schema,
+    raw: value,
+    outcome: _decodeOutcome(_requiredRecord(value['outcome'], 'outcome')),
+    status: _decodeStatus(_requiredRecord(value['status'], 'status')),
+    impact: _decodeImpact(_requiredRecord(value['impact'], 'impact')),
+    document: value['document'] == null
+        ? null
+        : _decodeDocument(_requiredRecord(value['document'], 'document')),
+    transition: hasTransition
+        ? _decodeTransitionEnvelope(
+            _requiredRecord(value['transition'], 'transition'),
+          )
+        : null,
+  );
+}
+
+TransitionEnvelopeView _decodeTransitionEnvelope(Map<String, Object?> value) {
+  _exactKeys(value, {'schema', 'facts'}, 'transition');
+  _requireLiteral(value['schema'], transitionSchema, 'transition.schema');
+  return TransitionEnvelopeView._(
+    schema: transitionSchema,
+    facts: _decodeTransitionFacts(
+      _requiredRecord(value['facts'], 'transition.facts'),
+    ),
+  );
+}
+
+TransitionFactsView _decodeTransitionFacts(Map<String, Object?> value) {
+  final scope = _requiredString(value['scope'], 'transition.facts.scope');
+  final before = _requiredNullableRecord(
+    value,
+    'before',
+    'transition.facts.before',
+  );
+  final after = _decodeDocumentStateStamp(
+    _requiredRecord(value['after'], 'transition.facts.after'),
+  );
+  switch (scope) {
+    case 'continuous':
+      _exactKeys(value, {
+        'scope',
+        'before',
+        'after',
+        'nodes',
+        'structures',
+        'resources',
+      }, 'continuous transition facts');
+      return ContinuousTransitionFactsView._(
+        before: before == null ? null : _decodeDocumentStateStamp(before),
+        after: after,
+        nodes: List<NodeTransitionView>.unmodifiable(
+          _requiredList(value['nodes'], 'transition.facts.nodes').map(
+            (node) =>
+                _decodeNodeTransition(_requiredRecord(node, 'transition node')),
+          ),
+        ),
+        structures: List<StructureTransitionView>.unmodifiable(
+          _requiredList(value['structures'], 'transition.facts.structures').map(
+            (structure) => _decodeStructureTransition(
+              _requiredRecord(structure, 'structure transition'),
+            ),
+          ),
+        ),
+        resources: List<ResourceTransitionView>.unmodifiable(
+          _requiredList(value['resources'], 'transition.facts.resources').map(
+            (resource) => _decodeResourceTransition(
+              _requiredRecord(resource, 'resource transition'),
+            ),
+          ),
+        ),
+      );
+    case 'full_replace':
+      _exactKeys(value, {
+        'scope',
+        'before',
+        'after',
+      }, 'full-replace transition facts');
+      return FullReplaceTransitionFactsView._(
+        before: before == null ? null : _decodeDocumentStateStamp(before),
+        after: after,
+      );
+    default:
+      throw invalidBindingPayload('unknown transition scope $scope');
+  }
+}
+
+DocumentStateStampView _decodeDocumentStateStamp(Map<String, Object?> value) {
+  _exactKeys(value, {
+    'continuity_generation',
+    'coordinate',
+    'lifecycle',
+    'projection_cursor',
+    'roots_version',
+  }, 'transition document stamp');
+  final lifecycle = _requiredString(
+    value['lifecycle'],
+    'transition document stamp lifecycle',
+  );
+  if (lifecycle != 'open' && lifecycle != 'finalized') {
+    throw invalidBindingPayload(
+      'unknown transition document lifecycle $lifecycle',
+    );
+  }
+  return DocumentStateStampView._(
+    continuityGeneration: decodeDecimalU64(
+      value['continuity_generation'],
+      'continuity_generation',
+    ),
+    coordinate: _decodeTransitionCoordinate(
+      _requiredRecord(
+        value['coordinate'],
+        'transition document stamp coordinate',
+      ),
+    ),
+    lifecycle: lifecycle,
+    projectionCursor: decodeDecimalU64(
+      value['projection_cursor'],
+      'projection_cursor',
+    ),
+    rootsVersion: _opaqueIdentifier(value['roots_version'], 'roots_version'),
+  );
+}
+
+CoordinateView _decodeTransitionCoordinate(Map<String, Object?> value) {
+  _exactKeys(value, {
+    'epoch',
+    'sequence',
+    'change_id',
+    'source_cursor',
+  }, 'transition document stamp coordinate');
+  return CoordinateView(
+    epoch: decodeDecimalU64(value['epoch'], 'coordinate.epoch'),
+    sequence: decodeDecimalU64(value['sequence'], 'coordinate.sequence'),
+    changeId: _opaqueIdentifier(value['change_id'], 'coordinate.change_id'),
+    sourceCursor: decodeDecimalU64(
+      value['source_cursor'],
+      'coordinate.source_cursor',
+    ),
+  );
+}
+
+TransitionNodeKeyView _decodeTransitionNodeKey(Map<String, Object?> value) {
+  _exactKeys(value, {
+    'continuity_generation',
+    'epoch',
+    'node_id',
+  }, 'transition node key');
+  return TransitionNodeKeyView._(
+    continuityGeneration: decodeDecimalU64(
+      value['continuity_generation'],
+      'continuity_generation',
+    ),
+    epoch: decodeDecimalU64(value['epoch'], 'transition node epoch'),
+    nodeId: decodeDecimalU128(value['node_id'], 'transition node id'),
+  );
+}
+
+TransitionResourceKeyView _decodeTransitionResourceKey(
+  Map<String, Object?> value,
+) {
+  _exactKeys(value, {
+    'continuity_generation',
+    'epoch',
+    'resource_id',
+  }, 'transition resource key');
+  return TransitionResourceKeyView._(
+    continuityGeneration: decodeDecimalU64(
+      value['continuity_generation'],
+      'continuity_generation',
+    ),
+    epoch: decodeDecimalU64(value['epoch'], 'transition resource epoch'),
+    resourceId: decodeDecimalU128(
+      value['resource_id'],
+      'transition resource id',
+    ),
+  );
+}
+
+TransitionChildListOwnerView _decodeTransitionOwner(
+  Map<String, Object?> value,
+) {
+  final kind = _requiredString(value['kind'], 'transition owner kind');
+  switch (kind) {
+    case 'document':
+      _exactKeys(value, {'kind'}, 'document transition owner');
+      return const DocumentTransitionOwnerView._();
+    case 'node':
+      _exactKeys(value, {'kind', 'key'}, 'node transition owner');
+      return NodeTransitionOwnerView._(
+        _decodeTransitionNodeKey(
+          _requiredRecord(value['key'], 'transition owner node key'),
+        ),
+      );
+    default:
+      throw invalidBindingPayload('unknown transition owner $kind');
+  }
+}
+
+NodeStateStampView _decodeNodeStateStamp(Map<String, Object?> value) {
+  _exactKeys(value, {
+    'version',
+    'stability',
+    'parent',
+    'children_version',
+  }, 'transition node stamp');
+  final stability = _requiredString(
+    value['stability'],
+    'transition node stability',
+  );
+  if (stability != 'provisional' && stability != 'stable') {
+    throw invalidBindingPayload('unknown transition node stability $stability');
+  }
+  final parent = _requiredNullableRecord(
+    value,
+    'parent',
+    'transition node parent',
+  );
+  return NodeStateStampView._(
+    version: _opaqueIdentifier(value['version'], 'transition node version'),
+    stability: stability,
+    parent: parent == null ? null : _decodeTransitionOwner(parent),
+    childrenVersion: _opaqueIdentifier(
+      value['children_version'],
+      'transition children version',
+    ),
+  );
+}
+
+TextTransitionView _decodeTextTransition(Map<String, Object?> value) {
+  final kind = _requiredString(value['kind'], 'text transition kind');
+  switch (kind) {
+    case 'projection_append':
+      _exactKeys(value, {
+        'kind',
+        'range',
+        'text',
+      }, 'projection-append transition');
+      final range = _requiredRecord(value['range'], 'projection-append range');
+      _exactKeys(range, {'start', 'end'}, 'projection-append range');
+      return ProjectionAppendTransitionView._(
+        range: _decodeRange(range),
+        text: _requiredString(value['text'], 'projection-append text'),
+      );
+    case 'replacement':
+      _exactKeys(value, {'kind'}, 'replacement transition');
+      return const ReplacementTextTransitionView._();
+    default:
+      throw invalidBindingPayload('unknown text transition $kind');
+  }
+}
+
+NodeTransitionView _decodeNodeTransition(Map<String, Object?> value) {
+  _exactKeys(value, {'key', 'before', 'after', 'text'}, 'node transition');
+  final before = _requiredNullableRecord(
+    value,
+    'before',
+    'node transition before',
+  );
+  final after = _requiredNullableRecord(
+    value,
+    'after',
+    'node transition after',
+  );
+  final text = _requiredNullableRecord(value, 'text', 'node text transition');
+  return NodeTransitionView._(
+    key: _decodeTransitionNodeKey(
+      _requiredRecord(value['key'], 'node transition key'),
+    ),
+    before: before == null ? null : _decodeNodeStateStamp(before),
+    after: after == null ? null : _decodeNodeStateStamp(after),
+    text: text == null ? null : _decodeTextTransition(text),
+  );
+}
+
+StructureTransitionView _decodeStructureTransition(Map<String, Object?> value) {
+  _exactKeys(value, {
+    'owner',
+    'before_version',
+    'after_version',
+    'start',
+    'removed',
+    'inserted',
+  }, 'structure transition');
+  return StructureTransitionView._(
+    owner: _decodeTransitionOwner(
+      _requiredRecord(value['owner'], 'structure transition owner'),
+    ),
+    beforeVersion: _opaqueIdentifier(
+      value['before_version'],
+      'structure before version',
+    ),
+    afterVersion: _opaqueIdentifier(
+      value['after_version'],
+      'structure after version',
+    ),
+    start: _requiredUnsignedInteger(
+      value['start'],
+      'structure transition start',
+      0xffffffff,
+    ),
+    removed: _decodeTransitionNodeKeyArray(
+      value['removed'],
+      'removed transition nodes',
+    ),
+    inserted: _decodeTransitionNodeKeyArray(
+      value['inserted'],
+      'inserted transition nodes',
+    ),
+  );
+}
+
+ResourceTransitionView _decodeResourceTransition(Map<String, Object?> value) {
+  _exactKeys(value, {
+    'key',
+    'before_version',
+    'after_version',
+    'affected_nodes',
+  }, 'resource transition');
+  return ResourceTransitionView._(
+    key: _decodeTransitionResourceKey(
+      _requiredRecord(value['key'], 'resource transition key'),
+    ),
+    beforeVersion: _requiredNullableVersion(
+      value,
+      'before_version',
+      'resource before version',
+    ),
+    afterVersion: _requiredNullableVersion(
+      value,
+      'after_version',
+      'resource after version',
+    ),
+    affectedNodes: _decodeTransitionNodeKeyArray(
+      value['affected_nodes'],
+      'resource affected nodes',
+    ),
+  );
+}
+
+List<TransitionNodeKeyView> _decodeTransitionNodeKeyArray(
+  Object? value,
+  String field,
+) => List<TransitionNodeKeyView>.unmodifiable(
+  _requiredList(
+    value,
+    field,
+  ).map((entry) => _decodeTransitionNodeKey(_requiredRecord(entry, field))),
 );
 
 ApplyOutcomeView _decodeOutcome(Map<String, Object?> value) {
@@ -1435,6 +1982,24 @@ ResourceRefView? _nullableResourceRef(
       : _decodeResourceRef(_requiredRecord(value[key], field));
 }
 
+Map<String, Object?>? _requiredNullableRecord(
+  Map<String, Object?> value,
+  String key,
+  String field,
+) {
+  _requireOwnKey(value, key, field);
+  return value[key] == null ? null : _requiredRecord(value[key], field);
+}
+
+ResourceVersion? _requiredNullableVersion(
+  Map<String, Object?> value,
+  String key,
+  String field,
+) {
+  _requireOwnKey(value, key, field);
+  return value[key] == null ? null : _opaqueIdentifier(value[key], field);
+}
+
 String? _requiredNullableString(
   Map<String, Object?> value,
   String key,
@@ -1602,6 +2167,16 @@ String _requiredString(Object? value, String field) {
     throw invalidBindingPayload('$field must be a string');
   }
   return value;
+}
+
+String _opaqueIdentifier(Object? value, String field) {
+  final identifier = _requiredString(value, field);
+  if (!_opaqueIdentifierPattern.hasMatch(identifier)) {
+    throw invalidBindingPayload(
+      '$field must be a 1-128 byte ASCII opaque identifier',
+    );
+  }
+  return identifier;
 }
 
 bool _requiredBoolean(Object? value, String field) {

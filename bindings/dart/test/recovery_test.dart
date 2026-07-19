@@ -157,4 +157,69 @@ void main() {
         ? 'run dart run tool/build_native.dart before native tests'
         : false,
   );
+
+  test(
+    'captured recovery facts distinguish continuous, empty, and full replace',
+    () {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final fixture = loadFixture(
+        'conformance/fixtures/protocol-linear-source.json',
+      );
+      final trace = list(fixture['traces'], 'traces')
+          .map((value) => record(value, 'trace'))
+          .singleWhere((value) => value['id'] == 'characters');
+      final changes = list(
+        trace['changes'],
+        'changes',
+      ).map(encodeChange).toList(growable: false);
+      final options = MdstreamSessionOptions(
+        captureTransitions: true,
+        protocol: const {
+          'max_source_bytes': '1024',
+          'max_nodes': '16',
+          'max_resources': '16',
+          'max_operations': '64',
+          'max_change_structural_items': '64',
+          'max_children_per_list': '16',
+        },
+        wire: const {'max_reducer_update_bytes': '1048576'},
+      );
+      final producer = runtime.createReducer(options: options);
+      final consumer = runtime.createReducer(options: options);
+      try {
+        for (final change in changes.take(3)) {
+          producer.applyChange(change);
+        }
+        final advanced = producer.createRecoverySnapshot()!;
+
+        final initial = consumer.applyChange(changes[0]);
+        expect(initial.transitionFacts, hasLength(1));
+        expect(initial.transitionFacts.single.scope, 'continuous');
+        expect(initial.transitionFacts.single.after.continuityGeneration, '0');
+
+        final retry = consumer.applyChange(changes[0]);
+        expect(retry.updates.single.outcome.kind, 'idempotent');
+        expect(retry.transitionFacts, isEmpty);
+
+        final gap = consumer.applyChange(changes[2]);
+        expect(gap.updates.single.outcome.kind, 'recovery_required');
+        expect(gap.transitionFacts, isEmpty);
+
+        final recovered = consumer.recoverSnapshot(advanced);
+        expect(recovered.transitionFacts, hasLength(1));
+        expect(recovered.transitionFacts.single.scope, 'full_replace');
+        expect(
+          recovered.transitionFacts.single.after.continuityGeneration,
+          '1',
+        );
+      } finally {
+        consumer.close();
+        producer.close();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run tool/build_native.dart before native tests'
+        : false,
+  );
 }
