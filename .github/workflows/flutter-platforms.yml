@@ -77,6 +77,10 @@ jobs:
         working-directory: bindings/flutter/example
         run: flutter test test/golden_stream_test.dart
 
+      - name: Generate Linux Golden stream host
+        working-directory: bindings/flutter/example
+        run: flutter create --empty --platforms linux --project-name mdstream_flutter_example --org io.mdstream.example --no-pub .
+
       - name: Test bundled Golden stream bootstrap
         working-directory: bindings/flutter/example
         run: xvfb-run -a flutter test integration_test/golden_stream_smoke_test.dart -d linux

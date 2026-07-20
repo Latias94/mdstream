@@ -482,7 +482,9 @@ class PackageContractTests(unittest.TestCase):
         self.assertEqual(
             flutter.command,
             "python3 bindings/flutter/tool/build_native.py macos && "
-            "cd bindings/flutter/example && flutter run -d macos",
+            "cd bindings/flutter/example && flutter create --empty "
+            "--platforms macos --project-name mdstream_flutter_example "
+            "--org io.mdstream.example --no-pub . && flutter run -d macos",
         )
 
         catalog = (ROOT / "docs" / "EXAMPLES.md").read_text(encoding="utf-8")
@@ -490,9 +492,10 @@ class PackageContractTests(unittest.TestCase):
             "<!-- /example -->", 1
         )[0]
         self.assertIn(
-            "From an extracted published package, run "
-            "`cd example && flutter run -d macos`; its native artifacts are "
-            "already staged.",
+            "From an extracted published package, start at `cd example && "
+            "flutter create --empty --platforms macos --project-name "
+            "mdstream_flutter_example --org io.mdstream.example --no-pub . "
+            "&& flutter run -d macos`; its native artifacts are already staged.",
             section,
         )
 

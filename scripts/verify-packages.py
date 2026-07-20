@@ -186,7 +186,9 @@ EXAMPLE_CONTRACTS = (
         prerequisite_marker="Flutter 3.32",
         command=(
             "python3 bindings/flutter/tool/build_native.py macos && "
-            "cd bindings/flutter/example && flutter run -d macos"
+            "cd bindings/flutter/example && flutter create --empty "
+            "--platforms macos --project-name mdstream_flutter_example "
+            "--org io.mdstream.example --no-pub . && flutter run -d macos"
         ),
         expected_marker="Settled",
         next_link="#merman-artifact",

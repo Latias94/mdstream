@@ -95,12 +95,33 @@ class BuildNativeContractTest(unittest.TestCase):
             "        working-directory: bindings/flutter\n"
             "        run: flutter analyze"
         )
+        generate_linux_host = (
+            "      - name: Generate Linux Golden stream host\n"
+            "        working-directory: bindings/flutter/example\n"
+            "        run: flutter create --empty --platforms linux "
+            "--project-name mdstream_flutter_example "
+            "--org io.mdstream.example --no-pub ."
+        )
+        integration_smoke = (
+            "      - name: Test bundled Golden stream bootstrap\n"
+            "        working-directory: bindings/flutter/example\n"
+            "        run: xvfb-run -a flutter test "
+            "integration_test/golden_stream_smoke_test.dart -d linux"
+        )
 
         for name, job in jobs.items():
             with self.subTest(job=name):
                 self.assertIn(resolve, job)
                 self.assertIn(analyze, job)
                 self.assertLess(job.index(resolve), job.index(analyze))
+
+        linux = jobs["linux"]
+        self.assertIn(generate_linux_host, linux)
+        self.assertIn(integration_smoke, linux)
+        self.assertLess(
+            linux.index(generate_linux_host),
+            linux.index(integration_smoke),
+        )
 
     def test_atomic_stage_replaces_complete_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -167,6 +188,12 @@ class BuildNativeContractTest(unittest.TestCase):
 
 
 class PackageSmokeContractTest(unittest.TestCase):
+    def test_flutter_tool_uses_the_windows_batch_entrypoint(self) -> None:
+        with patch.object(package_smoke.sys, "platform", "win32"):
+            self.assertEqual(package_smoke._flutter_tool(), "flutter.bat")
+        with patch.object(package_smoke.sys, "platform", "linux"):
+            self.assertEqual(package_smoke._flutter_tool(), "flutter")
+
     def test_apple_smoke_host_matches_plugin_deployment_targets(self) -> None:
         cases = {
             "ios": (

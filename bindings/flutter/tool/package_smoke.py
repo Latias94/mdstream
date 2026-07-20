@@ -346,6 +346,10 @@ def _run(
         ) from error
 
 
+def _flutter_tool() -> str:
+    return "flutter.bat" if sys.platform == "win32" else "flutter"
+
+
 def _create_archive(output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
@@ -438,7 +442,7 @@ def run_runtime_smoke(
     try:
         _run(
             [
-                "flutter",
+                _flutter_tool(),
                 "create",
                 "--platforms",
                 platform_name,
@@ -452,7 +456,7 @@ def run_runtime_smoke(
         )
         _run(
             [
-                "flutter",
+                _flutter_tool(),
                 "pub",
                 "add",
                 f"mdstream_flutter:{{path: {plugin_source.as_posix()}}}",
@@ -470,7 +474,7 @@ def run_runtime_smoke(
         env.pop("MDSTREAM_FFI_LIBRARY", None)
         _run(
             [
-                "flutter",
+                _flutter_tool(),
                 "test",
                 str(target.relative_to(temporary)),
                 "-d",
@@ -535,7 +539,7 @@ def main() -> int:
                 [sys.executable, str(Path(__file__).with_name("build_native.py")), build_platform],
                 cwd=REPOSITORY_ROOT,
             )
-        _run(["flutter", "pub", "get"], cwd=REPOSITORY_ROOT / "bindings")
+        _run([_flutter_tool(), "pub", "get"], cwd=REPOSITORY_ROOT / "bindings")
         validate_dependency_graph(_dependency_graph(), forbidden)
 
         if archive is None and not args.skip_archive:

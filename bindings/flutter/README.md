@@ -48,8 +48,13 @@ named checkpoint. Test sources are intentionally excluded from the publish
 archive:
 
 ```console
+flutter create --empty --platforms macos --project-name mdstream_flutter_example --org io.mdstream.example --no-pub .
 flutter test integration_test/golden_stream_smoke_test.dart -d macos
 ```
+
+Replace `macos` in both positions for another supported platform. The example
+keeps generated platform runners out of the package so hosts are created only
+for the platform being exercised.
 
 ## Local streams
 
