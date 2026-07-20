@@ -14,8 +14,7 @@ version so the host key remains complete.
 
 ## Golden stream recipe
 
-From a source checkout, run the packaged, provider-free AI stream through the
-normal Markdown path:
+This is a focused rich-content processor recipe in the repository's [example learning path](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#merman-artifact). It requires Rust 1.95 or newer and runs the packaged, provider-free AI stream through the normal Markdown path:
 
 ```console
 cargo +1.95.0 run --manifest-path mdstream-merman/Cargo.toml \
@@ -36,11 +35,12 @@ Golden token chunks
 ```
 
 Its output reports the host-owned artifact request key, artifact protocol,
-media type, and required host handoff. It deliberately does not print, mount,
-or execute the SVG. `sanitizeSvgArtifact` names the next application-owned
+media type, and required host handoff, then ends with
+`mdstream-merman golden stream: ok`. It deliberately does not print, mount, or
+execute the SVG. `sanitizeSvgArtifact` names the next application-owned
 boundary; it is not a sanitizer supplied by this crate. A native application
 may instead pass the opaque bytes to an isolated renderer with an equivalent
-resource-loading policy.
+resource-loading policy. Continue with the generic [processor lifecycle recipe](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#processor-lifecycle) to isolate artifact freshness from Mermaid rendering.
 
 `ArtifactHost` owns request generations and rejects late completions. A host
 should propagate each request's cooperative cancellation signal to its

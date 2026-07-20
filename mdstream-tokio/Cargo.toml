@@ -2,7 +2,7 @@
 name = "mdstream-tokio"
 version = "0.4.0"
 description = "Lossless Tokio transport and actor integration for mdstream change sets."
-readme = "../README.md"
+readme = "README.md"
 edition = "2024"
 rust-version = "1.88.0"
 authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]

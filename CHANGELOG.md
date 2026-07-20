@@ -5,17 +5,17 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
 
 ## Unreleased
 
-Version 0.4 turns mdstream into a headless, cross-framework streaming rich-content state engine with one replayable Rust state contract.
+Version 0.4 rebuilds mdstream as a headless, cross-framework streaming rich-content state engine with one replayable Rust contract and intentionally breaks the 0.3 block/update API.
 
 ### Added
 
-- Added `mdstream-protocol` and the lifecycle-aware `StreamEngine`, which produce ordered, replayable `ChangeSet` batches for one canonical `Reducer` with typed Content IR, deterministic `NodeId`/`NodeVersion` identity, explicit snapshot recovery, semantic correction, and chunk-schedule conformance.
-- Added `mdstream-processors` with version-checked requests, cancellation, stale-result rejection, hard artifact limits, `mdstream.citation/1`, and the optional standalone `mdstream-merman` adapter; processor artifacts remain outside canonical document state, and the Merman adapter requires Rust 1.95.
-- Added Rust-backed WASM and framework-neutral `@mdstream/core` stores for Node 24 tooling with lossless batching, focused node/resource/artifact views, bounded on-demand pending source, explicit recovery, and processor scheduling; mdstream ships no first-party React package, hooks, renderer, or theme.
-- Added opt-in `mdstream.transitions/1` facts across Rust, WASM/TypeScript, C FFI, Dart, and Flutter. Hosts can distinguish projected text append, correction, stability, structure/resource changes, lifecycle, and full replacement while keeping pacing, animation, layout, scrolling, and accessibility policy outside mdstream.
-- Added a stable C ABI, a Flutter-independent Dart package using a host-supplied native library, and the turnkey `mdstream_flutter` plugin with bundled Android, iOS, macOS, Linux, and Windows libraries plus focused state notifications without widgets or rendering policy.
-- Added compile-tested headless, egui, GPUI, and Tokio integration examples that demonstrate stable-key invalidation without adding renderer or UI-framework dependencies to the core.
-- Added shared replay fixtures, deterministic resource/work limits, cross-runtime conformance, exact release-archive verification, and absolute WASM/npm/Dart/Flutter artifact ceilings.
+- Added `mdstream-protocol` and rebuilt `mdstream` around lifecycle-aware `StreamEngine` output and one canonical `Reducer`: ordered `ChangeSet` deltas now produce typed Content IR, deterministic `NodeId`/`NodeVersion` identity, bounded on-demand pending source, semantic correction, explicit snapshot recovery, and finalized state that is invariant across legal UTF-8 chunk schedules.
+- Added opt-in `mdstream.transitions/1` facts across Rust, WASM/TypeScript, C FFI, Dart, and Flutter so hosts can distinguish fresh projection append, correction, stabilization, structure/resource changes, lifecycle, and full replacement while keeping pacing, animation, layout, scrolling, reduced motion, and accessibility in application code.
+- Added `mdstream-processors` with versioned requests, cooperative cancellation, stale-result rejection, deterministic artifact limits, and `mdstream.citation/1`; the optional standalone Rust 1.95 `mdstream-merman` adapter turns typed Mermaid nodes into opaque derived SVG artifacts without adding Merman to default dependency graphs.
+- Added Rust-backed WASM and framework-neutral `@mdstream/core` for Node 24 with synchronized engine stores, replica recovery, lossless batching, lazy focused root/node/resource/pending/artifact views, ordered transition subscriptions, and processor scheduling; no first-party React package, hook, renderer, animation policy, or theme is included.
+- Added a stable C ABI, a Flutter-independent Dart package using a trusted host-supplied native library, and the turnkey `mdstream_flutter` plugin with Android, iOS, macOS, Linux, and Windows native delivery plus focused controllers and continuity-qualified keys without exported widgets or rendering policy.
+- Added one provider-free Golden AI Stream and a runnable adoption ladder: Rust `minimal --assert` is the first tutorial, the private framework-neutral Web host is the primary visual step, and Dart, Flutter, Tokio, Merman, processor, custom-block, transition, and recovery entries provide truthful assertion or smoke paths without promoting example UI policy into package APIs.
+- Added shared replay and recovery fixtures, exhaustive bounded and adversarial chunk checks, deterministic work/resource budgets, cross-runtime conformance, Cargo package-inventory checks, exact npm/Dart/Flutter archive verification, native binary and forbidden-path checks, and absolute artifact-size ceilings.
 
 ### Breaking Changes
 
@@ -23,11 +23,10 @@ Version 0.4 turns mdstream into a headless, cross-framework streaming rich-conte
 - Removed runtime boundary plugins, pending transformers, mutable committed/cache access, pending-repair and public syntax helpers, the Pulldown adapter, and the `pulldown`/`sync` Cargo features; `pulldown-cmark` is now an internal, non-optional compiler dependency.
 - Replaced `mdstream-tokio::spawn_mdstream_actor` and owned `Update` output with `spawn_stream_engine_actor`, `ActorCommand`, `StreamEngineActor`, and fallible `ActorResult` change-set batches.
 - Removed lossy canonical-input behavior from `mdstream-tokio`: `BackpressurePolicy::DropNew` and `SendOutcome::Dropped` no longer exist, `DeltaSender::set_policy` is now async and fallible, and buffered senders must be flushed before they are dropped.
-- Renamed the unreleased 0.4 binding wire limit `max_impact_bytes` to `max_reducer_update_bytes`; the old spelling is rejected rather than aliased.
 
 ### Migration
 
-Add a direct `mdstream-protocol = "0.4"` dependency wherever the application owns canonical state, and remove `features = ["pulldown", "sync"]` from the `mdstream` dependency declaration.
+Add a direct `mdstream-protocol = "0.4"` dependency wherever the application owns canonical state, remove `features = ["pulldown", "sync"]` from the `mdstream` dependency declaration, and plan a source migration because no 0.3 compatibility aliases are provided.
 
 | 0.3 surface | 0.4 action |
 | --- | --- |
@@ -42,8 +41,6 @@ Add a direct `mdstream-protocol = "0.4"` dependency wherever the application own
 | `BackpressurePolicy::DropNew` / `SendOutcome::Dropped` | Use `BackpressurePolicy::Block` or `BackpressurePolicy::CoalesceLocal` for canonical input and place replaceable status signals on a separate lossy channel. |
 
 Await `DeltaSender::set_policy(...)`, handle its `SendError`, and call `flush().await` before dropping a sender after any `SendOutcome::Buffered` result.
-
-Consumers that tested an unreleased 0.4 binding checkout must rename `wire.max_impact_bytes` to `wire.max_reducer_update_bytes`. Transition capture is optional and requires a finite protocol profile whose worst legal update fits that bound.
 
 ## 0.3.0 - 2026-07-07
 

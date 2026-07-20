@@ -11,6 +11,20 @@ views through their native state primitives. mdstream intentionally does not
 publish a React package or renderer; see
 [`ADR 0004`](https://github.com/Latias94/mdstream/blob/main/docs/ADR_0004_FRAMEWORK_NEUTRAL_WEB_BINDINGS.md).
 
+## Visual adoption example
+
+The repository-only [framework-neutral Web flagship](https://github.com/Latias94/mdstream/tree/main/examples/web) is the primary visual consumer of this package. From a source checkout with Node 24, pnpm 11.9.0, Rust 1.85, the `wasm32-unknown-unknown` target, `wasm-pack`, and the pinned `wasm-opt`, run:
+
+```sh
+pnpm install
+pnpm web:prepare
+pnpm --filter @mdstream/example-web dev
+```
+
+The Golden AI Stream settles with equal visible content, digest, lifecycle, stable keys, and accessible status in Immediate and Paced modes. `@mdstream/core` supplies canonical state, focused views, and transition facts. The private example owns DOM composition, citation URL policy, pacing, animation, layout, scrolling, focus, reduced motion, and announcements; none of that host code ships in this npm package.
+
+Continue with the [complete example learning path](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#web-flagship) or the machine-readable transition probe below.
+
 An engine owns its synchronized reducer and exposes a read-only `engine.store`
 facade. Use `runtime.createStore()` only when applying a replicated change
 stream and recovering it from an explicit snapshot. Both surfaces use the final
@@ -92,7 +106,11 @@ document and focused stores. Process `subscribeTransitions` callbacks into the
 host's own ordered queue; adapting this event feed as a single latest snapshot
 can let framework batching collapse distinct operations.
 
-The repository's `examples/transition-host.mjs` command is a framework-neutral
-adoption probe. It demonstrates host-owned reveal/layout decisions and compares
-transition facts with an old-view/parent-index reconstruction baseline without
-shipping that policy in `@mdstream/core`.
+The repository's [`transition-host.mjs`](https://github.com/Latias94/mdstream/blob/main/bindings/typescript/examples/transition-host.mjs) is a machine contract probe rather than starter UI code. From an installed source workspace, run:
+
+```sh
+pnpm --filter @mdstream/core build
+node bindings/typescript/examples/transition-host.mjs --assert
+```
+
+It emits JSON with `"assertions": "passed"`, demonstrates host-owned reveal and layout decisions, and compares transition facts with an old-view/parent-index reconstruction baseline without shipping that policy in `@mdstream/core`.

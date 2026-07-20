@@ -6,6 +6,8 @@ readonly Content IR views, explicit recovery, and derived processor artifacts.
 It does not ship widgets, themes, renderers, Markdown parsing in Dart, or a
 Flutter dependency.
 
+Use the [Dart headless entry in the example learning path](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#dart-headless) for the supported command, expected checkpoints, prerequisites, and next Flutter step.
+
 ## Native library
 
 The standalone package expects the host to supply a compatible `mdstream-ffi`
@@ -68,8 +70,7 @@ repository scenario without changing the bundled authority.
 
 This example teaches explicit runtime setup, focused canonical state reads,
 optional transition capture, stable identity, and deterministic cleanup. The
-recommended next step is the [Flutter host example](../flutter/README.md),
-which binds the same headless state to a widget lifecycle.
+recommended next step is the [Flutter host example](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#flutter-host), which binds the same headless state to a widget lifecycle without moving widget or animation policy into `mdstream_flutter`.
 
 ## Streaming state
 

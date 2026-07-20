@@ -18,6 +18,19 @@ typed ContentNode
     -> artifact view keyed by node and processor
 ```
 
+## Reference hosts
+
+The [example catalog](EXAMPLES.md) is the navigation authority. These entries exercise public state surfaces while keeping rendering and presentation local to the host:
+
+| Target | Primary entry | Boundary demonstrated |
+| --- | --- | --- |
+| Rust | [Minimal tutorial](EXAMPLES.md#rust-minimal) | Producer changes applied to one canonical reducer |
+| Browser and Web frameworks | [Framework-neutral Web flagship](EXAMPLES.md#web-flagship) | Rust/WASM stores, focused views, transition batches, and replaceable DOM policy |
+| Dart VM | [Dart headless](EXAMPLES.md#dart-headless) | Explicit trusted native loading, ordered state reads, and handle cleanup |
+| Flutter | [Flutter host](EXAMPLES.md#flutter-host) | Turnkey native loading, focused listenables, stable widget keys, and example-owned widgets |
+| Tokio | [Actor host](EXAMPLES.md#tokio-actor) | Bounded lossless transport and an advanced runtime host |
+| Mermaid | [Merman artifact](EXAMPLES.md#merman-artifact) | Typed processor input, stale generations, opaque SVG, and the host trust handoff |
+
 ## Stable State
 
 - Within one continuity generation, `NodeId` is the stable identity. Across a
@@ -76,11 +89,20 @@ The `headless_state` example shows changed-key projection and a separate
 `ArtifactHost` without a UI-framework dependency:
 
 ```sh
-cargo run -p mdstream --example headless_state
+cargo +1.85.0 run -p mdstream --example headless_state
 ```
 
-GPUI, egui, TUI, and other native frameworks should keep their view cache above
-this reducer boundary. They do not need an mdstream-specific renderer.
+Native UI frameworks keep their view cache, keyed widget state, rendering,
+animation, layout, scrolling, and accessibility above this reducer boundary.
+They do not need an mdstream-specific renderer.
+
+## Tokio
+
+`mdstream-tokio` optionally owns a `StreamEngine` behind bounded channels. Its
+actor accepts `ActorCommand` and returns lossless `ActorResult` change batches.
+Blocking and local coalescing preserve canonical input; lossy status signals
+belong on a separate channel. Run the [Tokio actor host](EXAMPLES.md#tokio-actor)
+in `--smoke` mode before adapting the same actor path to an application loop.
 
 ## TypeScript and WASM
 
@@ -96,11 +118,18 @@ primitive. React can use `useSyncExternalStore`; mdstream intentionally ships no
 React hooks, components, renderer, or theme. See
 [ADR 0004](ADR_0004_FRAMEWORK_NEUTRAL_WEB_BINDINGS.md).
 
+The [Web flagship](EXAMPLES.md#web-flagship) consumes only this public package
+surface. Its Immediate/Paced queue, DOM composition, URL allowlist, focus,
+announcements, and responsive layout are repository-only host code, not APIs
+exported by `@mdstream/core`.
+
 ## Dart and Flutter
 
 The Dart package wraps the C ABI and requires a host-supplied native-library
 path. It exposes the same Rust engine/reducer handles, typed views, lossless
 batching, and explicit recovery without depending on Flutter.
+The [Dart headless example](EXAMPLES.md#dart-headless) demonstrates an explicit
+trusted library path and deterministic handle cleanup.
 
 `mdstream_flutter` adds native library delivery and no-path loading for Android,
 iOS, macOS, Linux, and Windows. Its producer and replica controllers implement
@@ -108,6 +137,8 @@ iOS, macOS, Linux, and Windows. Its producer and replica controllers implement
 pending-source/node/resource/artifact listenables. Processor scheduling
 snapshots registration identity and rejects late generations. The package
 contains no widgets, renderer, theme, or default Merman binary.
+The [Flutter host](EXAMPLES.md#flutter-host) keeps widget composition and
+presentation policy inside the example package.
 
 When transition capture is enabled, Dart keeps ordered facts on reducer results
 and Flutter publishes a `MdstreamTransitionBatch` before ordinary invalidation
@@ -132,6 +163,9 @@ isolated renderer accepts it. Active content, external references, URL loading,
 and embedding policy are outside the processor protocol. Merman cancellation is
 cooperative and cannot interrupt synchronous parse/layout/render work, so
 untrusted input requires host-owned timeout and worker/process isolation.
+The [Merman recipe](EXAMPLES.md#merman-artifact) starts with streamed Markdown,
+prints artifact identity and media type, and stops at `sanitizeSvgArtifact`
+without printing or mounting SVG.
 
 ## AI Message Parts
 
@@ -156,9 +190,10 @@ clock.
 
 ## Adoption Evidence
 
-Protocol 0.4 was promoted to final only after the shared
-`adoption/headless-rich-content` fixture passed production-shaped native Rust,
-TypeScript/WASM, and standalone Merman flows. Those flows cover adversarial
-chunking, stable keys, targeted citation correction, gap recovery, processor
-artifacts, reset, and stale-result rejection without Markdown reparsing or an
-adapter-local reducer.
+Protocol 0.4 and its adapters are exercised by a canonical conformance oracle
+plus the repository-only Golden AI Stream. Rust, TypeScript/WASM, Dart, Flutter,
+and standalone Merman paths cover adversarial chunking, stable keys, bounded
+pending source, targeted citation correction, gap recovery, processor artifacts,
+reset, and stale-result rejection without Markdown reparsing or an adapter-local
+reducer. Intermediate transition batches remain schedule-local; supported hosts
+converge on the same named invariants and final canonical meaning.

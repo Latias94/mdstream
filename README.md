@@ -4,45 +4,78 @@
 [![docs.rs](https://docs.rs/mdstream/badge.svg)](https://docs.rs/mdstream)
 [![CI](https://github.com/Latias94/mdstream/actions/workflows/ci.yml/badge.svg)](https://github.com/Latias94/mdstream/actions/workflows/ci.yml)
 
-`mdstream` is a headless streaming content engine for AI-generated Markdown.
-It turns token chunks into versioned, replayable document changes with stable
-content identity. UI frameworks consume the same canonical state without
-reparsing Markdown or depending on a renderer.
+`mdstream` is a headless streaming content state engine for AI-generated Markdown. It turns arbitrary token chunks into replayable canonical changes, typed Content IR, stable identities, bounded pending source, and optional factual transitions so any UI framework can own presentation without reparsing Markdown.
 
 ```text
 token chunks
     -> StreamEngine
-    -> ChangeSet batches
-    -> canonical Reducer / Content IR
-    -> optional atomic transition facts
-    -> GPUI, egui, TUI, WASM / TypeScript, Flutter
-    -> optional code, math, citation, and Mermaid processors
+    -> ordered ChangeSet batches
+    -> canonical Reducer / typed Content IR
+    -> focused invalidation + optional transition facts
+    -> application-owned UI state
+    -> optional citation, Mermaid, math, or code processors
 ```
 
-The 0.4 API is intentionally breaking. The previous block splitter and its
-`committed + pending` update model are not retained as compatibility wrappers.
+Version 0.4 is intentionally breaking. It replaces the 0.3 block-splitter and `committed + pending` update model instead of preserving compatibility wrappers.
 
-## Workspace
+## Start here
 
-| Package | Responsibility |
+With Rust 1.85 or newer, a fresh checkout needs one command for the first deterministic AI stream:
+
+```sh
+cargo +1.85.0 run -p mdstream --example minimal -- --assert
+```
+
+The tutorial prints named pending, stabilization, citation-correction, and finalization checkpoints, then ends with:
+
+```text
+ASSERTIONS_OK scenario=golden-ai-stream
+```
+
+The next step is the repository-only [framework-neutral Web flagship](https://github.com/Latias94/mdstream/tree/main/examples/web):
+
+```sh
+pnpm install
+pnpm web:prepare
+pnpm --filter @mdstream/example-web dev
+```
+
+Open the printed local URL and switch between Immediate and Paced. Both modes create fresh sessions and settle to the same visible content, canonical digest, lifecycle, stable keys, and accessible correction meaning. The example needs no API key, provider, or external runtime service.
+
+The full [example learning path](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md) records prerequisites, commands, expected observations, availability, teaching role, and next step for every entry.
+
+## Ownership boundary
+
+| mdstream owns | The host owns |
 | --- | --- |
-| `mdstream` | Synchronous streaming engine, Markdown compiler, stable identity, and resource metrics |
-| `mdstream-protocol` | Versioned Content IR, changes, snapshots, reducer, wire schema, and recovery laws |
-| `mdstream-processors` | Version-checked processor requests, artifact lifecycle, cancellation, and limits |
-| `mdstream-conformance` | Chunk schedules, replay laws, fixtures, workload generators, and budget contracts |
-| `mdstream-tokio` | Lossless bounded channels and a `StreamEngine` actor |
-| `mdstream-merman` | Optional standalone Merman processor adapter on its own Rust toolchain lane |
-| `mdstream-bindings-core` | Safe stateful sessions and command envelopes shared by foreign-language transports |
-| `mdstream-wasm` | Thin WebAssembly transport over the safe bindings facade |
-| `mdstream-ffi` | Stable C ABI with opaque handles, owned buffers, and panic containment |
-| `@mdstream/core` | Framework-neutral TypeScript stores, views, recovery, batching, and processors |
-| Dart `mdstream` | Flutter-independent FFI wrapper using a host-supplied native library |
-| `mdstream_flutter` | Turnkey native library delivery and Flutter state controllers without widgets |
+| Canonical source, typed Content IR, lifecycle, stable IDs and versions | Widgets or DOM, typography, themes, and rich-content component composition |
+| Ordered changes, explicit recovery, invalidated identities, optional factual transitions | Token pacing, grapheme grouping, animation, color, layout, scrolling, and reduced motion |
+| Bounded on-demand pending source and versioned processor request/artifact identity | Accessibility announcements, focus, URL/resource policy, sanitizer or isolated renderer, and process timeouts |
 
-## Quick Start
+mdstream does not publish a React package, Markdown renderer, Flutter widget, animation API, provider connector, theme, or layout engine. A React host can bind `@mdstream/core` stores with `useSyncExternalStore`; other frameworks use their equivalent state primitive.
 
-The engine produces changes. A consumer applies every change through the
-canonical reducer and renders only the node IDs reported by `ChangeImpact`.
+## Capability map
+
+| Capability | Teaching role | Primary runnable entry |
+| --- | --- | --- |
+| Canonical streaming, pending source, stable IDs, correction, recovery, and finalization | First-success tutorial | [Rust minimal](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#rust-minimal) |
+| Rust/WASM stores, typed DOM composition, Immediate/Paced policy, and accessibility | Interactive visual showcase | [Web flagship](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#web-flagship) |
+| Explicit native loading, focused state, transition order, and handle cleanup | Headless binding tutorial | [Dart headless](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#dart-headless) |
+| Turnkey native delivery, focused listenables, stable widget keys, and host-owned motion | Interactive native host | [Flutter host](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#flutter-host) |
+| Bounded asynchronous transport, lossless coalescing, and actor shutdown | Machine smoke probe | [Tokio actor](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#tokio-actor) |
+| Typed Mermaid processing, artifact generations, stale rejection, and SVG trust boundary | Processor recipe | [Merman artifact](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#merman-artifact) |
+
+## Core Rust model
+
+Applications that own canonical Rust state depend on both `mdstream` and `mdstream-protocol`:
+
+```toml
+[dependencies]
+mdstream = "0.4"
+mdstream-protocol = "0.4"
+```
+
+Apply every emitted change in order. Rebuild only identities named by `ChangeImpact`:
 
 ```rust
 use mdstream::{EngineOutput, StreamEngine};
@@ -54,8 +87,8 @@ fn apply(reducer: &mut Reducer, output: EngineOutput) {
             ApplyOutcome::Applied { impact, .. }
             | ApplyOutcome::Recovered { impact, .. } => {
                 for node_id in impact.changed_nodes {
-                    // Rebuild only the view cached under this stable NodeId.
-                    let _ = node_id;
+                    // Refresh or remove only the host view under this stable ID.
+                    let _ = reducer.document().and_then(|document| document.node(node_id));
                 }
             }
             outcome => panic!("unexpected producer outcome: {outcome:?}"),
@@ -65,130 +98,102 @@ fn apply(reducer: &mut Reducer, output: EngineOutput) {
 
 let mut engine = StreamEngine::new();
 let mut reducer = Reducer::new();
-
 apply(&mut reducer, engine.append("# Title\n\nHello **wor").unwrap());
 apply(&mut reducer, engine.append("ld**").unwrap());
 apply(&mut reducer, engine.finish().unwrap());
-
-let document = reducer.document().unwrap();
-assert_eq!(document.source(), "# Title\n\nHello **world**");
+assert_eq!(reducer.document().unwrap().source(), "# Title\n\nHello **world**");
 ```
 
-`finish` is terminal and idempotent. `reset` starts a predecessor-linked epoch.
-Appending after finish returns a typed error without changing engine state.
+`finish` is terminal and idempotent. `reset` starts a predecessor-linked epoch. A gap, fork, or unannounced epoch moves a replica reducer to `NeedsSnapshot`; one explicit current snapshot restores it before ordinary changes resume.
 
-## Setup-Only Extensions
+`NodeId` is stable within a continuity generation. `NodeVersion` invalidates a cached view or processor input. Across a full replacement, host keys include continuity generation, epoch, and `NodeId`; collection position and source offsets are not keys.
 
-Grammar configuration is sealed when the engine is built. Runtime grammar or
-transformer mutation is deliberately unavailable.
+When accepted source runs ahead of typed projection, adapters expose exactly `projection_cursor..source_cursor` as a bounded, lazy pending-source view. A host may paint those bytes once, but must not parse them into competing Markdown semantics.
 
-```rust
-use mdstream::{CustomBlockSpec, StreamEngine};
+## Transitions and presentation
 
-let mut engine = StreamEngine::builder()
-    .custom_block(CustomBlockSpec::try_new("app.thinking/1", "thinking")?)
-    .build()?;
+`ChangeImpact` is the normal latest-state invalidation surface. Hosts that need to distinguish a fresh projection append from correction, stabilization, structure/resource changes, lifecycle, or full replacement can opt into atomic `mdstream.transitions/1` facts.
 
-let output = engine.append("<thinking>\nwork\n</thinking>\n")?;
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
+Facts contain state meaning, not presentation instructions. Different legal token schedules may produce different intermediate fact batches while converging to identical final canonical state. A host presentation queue must read coherent batch-tail views, avoid revealing already-painted pending bytes twice, and clear queued effects and continuity keys on full replacement.
 
-Custom blocks use a small standalone line grammar. `pulldown-cmark 0.13.x`
-remains the internal CommonMark/GFM semantic compiler for Markdown regions;
-neither parser-specific types nor renderer artifacts enter the public protocol.
+Animation remains replaceable application code. Corrections, removals, and replacements must remain understandable in immediate or reduced-motion mode and cannot rely on motion or color alone.
 
-## UI State and Artifacts
+## Extensions and processors
 
-- `NodeId` is stable inside one continuity generation; full-replacement UI keys
-  also include continuity generation and epoch.
-- `NodeVersion` is the deterministic cache and compare-and-set version.
-- `ChangeImpact` identifies changed and removed nodes/resources.
-- `Snapshot` is explicit recovery state, not a payload emitted on every append.
-- `ArtifactHost` stores processor output separately and rejects stale results
-  using epoch, node/input versions, processor/configuration versions, and
-  request generation.
+`StreamEngineBuilder::custom_block` registers versioned standalone source framing before the first input. Runtime parser mutation and pending transformers are intentionally absent.
 
-See the compile-tested examples:
+Processors consume typed nodes and resources after canonical reduction. `ArtifactHost` keys results by epoch, node/input versions, processor/configuration versions, and request generation; it rejects late completions and keeps artifacts outside canonical snapshots.
 
-```sh
-cargo run -p mdstream --example minimal
-cargo run -p mdstream --example custom_blocks
-cargo run -p mdstream --example egui_adapter
-cargo run -p mdstream --example gpui_adapter
-cargo run -p mdstream --example headless_state
-cargo +1.88.0 run -p mdstream-tokio --example agent_tui
-```
+`mdstream-merman` is an optional standalone Rust 1.95 adapter. Its SVG output remains opaque and untrusted until an application-owned `sanitizeSvgArtifact` boundary or isolated renderer accepts it. Byte/model limits and cooperative cancellation are accounting controls, not CPU, peak-memory, or process isolation.
 
-The egui and GPUI examples are framework-neutral on purpose. They demonstrate
-the ownership and invalidation contract without adding UI framework dependencies
-to the core workspace.
+## Bindings
 
-For web applications, `@mdstream/core` is the first-party integration surface.
-It exposes Rust/WASM-backed external stores, focused node/resource/artifact
-views, an on-demand pending-source store, and explicit recovery without a
-renderer or UI-framework dependency.
-Hosts can opt into ordered `mdstream.transitions/1` operation batches to
-classify append, correction, stabilization, structure, resource, lifecycle, and
-replacement changes without retaining an old canonical tree.
-React consumers can bind these stores with `useSyncExternalStore`; mdstream does
-not ship React hooks, components, themes, or a competing Markdown renderer. See
-[`ADR 0004`](docs/ADR_0004_FRAMEWORK_NEUTRAL_WEB_BINDINGS.md) for the boundary.
-The concrete state, recovery, and artifact responsibilities are documented in
-[`ADAPTERS.md`](docs/ADAPTERS.md).
+`@mdstream/core` is the complete first-party Web state surface. It provides Rust/WASM-backed engines, replica stores, focused root/node/resource/pending/artifact views, lossless batching, ordered transition subscriptions, processor scheduling, and explicit recovery without a renderer or framework dependency.
 
-Flutter applications use `mdstream_flutter` for no-path native loading on
-Android, iOS, macOS, Linux, and Windows. Its controllers expose
-`ValueListenable` state and focused node/resource/artifact subscriptions; the
-package also exposes pending source as a lazy focused listenable and contains
-no Markdown widgets, themes, renderer, or default Merman binary.
-Capture-enabled controllers add a revisioned transition listenable and
-continuity-qualified node keys. Animation timing, color, geometry, scroll, and
-reduced-motion behavior remain application policy.
+The Dart `mdstream` package wraps the stable C ABI and requires a trusted host-supplied dynamic-library path. `mdstream_flutter` adds Android, iOS, macOS, Linux, and Windows native delivery plus focused controllers; widget composition remains in the example application.
 
-## Migration From 0.3
+The C ABI uses opaque handles and owned buffers. Foreign hosts must validate ABI/schema/layout compatibility, check every status, and release buffers and handles with the matching mdstream function. Compatibility checks do not authenticate executable native code.
 
-| 0.3 surface | 0.4 replacement |
+mdstream owns one Markdown content session, not an AI message envelope. Chat message IDs, reasoning/tool/attachment parts, cross-part ordering, provider events, persistence, and scrolling stay in the application. Give every Markdown-capable part its own session and host generation.
+
+## Workspace
+
+| Package | Responsibility |
 | --- | --- |
-| `MdStream`, `MdStreamBuilder` | `StreamEngine`, `StreamEngineBuilder` |
-| `Update`, `UpdateRef` | ordered `mdstream_protocol::ChangeSet` values |
-| `Block`, `BlockStatus` | typed `ContentNode`, `NodeStability`, and `DocumentLifecycle` |
-| `DocumentState` | `mdstream_protocol::Reducer` |
-| `AnalyzedStream`, `BlockAnalyzer` | typed Content IR plus external processors |
-| runtime boundary/transformer mutation | setup-only `CustomBlockSpec` and processor configuration |
-| pending Markdown repair helpers | canonical `pending_source` views plus raw host display policy |
-| mutable committed/cache access | `ChangeImpact`, stable IDs, and immutable document views |
+| `mdstream` | Synchronous streaming engine, Markdown compiler, stable identity, and resource metrics |
+| `mdstream-protocol` | Versioned Content IR, deltas, snapshots, reducer, transition facts, wire schema, and recovery |
+| `mdstream-processors` | Versioned processor requests, artifacts, cancellation, stale-result rejection, and limits |
+| `mdstream-conformance` | Chunk schedules, replay laws, fixtures, workload generators, and budget contracts |
+| `mdstream-tokio` | Lossless bounded channels and a `StreamEngine` actor on Rust 1.88 |
+| `mdstream-merman` | Optional standalone Merman processor adapter on Rust 1.95 |
+| `mdstream-bindings-core` | Stateful engine/reducer sessions and command envelopes shared by transports |
+| `mdstream-wasm` | Thin WebAssembly transport over the shared bindings facade |
+| `mdstream-ffi` | Stable C ABI with opaque handles, owned buffers, and panic containment |
+| `@mdstream/core` | Framework-neutral TypeScript stores, focused views, recovery, batching, and processors |
+| Dart `mdstream` | Flutter-independent native binding using a host-supplied library |
+| `mdstream_flutter` | Turnkey native delivery and Flutter state controllers without widgets |
 
-There are no deprecated aliases for the removed surface. Consumers must apply
-the protocol through the reducer so sequence gaps, resets, recovery, and
-semantic corrections remain observable.
+The default Rust, WASM, TypeScript, Dart, and Flutter dependency graphs do not contain Merman or a UI framework.
 
-Consumers of an unreleased 0.4 binding checkout must rename
-`wire.max_impact_bytes` to `wire.max_reducer_update_bytes`.
+## Migrating from 0.3
 
-## Conformance and Limits
+There are no deprecated aliases for the removed 0.3 surface.
 
-Final Content IR, stable IDs, node versions, and lifecycle are invariant across
-UTF-8-safe chunk schedules. The workspace checks replay laws, deterministic
-compiler/reducer work, retained and transactional memory, processor budgets,
-and frozen artifact ceilings. Hard resource failures are atomic and leave the
-last accepted document unchanged.
+| 0.3 surface | 0.4 action |
+| --- | --- |
+| `MdStream` / `MdStreamBuilder` | Use `StreamEngine` / `StreamEngineBuilder`. |
+| `append` / `finalize` | Call fallible `StreamEngine::append` / `finish`; use `reset` for a new epoch. |
+| `Update` / `UpdateRef` / `DocumentState` | Apply every ordered `ChangeSet` through `mdstream_protocol::Reducer` and consume `ChangeImpact`. |
+| `Block` / `BlockStatus` / collection positions | Use typed `ContentNode`, `NodeStability`, stable `NodeId`, and cache-validating `NodeVersion`. |
+| `AnalyzedStream` / `BlockAnalyzer` | Read typed Content IR or use a versioned processor whose artifact remains derived host state. |
+| `BoundaryPlugin` / runtime grammar mutation | Register setup-only `CustomBlockSpec` values before accepting input. |
+| `TerminatorOptions` / `terminate_markdown` / pending transformers | Read bounded pending source on demand and keep incomplete-source presentation in host policy. |
+| `spawn_mdstream_actor` | Use `spawn_stream_engine_actor`, send `ActorCommand`, receive `ActorResult`, and drain with `join`. |
+| `BackpressurePolicy::DropNew` / `SendOutcome::Dropped` | Use `Block` or `CoalesceLocal`; canonical input is never intentionally dropped. |
 
-The core engine is synchronous and runtime-independent. Tokio integration is
-lossless; lossy policies are not available for canonical document input.
+For `CoalesceLocal`, await fallible policy changes and call `flush().await` before dropping a sender after any buffered result.
+
+## Verification and limits
+
+The conformance corpus replays whole-source, semantic-stage, adversarial, scalar, exhaustive bounded UTF-8, and randomized chunk schedules. Supported bindings converge on the same normalized final state while schedule-local intermediate facts remain free to differ.
+
+Protocol, compiler, processor, transport, and artifact budgets fail deterministically and atomically. Release automation verifies Cargo package inventories plus the exact npm, Dart, and Flutter archives, dependency boundaries, native binary formats, forbidden paths, and absolute artifact ceilings.
 
 ## Documentation
 
-- [Architecture and ownership](docs/ARCHITECTURE.md)
-- [State, lifecycle, and recovery](docs/STATE.md)
-- [Extensions and processors](docs/EXTENSIONS.md)
-- [Adapter contracts](docs/ADAPTERS.md)
-- [Compatibility profiles](docs/COMPATIBILITY.md)
-- [Performance and resource contracts](docs/PERFORMANCE.md)
-- [Cross-language usage](docs/USAGE.md)
-- [Roadmap and non-goals](docs/ROADMAP.md)
-- [Host transition facts decision](docs/ADR_0005_HOST_TRANSITION_FACTS.md)
+- [Example learning path](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md)
+- [Cross-language usage](https://github.com/Latias94/mdstream/blob/main/docs/USAGE.md)
+- [Architecture and ownership](https://github.com/Latias94/mdstream/blob/main/docs/ARCHITECTURE.md)
+- [State, lifecycle, and recovery](https://github.com/Latias94/mdstream/blob/main/docs/STATE.md)
+- [Extensions and processors](https://github.com/Latias94/mdstream/blob/main/docs/EXTENSIONS.md)
+- [Adapter contracts](https://github.com/Latias94/mdstream/blob/main/docs/ADAPTERS.md)
+- [Compatibility profiles](https://github.com/Latias94/mdstream/blob/main/docs/COMPATIBILITY.md)
+- [Performance and resource contracts](https://github.com/Latias94/mdstream/blob/main/docs/PERFORMANCE.md)
+- [Roadmap and non-goals](https://github.com/Latias94/mdstream/blob/main/docs/ROADMAP.md)
+- [Framework-neutral Web decision](https://github.com/Latias94/mdstream/blob/main/docs/ADR_0004_FRAMEWORK_NEUTRAL_WEB_BINDINGS.md)
+- [Host transition facts decision](https://github.com/Latias94/mdstream/blob/main/docs/ADR_0005_HOST_TRANSITION_FACTS.md)
 
-## Rust Versions and License
+## Rust versions and license
 
 - Core engine, protocol, processor, binding, WASM, and FFI crates: Rust 1.85+
 - `mdstream-tokio`: Rust 1.88+
