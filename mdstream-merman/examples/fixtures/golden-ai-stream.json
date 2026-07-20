@@ -179,7 +179,7 @@
         {
           "kind": "checkpoint",
           "id": "citation-definition-provisional",
-          "scope": "schedule_local",
+          "scope": "boundary_invariant",
           "source_cursor": 372,
           "observations": [
             "provisional_citation_definition",
