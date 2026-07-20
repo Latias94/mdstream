@@ -1,0 +1,454 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mdstream.dev/schemas/examples/golden-ai-stream/1.json",
+  "title": "Golden AI Stream example scenario",
+  "description": "Repository-only example input. This is not an mdstream runtime or wire protocol.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema",
+    "id",
+    "description",
+    "episodes",
+    "expected"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "./golden-ai-stream.schema.json"
+    },
+    "schema": {
+      "const": "mdstream.example-scenario/1"
+    },
+    "id": {
+      "const": "golden-ai-stream"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "episodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mainline",
+        "recovery"
+      ],
+      "properties": {
+        "mainline": {
+          "$ref": "#/$defs/mainline"
+        },
+        "recovery": {
+          "$ref": "#/$defs/recovery"
+        }
+      }
+    },
+    "expected": {
+      "$ref": "#/$defs/expected"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+    },
+    "kindName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    },
+    "mainline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schedules",
+        "actions"
+      ],
+      "properties": {
+        "schedules": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/wholeSchedule"
+              },
+              {
+                "$ref": "#/$defs/stageSchedule"
+              },
+              {
+                "$ref": "#/$defs/cutSchedule"
+              }
+            ]
+          }
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/appendAction"
+              },
+              {
+                "$ref": "#/$defs/checkpointAction"
+              },
+              {
+                "$ref": "#/$defs/finishAction"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "wholeSchedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "checkpoint_compatible"
+      ],
+      "properties": {
+        "id": {
+          "const": "whole"
+        },
+        "kind": {
+          "const": "whole"
+        },
+        "checkpoint_compatible": {
+          "const": false
+        }
+      }
+    },
+    "stageSchedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "checkpoint_compatible"
+      ],
+      "properties": {
+        "id": {
+          "const": "stage-aligned"
+        },
+        "kind": {
+          "const": "stage_aligned"
+        },
+        "checkpoint_compatible": {
+          "const": true
+        }
+      }
+    },
+    "cutSchedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "checkpoint_compatible",
+        "cuts"
+      ],
+      "properties": {
+        "id": {
+          "const": "adversarial"
+        },
+        "kind": {
+          "const": "byte_cuts"
+        },
+        "checkpoint_compatible": {
+          "const": true
+        },
+        "cuts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "appendAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "chunk"
+      ],
+      "properties": {
+        "kind": {
+          "const": "append"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "chunk": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "checkpointAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "scope",
+        "source_cursor",
+        "observations"
+      ],
+      "properties": {
+        "kind": {
+          "const": "checkpoint"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "scope": {
+          "enum": [
+            "schedule_local",
+            "boundary_invariant"
+          ]
+        },
+        "source_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "observations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/observation"
+          }
+        }
+      }
+    },
+    "finishAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "observations"
+      ],
+      "properties": {
+        "kind": {
+          "const": "finish"
+        },
+        "id": {
+          "const": "finalized"
+        },
+        "observations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/observation"
+          }
+        }
+      }
+    },
+    "observation": {
+      "enum": [
+        "pending_source",
+        "provisional_inline",
+        "provisional_code_fence",
+        "provisional_code_block",
+        "provisional_mermaid_fence",
+        "provisional_mermaid_block",
+        "provisional_citation_definition",
+        "stable_code_block",
+        "stable_mermaid_block",
+        "unresolved_citation",
+        "resolved_citation",
+        "semantic_correction",
+        "finalized"
+      ]
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace",
+        "actions"
+      ],
+      "properties": {
+        "trace": {
+          "const": "stage-aligned"
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/applyRecoveryAction"
+              },
+              {
+                "$ref": "#/$defs/snapshotRecoveryAction"
+              },
+              {
+                "$ref": "#/$defs/resetRecoveryAction"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "replicaTarget": {
+      "enum": [
+        "same-floor-replica",
+        "advanced-replica"
+      ]
+    },
+    "applyRecoveryAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "target",
+        "change_ordinal",
+        "expect",
+        "continuity"
+      ],
+      "properties": {
+        "kind": {
+          "const": "apply_change"
+        },
+        "target": {
+          "$ref": "#/$defs/replicaTarget"
+        },
+        "change_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expect": {
+          "enum": [
+            "applied",
+            "gap"
+          ]
+        },
+        "continuity": {
+          "enum": [
+            "retained",
+            "awaiting_snapshot"
+          ]
+        }
+      }
+    },
+    "snapshotRecoveryAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "target",
+        "snapshot",
+        "expect",
+        "continuity"
+      ],
+      "properties": {
+        "kind": {
+          "const": "recover_snapshot"
+        },
+        "target": {
+          "$ref": "#/$defs/replicaTarget"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/identifier"
+        },
+        "expect": {
+          "const": "recovered"
+        },
+        "continuity": {
+          "enum": [
+            "retained_same_floor",
+            "replaced_advanced"
+          ]
+        }
+      }
+    },
+    "resetRecoveryAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "target",
+        "snapshot",
+        "expect_epoch",
+        "continuity"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reset"
+        },
+        "target": {
+          "const": "producer"
+        },
+        "snapshot": {
+          "const": "finalized"
+        },
+        "expect_epoch": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "continuity": {
+          "const": "new_epoch"
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "final_source",
+        "lifecycle",
+        "all_nodes_stable",
+        "node_kinds",
+        "resource_kinds",
+        "code_languages"
+      ],
+      "properties": {
+        "final_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lifecycle": {
+          "const": "finalized"
+        },
+        "all_nodes_stable": {
+          "const": true
+        },
+        "node_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/kindName"
+          }
+        },
+        "resource_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/kindName"
+          }
+        },
+        "code_languages": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/kindName"
+          }
+        }
+      }
+    }
+  }
+}

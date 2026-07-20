@@ -1,0 +1,277 @@
+{
+  "$schema": "./golden-ai-stream.schema.json",
+  "schema": "mdstream.example-scenario/1",
+  "id": "golden-ai-stream",
+  "description": "A deterministic provider-free AI answer used by mdstream adoption examples.",
+  "episodes": {
+    "mainline": {
+      "schedules": [
+        {
+          "id": "whole",
+          "kind": "whole",
+          "checkpoint_compatible": false
+        },
+        {
+          "id": "stage-aligned",
+          "kind": "stage_aligned",
+          "checkpoint_compatible": true
+        },
+        {
+          "id": "adversarial",
+          "kind": "byte_cuts",
+          "checkpoint_compatible": true,
+          "cuts": [
+            128,
+            130,
+            132,
+            134,
+            140,
+            141,
+            142,
+            144,
+            187,
+            193,
+            203,
+            216,
+            217,
+            218,
+            221,
+            275,
+            282,
+            290,
+            311,
+            318,
+            319,
+            322,
+            326
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "kind": "append",
+          "id": "open-inline-reference",
+          "chunk": "# Why stable streaming matters\n\nAI output arrives in fragments, but the UI should preserve identity while meaning evolves. See [@Eng"
+        },
+        {
+          "kind": "checkpoint",
+          "id": "inline-provisional",
+          "scope": "schedule_local",
+          "source_cursor": 132,
+          "observations": [
+            "provisional_inline"
+          ]
+        },
+        {
+          "kind": "append",
+          "id": "open-rust-fence",
+          "chunk": "ine].\n\n```"
+        },
+        {
+          "kind": "checkpoint",
+          "id": "rust-fence-open",
+          "scope": "schedule_local",
+          "source_cursor": 142,
+          "observations": [
+            "provisional_code_fence",
+            "unresolved_citation"
+          ]
+        },
+        {
+          "kind": "append",
+          "id": "stream-rust-info",
+          "chunk": "ru"
+        },
+        {
+          "kind": "checkpoint",
+          "id": "rust-fence-pending",
+          "scope": "schedule_local",
+          "source_cursor": 144,
+          "observations": [
+            "pending_source",
+            "provisional_code_fence",
+            "unresolved_citation"
+          ]
+        },
+        {
+          "kind": "append",
+          "id": "stream-rust-body",
+          "chunk": "st\nlet mut engine = StreamEngine::new();\nengine.append(\"hel"
+        },
+        {
+          "kind": "checkpoint",
+          "id": "rust-body-provisional",
+          "scope": "schedule_local",
+          "source_cursor": 203,
+          "observations": [
+            "provisional_code_block",
+            "unresolved_citation"
+          ]
+        },
+        {
+          "kind": "append",
+          "id": "close-rust-open-mermaid",
+          "chunk": "lo\")?;\n```\n\n```"
+        },
+        {
+          "kind": "checkpoint",
+          "id": "mermaid-fence-open",
+          "scope": "schedule_local",
+          "source_cursor": 218,
+          "observations": [
+            "provisional_mermaid_fence",
+            "stable_code_block",
+            "unresolved_citation"
+          ]
+        },
+        {
+          "kind": "append",
+          "id": "stream-mermaid-info",
+          "chunk": "mer"
+        },
+        {
+          "kind": "checkpoint",
+          "id": "mermaid-fence-pending",
+          "scope": "schedule_local",
+          "source_cursor": 221,
+          "observations": [
+            "pending_source",
+            "provisional_mermaid_fence",
+            "stable_code_block",
+            "unresolved_citation"
+          ]
+        },
+        {
+          "kind": "append",
+          "id": "stream-mermaid-body",
+          "chunk": "maid\nflowchart LR\n  Tokens --> Engine\n  Engine --> ContentIR[Content IR]\n  ContentIR --> U"
+        },
+        {
+          "kind": "checkpoint",
+          "id": "mermaid-body-provisional",
+          "scope": "schedule_local",
+          "source_cursor": 311,
+          "observations": [
+            "provisional_mermaid_block",
+            "unresolved_citation"
+          ]
+        },
+        {
+          "kind": "append",
+          "id": "close-mermaid",
+          "chunk": "I\n```\n\n"
+        },
+        {
+          "kind": "checkpoint",
+          "id": "mermaid-closed-provisional",
+          "scope": "schedule_local",
+          "source_cursor": 318,
+          "observations": [
+            "provisional_mermaid_block",
+            "unresolved_citation"
+          ]
+        },
+        {
+          "kind": "append",
+          "id": "resolve-citation",
+          "chunk": "[@engine]: https://docs.rs/mdstream \"mdstream engine\"\n"
+        },
+        {
+          "kind": "checkpoint",
+          "id": "citation-definition-provisional",
+          "scope": "boundary_invariant",
+          "source_cursor": 372,
+          "observations": [
+            "provisional_citation_definition",
+            "unresolved_citation",
+            "provisional_mermaid_block"
+          ]
+        },
+        {
+          "kind": "finish",
+          "id": "finalized",
+          "observations": [
+            "finalized",
+            "resolved_citation",
+            "semantic_correction",
+            "stable_mermaid_block"
+          ]
+        }
+      ]
+    },
+    "recovery": {
+      "trace": "stage-aligned",
+      "actions": [
+        {
+          "kind": "apply_change",
+          "target": "same-floor-replica",
+          "change_ordinal": 0,
+          "expect": "applied",
+          "continuity": "retained"
+        },
+        {
+          "kind": "apply_change",
+          "target": "same-floor-replica",
+          "change_ordinal": 2,
+          "expect": "gap",
+          "continuity": "awaiting_snapshot"
+        },
+        {
+          "kind": "recover_snapshot",
+          "target": "same-floor-replica",
+          "snapshot": "inline-provisional",
+          "expect": "recovered",
+          "continuity": "retained_same_floor"
+        },
+        {
+          "kind": "apply_change",
+          "target": "advanced-replica",
+          "change_ordinal": 0,
+          "expect": "applied",
+          "continuity": "retained"
+        },
+        {
+          "kind": "apply_change",
+          "target": "advanced-replica",
+          "change_ordinal": 2,
+          "expect": "gap",
+          "continuity": "awaiting_snapshot"
+        },
+        {
+          "kind": "recover_snapshot",
+          "target": "advanced-replica",
+          "snapshot": "mermaid-body-provisional",
+          "expect": "recovered",
+          "continuity": "replaced_advanced"
+        },
+        {
+          "kind": "reset",
+          "target": "producer",
+          "snapshot": "finalized",
+          "expect_epoch": 2,
+          "continuity": "new_epoch"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "final_source": "# Why stable streaming matters\n\nAI output arrives in fragments, but the UI should preserve identity while meaning evolves. See [@Engine].\n\n```rust\nlet mut engine = StreamEngine::new();\nengine.append(\"hello\")?;\n```\n\n```mermaid\nflowchart LR\n  Tokens --> Engine\n  Engine --> ContentIR[Content IR]\n  ContentIR --> UI\n```\n\n[@engine]: https://docs.rs/mdstream \"mdstream engine\"\n",
+    "lifecycle": "finalized",
+    "all_nodes_stable": true,
+    "node_kinds": [
+      "citation_definition",
+      "citation_reference",
+      "code_block",
+      "heading",
+      "paragraph",
+      "text"
+    ],
+    "resource_kinds": [
+      "citation"
+    ],
+    "code_languages": [
+      "mermaid",
+      "rust"
+    ]
+  }
+}

@@ -185,6 +185,29 @@ fn corpus_schema_is_valid_and_every_fixture_conforms() {
 }
 
 #[test]
+fn repository_example_scenario_has_its_own_strict_schema() {
+    let root = corpus_root().parent().unwrap().join("examples/fixtures");
+    let schema: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("golden-ai-stream.schema.json")).unwrap())
+            .unwrap();
+    jsonschema::meta::validate(&schema).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let scenario: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("golden-ai-stream.json")).unwrap()).unwrap();
+    let errors = validator
+        .iter_errors(&scenario)
+        .map(|error| format!("{}: {error}", error.instance_path))
+        .collect::<Vec<_>>();
+    assert!(
+        errors.is_empty(),
+        "Golden AI Stream failed JSON Schema validation:\n{}",
+        errors.join("\n")
+    );
+    assert_eq!(scenario["schema"], "mdstream.example-scenario/1");
+    assert_ne!(scenario["schema"], FIXTURE_SCHEMA);
+}
+
+#[test]
 fn checked_in_protocol_traces_replay_to_their_normalized_goldens() {
     let fixtures = load_fixture_dir(corpus_root().join("fixtures")).unwrap();
     let protocol_fixtures = fixtures
