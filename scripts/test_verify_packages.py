@@ -886,6 +886,21 @@ class PackageContractTests(unittest.TestCase):
         self.assertIn(archive_runtime, smoke)
         self.assertNotIn("--skip-runtime", smoke)
 
+    def test_ios_runtime_smoke_waits_for_simulator_boot(self) -> None:
+        workflow = (WORKFLOW_ROOT / "flutter-platforms.yml").read_text(
+            encoding="utf-8"
+        )
+        apple = indented_block(workflow, "apple:")
+        boot = 'xcrun simctl boot "$DEVICE_ID"'
+        ready = 'xcrun simctl bootstatus "$DEVICE_ID" -b'
+        smoke = "package_smoke.py --platform ios"
+
+        self.assertIn(boot, apple)
+        self.assertIn(ready, apple)
+        self.assertIn(smoke, apple)
+        self.assertLess(apple.index(boot), apple.index(ready))
+        self.assertLess(apple.index(ready), apple.index(smoke))
+
     def test_every_pub_dev_request_has_connection_and_total_timeouts(self) -> None:
         release = (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8")
         requests = [
