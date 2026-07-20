@@ -5,7 +5,6 @@ import type {
   NodeId,
   NodeView,
   ResourceId,
-  ResourceView,
 } from "@mdstream/core";
 
 import { HostPresentationPolicy } from "./host-policy.js";
@@ -15,7 +14,6 @@ export const MERMAID_PREVIEW_PROCESSOR_ID = "example.web.mermaid-preview";
 
 export interface ContentIrDiagnostics {
   readonly nodeKeys: readonly string[];
-  readonly resourceKeys: readonly string[];
   readonly materializedNodeViews: string;
   readonly materializedResourceViews: string;
   readonly materializedPendingSourceViews: string;
@@ -46,7 +44,6 @@ export class ContentIrView {
   readonly #pendingRoot: HTMLElement;
   readonly #onDiagnostics: (diagnostics: ContentIrDiagnostics) => void;
   readonly #nodes = new Map<NodeId, NodeBinding>();
-  readonly #resources = new Map<ResourceId, ResourceView>();
   readonly #unsubscribeRoot: () => void;
   readonly #unsubscribePending: () => void;
   readonly #unsubscribePolicy: () => void;
@@ -93,11 +90,6 @@ export class ContentIrView {
       this.#disposeNode(binding);
     }
     this.#nodes.clear();
-    this.#resources.clear();
-  }
-
-  visibleText(): string {
-    return this.#answerRoot.textContent ?? "";
   }
 
   #handleRootChange(): void {
@@ -117,7 +109,6 @@ export class ContentIrView {
         this.#disposeNode(binding);
       }
       this.#nodes.clear();
-      this.#resources.clear();
       this.#answerRoot.replaceChildren();
     }
 
@@ -378,10 +369,8 @@ export class ContentIrView {
     if (destination !== undefined) {
       const classified = classifyExternalUrl(destination);
       if (classified.kind === "link") {
-        const anchor = renderExternalDestination(destination, `[@${key}]`);
-        if (!(anchor instanceof HTMLAnchorElement)) {
-          throw new TypeError("allowed citation destination did not produce a link");
-        }
+        const anchor = safeAnchor(classified.href);
+        anchor.textContent = `[@${key}]`;
         anchor.className = "citation-link";
         anchor.setAttribute("aria-label", `Citation ${key}`);
         return anchor;
@@ -409,7 +398,9 @@ export class ContentIrView {
     }
     const classified = classifyExternalUrl(destination);
     if (classified.kind === "link") {
-      definition.append(renderExternalDestination(destination, classified.href));
+      const anchor = safeAnchor(classified.href);
+      anchor.textContent = classified.href;
+      definition.append(anchor);
     } else {
       definition.append(textElement("span", classified.text));
     }
@@ -424,9 +415,6 @@ export class ContentIrView {
       return undefined;
     }
     const resource = this.#store.getResourceSnapshot(resourceId);
-    if (resource !== undefined) {
-      this.#resources.set(resourceId, resource);
-    }
     binding.resourceUnsubscribes.push(
       this.#store.subscribeResource(resourceId, () => this.#updateNode(binding)),
     );
@@ -506,7 +494,6 @@ export class ContentIrView {
       nodeKeys: Object.freeze([...this.#nodes.values()].map(({ element }) =>
         element.dataset.hostKey ?? "missing"
       ).sort()),
-      resourceKeys: Object.freeze([...this.#resources.keys()].map((id) => id as string).sort()),
       materializedNodeViews: metrics.materializedNodeViews,
       materializedResourceViews: metrics.materializedResourceViews,
       materializedPendingSourceViews: metrics.materializedPendingSourceViews,

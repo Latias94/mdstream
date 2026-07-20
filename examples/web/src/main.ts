@@ -184,7 +184,6 @@ class GoldenStreamApp {
     let session: HostSession;
     const unsubscribeTransitions = engine.store.subscribeTransitions((batch) => {
       policy.consume(engine.store, batch);
-      this.#renderPolicyEvents(session);
     });
     const view = new ContentIrView({
       store: engine.store,
@@ -206,7 +205,7 @@ class GoldenStreamApp {
     };
     session.unsubscribePolicy = policy.subscribe(() => {
       this.#renderPolicyEvents(session);
-      this.#renderDiagnostics();
+      this.#ensureFrames(session);
     });
     this.#session = session;
     elements.answer.dataset.finalDigest = "";
@@ -226,8 +225,6 @@ class GoldenStreamApp {
         ? "Continuity replaced. Streaming the canonical answer again."
         : "Streaming the canonical answer.",
     );
-    this.#startFrames(session);
-
     try {
       for (const action of scenario.actions) {
         if (playback.signal.aborted || this.#session !== session) {
@@ -289,14 +286,23 @@ class GoldenStreamApp {
     }
   }
 
-  #startFrames(session: HostSession): void {
-    this.#stopFrames();
+  #ensureFrames(session: HostSession): void {
+    if (
+      this.#frame !== undefined ||
+      this.#session !== session ||
+      this.#playback === undefined ||
+      this.#playback.signal.aborted ||
+      session.policy.queuedGraphemes === 0
+    ) {
+      return;
+    }
     const tick = (): void => {
+      this.#frame = undefined;
       if (this.#session !== session || this.#playback?.signal.aborted === true) {
         return;
       }
       session.policy.advance(session.policy.reducedMotion ? Number.MAX_SAFE_INTEGER : 2);
-      this.#frame = window.requestAnimationFrame(tick);
+      this.#ensureFrames(session);
     };
     this.#frame = window.requestAnimationFrame(tick);
   }
@@ -322,8 +328,7 @@ class GoldenStreamApp {
   }
 
   #renderPolicyEvents(session: HostSession): void {
-    const events = session.policy.events;
-    for (const event of events.slice(session.observedEvents)) {
+    for (const event of session.policy.eventsSince(session.observedEvents)) {
       const item = document.createElement("li");
       item.dataset.eventKind = event.kind;
       item.textContent = event.message;
@@ -336,7 +341,7 @@ class GoldenStreamApp {
         this.#hostState.announce(event.message);
       }
     }
-    session.observedEvents = events.length;
+    session.observedEvents = session.policy.eventCount;
   }
 
   #renderState(snapshot: HostStateSnapshot): void {
@@ -449,11 +454,16 @@ function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
     return Promise.reject(new DOMException("Playback aborted", "AbortError"));
   }
   return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(resolve, milliseconds);
-    signal.addEventListener("abort", () => {
+    const onAbort = (): void => {
       window.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
       reject(new DOMException("Playback aborted", "AbortError"));
-    }, { once: true });
+    };
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 

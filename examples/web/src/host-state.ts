@@ -13,7 +13,6 @@ export type HostLifecycle =
 export interface HostStateSnapshot {
   readonly lifecycle: HostLifecycle;
   readonly mode: PresentationMode;
-  readonly run: number;
   readonly message: string;
   readonly error: string | null;
 }
@@ -26,7 +25,6 @@ export class HostState {
     this.#snapshot = freeze({
       lifecycle: "booting",
       mode,
-      run: 0,
       message: "Loading the mdstream WebAssembly runtime.",
       error: null,
     });
@@ -52,7 +50,6 @@ export class HostState {
       lifecycle,
       message,
       error: null,
-      run: lifecycle === "streaming" ? this.#snapshot.run + 1 : this.#snapshot.run,
     });
   }
 

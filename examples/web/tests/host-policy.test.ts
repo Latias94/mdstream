@@ -68,7 +68,7 @@ describe("host-owned presentation policy", () => {
 
     expect(policy.queuedGraphemes).toBe(0);
     expect(policy.nodeKey(nodeId, "2")).not.toBe(priorKey);
-    expect(policy.events.at(-1)?.kind).toBe("replacement");
+    expect(policy.eventsSince(policy.eventCount - 1)[0]?.kind).toBe("replacement");
   });
 
   it("preserves eligible keys for an empty same-floor recovery batch", () => {
@@ -80,7 +80,7 @@ describe("host-owned presentation policy", () => {
     policy.consume(store, { facts: [] });
 
     expect(policy.nodeKey(nodeId, "1")).toBe(key);
-    expect(policy.events.at(-1)?.kind).toBe("no-change");
+    expect(policy.eventsSince(policy.eventCount - 1)[0]?.kind).toBe("no-change");
   });
 
   it("treats a pure resource change as a focused semantic correction", () => {
@@ -105,10 +105,29 @@ describe("host-owned presentation policy", () => {
     } as unknown as TransitionBatchView);
 
     expect(policy.stateForNode(nodeId)).toBe("corrected");
-    expect(policy.events.at(-1)).toMatchObject({
+    expect(policy.eventsSince(policy.eventCount - 1)[0]).toMatchObject({
       kind: "correction",
       message: expect.stringContaining("semantic resource"),
     });
+  });
+
+  it("reports queued graphemes and policy events incrementally", () => {
+    const store = fakeStore("abcdef");
+    const policy = new HostPresentationPolicy("paced", false);
+    policy.consume(store, appendBatch("abcdef", "0", "6"));
+    const firstEventCount = policy.eventCount;
+
+    expect(policy.advance(2)).toBe(2);
+    expect(policy.queuedGraphemes).toBe(4);
+    expect(policy.eventsSince(firstEventCount)).toEqual([]);
+
+    policy.consume(store, { facts: [] });
+    expect(policy.eventsSince(firstEventCount)).toHaveLength(1);
+    expect(policy.eventsSince(firstEventCount)[0]?.kind).toBe("no-change");
+
+    policy.interrupt();
+    expect(policy.queuedGraphemes).toBe(0);
+    expect(policy.displayText(nodeId, "abcdef")).toBe("ab");
   });
 });
 

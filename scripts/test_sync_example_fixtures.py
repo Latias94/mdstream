@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import subprocess
@@ -49,7 +50,7 @@ class GoldenScenarioContractTests(unittest.TestCase):
         }
         for message, mutate in cases.items():
             with self.subTest(case=message):
-                value = json.loads(json.dumps(self.scenario))
+                value = copy.deepcopy(self.scenario)
                 mutate(value)
                 with self.assertRaisesRegex(
                     sync_example_fixtures.ScenarioError,
@@ -58,7 +59,7 @@ class GoldenScenarioContractTests(unittest.TestCase):
                     sync_example_fixtures.validate_scenario(value)
 
     def test_unknown_fields_and_invalid_recovery_references_are_rejected(self) -> None:
-        unknown = json.loads(json.dumps(self.scenario))
+        unknown = copy.deepcopy(self.scenario)
         unknown["episodes"]["mainline"]["actions"][0]["color"] = "teal"
         with self.assertRaisesRegex(
             sync_example_fixtures.ScenarioError,
@@ -66,7 +67,7 @@ class GoldenScenarioContractTests(unittest.TestCase):
         ):
             sync_example_fixtures.validate_scenario(unknown)
 
-        missing_snapshot = json.loads(json.dumps(self.scenario))
+        missing_snapshot = copy.deepcopy(self.scenario)
         recovery = missing_snapshot["episodes"]["recovery"]["actions"]
         next(
             action for action in recovery if action["kind"] == "recover_snapshot"

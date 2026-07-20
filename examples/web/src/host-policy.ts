@@ -69,6 +69,7 @@ export class HostPresentationPolicy {
   readonly #listeners = new Set<(changedNodes: readonly NodeId[] | null) => void>();
   readonly #dirtyNodes = new Set<NodeId>();
   readonly #events: HostPolicyEvent[] = [];
+  #queueHead = 0;
   #continuityGeneration = "0";
   #epoch = "1";
   #eventSequence = 0;
@@ -84,12 +85,16 @@ export class HostPresentationPolicy {
     return this.#reducedMotion;
   }
 
-  get events(): readonly HostPolicyEvent[] {
-    return Object.freeze([...this.#events]);
+  get eventCount(): number {
+    return this.#events.length;
+  }
+
+  eventsSince(index: number): readonly HostPolicyEvent[] {
+    return Object.freeze(this.#events.slice(index));
   }
 
   get queuedGraphemes(): number {
-    return this.#queue.length;
+    return this.#queue.length - this.#queueHead;
   }
 
   get pendingPresentedBytes(): number {
@@ -127,7 +132,7 @@ export class HostPresentationPolicy {
       this.#continuityGeneration = facts.after.continuityGeneration as string;
       this.#epoch = facts.after.coordinate.epoch as string;
       if (facts.scope === "full_replace") {
-        this.#queue.length = 0;
+        this.#clearQueue();
         this.#displayedSource.clear();
         this.#caughtUpSource.clear();
         this.#textByKey.clear();
@@ -253,10 +258,11 @@ export class HostPresentationPolicy {
   advance(graphemes = 1): number {
     let delivered = 0;
     while (delivered < graphemes) {
-      const next = this.#queue.shift();
+      const next = this.#queue[this.#queueHead];
       if (next === undefined) {
         break;
       }
+      this.#queueHead += 1;
       this.#textByKey.set(next.key, (this.#textByKey.get(next.key) ?? "") + next.grapheme);
       this.#states.set(next.key, "fresh");
       this.#dirtyNodes.add(next.nodeId);
@@ -265,18 +271,25 @@ export class HostPresentationPolicy {
     if (delivered > 0) {
       this.#notify(false);
     }
+    if (this.#queueHead === this.#queue.length) {
+      this.#clearQueue();
+    } else if (this.#queueHead >= 1024 && this.#queueHead * 2 >= this.#queue.length) {
+      this.#queue.copyWithin(0, this.#queueHead);
+      this.#queue.length -= this.#queueHead;
+      this.#queueHead = 0;
+    }
     return delivered;
   }
 
   drain(): void {
-    if (this.#queue.length === 0) {
+    if (this.queuedGraphemes === 0) {
       return;
     }
-    this.advance(this.#queue.length);
+    this.advance(this.queuedGraphemes);
   }
 
   interrupt(): void {
-    this.#queue.length = 0;
+    this.#clearQueue();
     this.#record("interrupted", "Replay interrupted; queued presentation was discarded.");
     this.#notify(false);
   }
@@ -299,7 +312,7 @@ export class HostPresentationPolicy {
     }
     this.#textByKey.set(key, current);
 
-    const partition = this.#displayedSource.partition(
+    const pieces = this.#displayedSource.partition(
       transition.range.start,
       transition.range.end,
       transition.text,
@@ -307,7 +320,7 @@ export class HostPresentationPolicy {
     this.#recordCatchUpRange(transition.range.start, transition.range.end, key);
     this.#displayedSource.add(transition.range.start, transition.range.end);
 
-    for (const piece of partition.pieces) {
+    for (const piece of pieces) {
       if (!piece.fresh || this.mode === "immediate" || this.#reducedMotion) {
         this.#textByKey.set(key, (this.#textByKey.get(key) ?? "") + piece.text);
         continue;
@@ -349,11 +362,21 @@ export class HostPresentationPolicy {
   }
 
   #dropQueuedKey(key: string): void {
-    for (let index = this.#queue.length - 1; index >= 0; index -= 1) {
-      if (this.#queue[index]?.key === key) {
-        this.#queue.splice(index, 1);
+    let retained = 0;
+    for (let index = this.#queueHead; index < this.#queue.length; index += 1) {
+      const entry = this.#queue[index];
+      if (entry !== undefined && entry.key !== key) {
+        this.#queue[retained] = entry;
+        retained += 1;
       }
     }
+    this.#queue.length = retained;
+    this.#queueHead = 0;
+  }
+
+  #clearQueue(): void {
+    this.#queue.length = 0;
+    this.#queueHead = 0;
   }
 
   #record(kind: HostPolicyEventKind, message: string, nodeKey?: string): void {
@@ -411,10 +434,7 @@ class SourceIntervalSet {
     return Number(end - start - previouslyCovered);
   }
 
-  partition(startValue: string, endValue: string, text: string): {
-    readonly pieces: readonly TextPiece[];
-    readonly alreadyDisplayedBytes: number;
-  } {
+  partition(startValue: string, endValue: string, text: string): readonly TextPiece[] {
     const start = BigInt(startValue);
     const end = BigInt(endValue);
     const bytes = encoder.encode(text);
@@ -424,7 +444,6 @@ class SourceIntervalSet {
 
     const pieces: TextPiece[] = [];
     let offset = 0;
-    let alreadyDisplayedBytes = 0;
     while (offset < bytes.byteLength) {
       const fresh = !this.#contains(start + BigInt(offset));
       let boundary = offset + 1;
@@ -436,12 +455,9 @@ class SourceIntervalSet {
       }
       const value = decoder.decode(bytes.slice(offset, boundary));
       pieces.push({ text: value, fresh });
-      if (!fresh) {
-        alreadyDisplayedBytes += boundary - offset;
-      }
       offset = boundary;
     }
-    return { pieces, alreadyDisplayedBytes };
+    return pieces;
   }
 
   intersections(startValue: string, endValue: string): readonly {
