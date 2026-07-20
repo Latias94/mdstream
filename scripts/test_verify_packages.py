@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import re
 import shutil
 import sys
 import tarfile
@@ -129,6 +130,75 @@ class PackageContractTests(unittest.TestCase):
                 {"Cargo.toml", "repo-ref/private.md"},
                 required={"Cargo.toml"},
             )
+
+    def test_promised_examples_are_required_in_package_inventories(self) -> None:
+        cases = (
+            (
+                "Dart mdstream",
+                verify_packages.DART_REQUIRED_FILES,
+                "example/golden_stream.dart",
+            ),
+            (
+                "Flutter mdstream_flutter",
+                verify_packages.FLUTTER_REQUIRED_FILES,
+                "example/lib/bootstrap.dart",
+            ),
+            (
+                "crate mdstream",
+                verify_packages.RUST_REQUIRED_FILES["mdstream"],
+                "examples/minimal.rs",
+            ),
+            (
+                "crate mdstream-merman",
+                verify_packages.RUST_REQUIRED_FILES["mdstream-merman"],
+                "examples/render_golden.rs",
+            ),
+            (
+                "crate mdstream-tokio",
+                verify_packages.RUST_REQUIRED_FILES["mdstream-tokio"],
+                "examples/agent_tui.rs",
+            ),
+        )
+        for label, required, promised in cases:
+            with self.subTest(package=label):
+                actual = set(required)
+                actual.remove(promised)
+                with self.assertRaisesRegex(
+                    verify_packages.ValidationError,
+                    f"missing.*{re.escape(promised)}",
+                ):
+                    verify_packages.validate_inventory(
+                        label,
+                        actual,
+                        required=set(required),
+                    )
+
+    def test_flutter_archive_rejects_repository_only_example_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_binding_policy(root, npm_ceiling=64_000, dart_ceiling=64_000)
+            for forbidden in (
+                "example/pubspec_overrides.yaml",
+                "example/pubspec.lock",
+                "example/.dart_tool/package_config.json",
+                "example/build/output.bin",
+                "example/test/golden_stream_test.dart",
+                "example/integration_test/golden_stream_smoke_test.dart",
+            ):
+                with self.subTest(path=forbidden):
+                    files = valid_flutter_files()
+                    files[forbidden] = b"repository only"
+                    archive = root / "flutter.tar.gz"
+                    write_files_tar(archive, files)
+                    with self.assertRaisesRegex(
+                        verify_packages.ValidationError,
+                        "forbidden path",
+                    ):
+                        verify_packages.verify_existing_archive(
+                            root,
+                            "flutter",
+                            archive,
+                        )
 
     def test_pub_archive_rejects_path_dependencies(self) -> None:
         self.assertTrue(
@@ -346,6 +416,63 @@ class PackageContractTests(unittest.TestCase):
             ):
                 verify_packages.validate_documentation_contract(root)
 
+    def test_example_catalog_requires_complete_machine_checked_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            docs = root / "docs"
+            docs.mkdir()
+            source_paths = {
+                contract.source_path
+                for contract in verify_packages.EXAMPLE_CONTRACTS
+            }
+            for relative in source_paths:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("example\n", encoding="utf-8")
+            sections = []
+            for contract in verify_packages.EXAMPLE_CONTRACTS:
+                sections.append(
+                    "\n".join(
+                        (
+                            f"<!-- example:{contract.identifier} -->",
+                            f"- Role: {contract.role}",
+                            f"- Source: [{contract.source_path}]"
+                            f"(../{contract.source_path})",
+                            f"- Prerequisites: {contract.prerequisite_marker}",
+                            f"- Run: `{contract.command}`",
+                            f"- Expect: `{contract.expected_marker}`",
+                            f"- Next: [Continue]({contract.next_link})",
+                            "<!-- /example -->",
+                        )
+                    )
+                )
+            catalog = "# Examples\n\n" + "\n\n".join(sections) + "\n"
+            (docs / "EXAMPLES.md").write_text(catalog, encoding="utf-8")
+            (root / "README.md").write_text(
+                "\n".join(
+                    f"- [{contract.identifier}]"
+                    f"(docs/EXAMPLES.md#{contract.identifier})"
+                    for contract in verify_packages.EXAMPLE_CONTRACTS
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            verify_packages.validate_example_catalog(root)
+
+            first = verify_packages.EXAMPLE_CONTRACTS[0]
+            broken = catalog.replace(
+                f"- Next: [Continue]({first.next_link})",
+                "- Next: nowhere",
+                1,
+            )
+            (docs / "EXAMPLES.md").write_text(broken, encoding="utf-8")
+            with self.assertRaisesRegex(
+                verify_packages.ValidationError,
+                f"{first.identifier}.*Next",
+            ):
+                verify_packages.validate_example_catalog(root)
+
     def test_repository_static_contract(self) -> None:
         contract = verify_packages.validate_static_contract(ROOT)
         self.assertEqual(contract.version, "0.4.0")
@@ -401,10 +528,99 @@ class PackageContractTests(unittest.TestCase):
             )
             return text.replace(build, f"{build}\n\n{install.rstrip()}", 1)
 
+        def move_flutter_sync_after_integration(text: str) -> str:
+            sync = (
+                "      - name: Verify Golden fixture synchronization\n"
+                "        run: python3 scripts/sync-example-fixtures.py --check\n\n"
+            )
+            text = text.replace(sync, "", 1)
+            integration = (
+                "        run: xvfb-run -a flutter test "
+                "integration_test/golden_stream_smoke_test.dart -d linux"
+            )
+            return text.replace(integration, f"{integration}\n\n{sync.rstrip()}", 1)
+
         cases = (
             ("commented command", "ci.yml", comment_out_web_test),
             ("wrong job", "ci.yml", move_web_test_to_quality),
             ("late wasm-tools install", "ci.yml", move_wasm_tools_after_build),
+            (
+                "late Flutter fixture check",
+                "flutter-platforms.yml",
+                move_flutter_sync_after_integration,
+            ),
+            (
+                "missing Golden sync",
+                "ci.yml",
+                lambda text: text.replace(
+                    "run: python3 scripts/sync-example-fixtures.py --check",
+                    "# removed Golden sync",
+                    1,
+                ),
+            ),
+            (
+                "missing Rust assertion entry",
+                "ci.yml",
+                lambda text: text.replace(
+                    "run: cargo run -p mdstream --example minimal -- --assert",
+                    "# removed Rust assertion entry",
+                    1,
+                ),
+            ),
+            (
+                "missing Tokio smoke entry",
+                "ci.yml",
+                lambda text: text.replace(
+                    "run: cargo run -p mdstream-tokio --example agent_tui -- --smoke",
+                    "# removed Tokio smoke entry",
+                    1,
+                ),
+            ),
+            (
+                "missing Web browser entry",
+                "ci.yml",
+                lambda text: text.replace(
+                    "run: pnpm --filter @mdstream/example-web test:e2e",
+                    "# removed Web browser entry",
+                    1,
+                ),
+            ),
+            (
+                "missing TypeScript transition probe",
+                "ci.yml",
+                lambda text: text.replace(
+                    "run: node bindings/typescript/examples/transition-host.mjs --assert",
+                    "# removed TypeScript transition probe",
+                    1,
+                ),
+            ),
+            (
+                "missing Dart Golden entry",
+                "ci.yml",
+                lambda text: text.replace(
+                    'dart run example/golden_stream.dart --library "$LIBRARY" --assert',
+                    "# removed Dart Golden entry",
+                    1,
+                ),
+            ),
+            (
+                "missing Merman assertion entry",
+                "ci.yml",
+                lambda text: text.replace(
+                    "run: cargo +1.95.0 run --manifest-path mdstream-merman/Cargo.toml --example render_golden -- --assert",
+                    "# removed Merman assertion entry",
+                    1,
+                ),
+            ),
+            (
+                "missing Flutter bundled bootstrap entry",
+                "flutter-platforms.yml",
+                lambda text: text.replace(
+                    "run: xvfb-run -a flutter test integration_test/golden_stream_smoke_test.dart -d linux",
+                    "# removed Flutter bundled bootstrap entry",
+                    1,
+                ),
+            ),
             (
                 "missing workflow call trigger",
                 "ci.yml",
@@ -538,12 +754,15 @@ class PackageContractTests(unittest.TestCase):
     def test_dart_ci_requires_native_for_the_complete_suite(self) -> None:
         workflow = (WORKFLOW_ROOT / "ci.yml").read_text(encoding="utf-8")
         job = indented_block(workflow, "dart:")
-        native_build = job.index("dart run tool/build_native.dart")
-        required = job.index('MDSTREAM_REQUIRE_NATIVE: "1"')
-        full_suite = job.index("run: dart test")
-        self.assertLess(native_build, required)
-        self.assertLess(required, full_suite)
-        self.assertEqual(job.count("run: dart test"), 1)
+        native_suite = job.index("dart run tool/test_native.dart")
+        example_build = job.index('LIBRARY="$(dart run tool/build_native.dart)"')
+        example = job.index(
+            'dart run example/golden_stream.dart --library "$LIBRARY" --assert'
+        )
+        self.assertLess(native_suite, example_build)
+        self.assertLess(example_build, example)
+        self.assertEqual(job.count("dart run tool/test_native.dart"), 1)
+        self.assertNotIn("run: dart test", job)
 
     def test_typescript_build_jobs_install_pinned_wasm_tools(self) -> None:
         cases = (

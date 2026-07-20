@@ -39,8 +39,26 @@ RUST_MANIFESTS = {
 RUST_REQUIRED_FILES = {
     name: {"Cargo.toml", "src/lib.rs"} for name in RUST_PUBLISH_ORDER
 }
+RUST_REQUIRED_FILES["mdstream"] |= {
+    "examples/README.md",
+    "examples/custom_blocks.rs",
+    "examples/fixtures/golden-ai-stream.json",
+    "examples/headless_state.rs",
+    "examples/minimal.rs",
+    "examples/processor_lifecycle.rs",
+    "examples/replica_recovery.rs",
+    "examples/transition_trace.rs",
+}
 RUST_REQUIRED_FILES["mdstream-ffi"] |= {"README.md", "include/mdstream.h"}
-RUST_REQUIRED_FILES["mdstream-merman"] |= {"README.md"}
+RUST_REQUIRED_FILES["mdstream-tokio"] |= {
+    "README.md",
+    "examples/agent_tui.rs",
+}
+RUST_REQUIRED_FILES["mdstream-merman"] |= {
+    "README.md",
+    "examples/fixtures/golden-ai-stream.json",
+    "examples/render_golden.rs",
+}
 
 NPM_REQUIRED_FILES = {
     "package.json",
@@ -57,6 +75,8 @@ DART_REQUIRED_FILES = {
     "lib/mdstream.dart",
     "lib/src/ffi.dart",
     "lib/src/reducer_handle.dart",
+    "example/fixtures/golden_ai_stream.json",
+    "example/golden_stream.dart",
 }
 FLUTTER_REQUIRED_FILES = {
     "pubspec.yaml",
@@ -68,6 +88,12 @@ FLUTTER_REQUIRED_FILES = {
     "linux/CMakeLists.txt",
     "macos/mdstream_flutter.podspec",
     "windows/CMakeLists.txt",
+    "example/assets/golden_ai_stream.json",
+    "example/lib/bootstrap.dart",
+    "example/lib/content_ir_view.dart",
+    "example/lib/golden_stream_host.dart",
+    "example/lib/main.dart",
+    "example/pubspec.yaml",
 }
 FORBIDDEN_PACKAGE_PREFIXES = (
     ".git/",
@@ -76,6 +102,18 @@ FORBIDDEN_PACKAGE_PREFIXES = (
     "node_modules/",
     "repo-ref/",
     "target/",
+)
+PUB_REPOSITORY_ONLY_PREFIXES = (
+    *FORBIDDEN_PACKAGE_PREFIXES,
+    "integration_test/",
+    "test/",
+    "tool/",
+    "example/.dart_tool/",
+    "example/build/",
+    "example/integration_test/",
+    "example/test/",
+    "example/pubspec.lock",
+    "example/pubspec_overrides.yaml",
 )
 NATIVE_FILE_SUFFIXES = (".a", ".dylib", ".dll", ".lib", ".node", ".so")
 NATIVE_MAGICS = (
@@ -96,8 +134,78 @@ REQUIRED_DOCUMENTS = (
     "ADAPTERS.md",
     "COMPATIBILITY.md",
     "PERFORMANCE.md",
+    "EXAMPLES.md",
     "USAGE.md",
     "ROADMAP.md",
+)
+
+
+@dataclass(frozen=True)
+class ExampleContract:
+    identifier: str
+    role: str
+    source_path: str
+    prerequisite_marker: str
+    command: str
+    expected_marker: str
+    next_link: str
+
+
+EXAMPLE_CONTRACTS = (
+    ExampleContract(
+        identifier="rust-minimal",
+        role="First-success tutorial",
+        source_path="mdstream/examples/minimal.rs",
+        prerequisite_marker="Rust 1.85",
+        command="cargo +1.85.0 run -p mdstream --example minimal -- --assert",
+        expected_marker="ASSERTIONS_OK scenario=golden-ai-stream",
+        next_link="../examples/web/README.md",
+    ),
+    ExampleContract(
+        identifier="web-flagship",
+        role="Interactive visual showcase",
+        source_path="examples/web/src/main.ts",
+        prerequisite_marker="Node 24",
+        command="pnpm web:prepare && pnpm --filter @mdstream/example-web dev",
+        expected_marker="Stream settled with finalized canonical content.",
+        next_link="#flutter-host",
+    ),
+    ExampleContract(
+        identifier="dart-headless",
+        role="Headless binding tutorial",
+        source_path="bindings/dart/example/golden_stream.dart",
+        prerequisite_marker="Dart 3.8",
+        command="cd bindings/dart && LIBRARY=$(dart run tool/build_native.dart) && dart run example/golden_stream.dart --library \"$LIBRARY\" --assert",
+        expected_marker="assertions=passed",
+        next_link="#flutter-host",
+    ),
+    ExampleContract(
+        identifier="flutter-host",
+        role="Interactive native host",
+        source_path="bindings/flutter/example/lib/main.dart",
+        prerequisite_marker="Flutter 3.32",
+        command="cd bindings/flutter/example && flutter run -d macos",
+        expected_marker="Settled",
+        next_link="#merman-artifact",
+    ),
+    ExampleContract(
+        identifier="tokio-actor",
+        role="Machine smoke probe",
+        source_path="mdstream-tokio/examples/agent_tui.rs",
+        prerequisite_marker="Rust 1.88",
+        command="cargo +1.88.0 run -p mdstream-tokio --example agent_tui -- --smoke",
+        expected_marker="SMOKE_OK",
+        next_link="#web-flagship",
+    ),
+    ExampleContract(
+        identifier="merman-artifact",
+        role="Processor recipe",
+        source_path="mdstream-merman/examples/render_golden.rs",
+        prerequisite_marker="Rust 1.95",
+        command="cargo +1.95.0 run --manifest-path mdstream-merman/Cargo.toml --example render_golden -- --assert",
+        expected_marker="mdstream-merman golden stream: ok",
+        next_link="EXTENSIONS.md",
+    ),
 )
 
 WASM_TOOLS_MARKER = "tool: wasm-tools@1.253.0"
@@ -117,17 +225,33 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
     tuple[str, str], WorkflowJobContract
 ] = MappingProxyType(
     {
-        ("ci.yml", "core-msrv"): WorkflowJobContract(
-            job_markers=("dtolnay/rust-toolchain@1.85.0",),
-        ),
-        ("ci.yml", "workspace-msrv"): WorkflowJobContract(
-            job_markers=("dtolnay/rust-toolchain@1.88.0",),
-        ),
         ("ci.yml", "release-contract"): WorkflowJobContract(
             run_markers=(
                 "scripts/verify-packages.py --phase static",
-                "python3 -m unittest scripts/test_verify_packages.py",
+                "scripts/sync-example-fixtures.py --check",
+                "python3 -m unittest scripts/test_sync_example_fixtures.py scripts/test_verify_packages.py",
             ),
+        ),
+        ("ci.yml", "core-msrv"): WorkflowJobContract(
+            run_markers=(
+                "cargo nextest run -p mdstream-conformance -p mdstream-protocol -p mdstream-processors -p mdstream --all-features",
+                "cargo run -p mdstream --example minimal -- --assert",
+                "cargo run -p mdstream --example headless_state",
+                "cargo run -p mdstream --example transition_trace",
+                "cargo run -p mdstream --example custom_blocks",
+                "cargo run -p mdstream --example processor_lifecycle",
+                "cargo run -p mdstream --example replica_recovery",
+            ),
+            job_markers=("dtolnay/rust-toolchain@1.85.0",),
+            required_needs=frozenset(("release-contract",)),
+        ),
+        ("ci.yml", "workspace-msrv"): WorkflowJobContract(
+            run_markers=(
+                "cargo nextest run --workspace --all-features",
+                "cargo run -p mdstream-tokio --example agent_tui -- --smoke",
+            ),
+            job_markers=("dtolnay/rust-toolchain@1.88.0",),
+            required_needs=frozenset(("release-contract",)),
         ),
         ("ci.yml", "quality"): WorkflowJobContract(
             run_markers=(
@@ -139,13 +263,17 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 "cargo check -p mdstream --benches --all-features",
                 "cargo check --manifest-path fuzz/Cargo.toml --bins",
             ),
+            required_needs=frozenset(("release-contract",)),
         ),
         ("ci.yml", "merman"): WorkflowJobContract(
             run_markers=(
                 "cargo +1.95.0 nextest run --manifest-path "
                 "mdstream-merman/Cargo.toml --all-features",
+                "cargo +1.95.0 run --manifest-path "
+                "mdstream-merman/Cargo.toml --example render_golden -- --assert",
             ),
             job_markers=("dtolnay/rust-toolchain@1.95.0",),
+            required_needs=frozenset(("release-contract",)),
         ),
         ("ci.yml", "web"): WorkflowJobContract(
             run_markers=(
@@ -153,8 +281,12 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 "wasm32-unknown-unknown --all-features",
                 "wasm-pack test --node mdstream-wasm",
                 "pnpm install --frozen-lockfile",
+                "pnpm web:prepare",
                 "pnpm -r test",
                 "pnpm -r build",
+                "node bindings/typescript/examples/transition-host.mjs --assert",
+                "pnpm --filter @mdstream/example-web exec playwright install --with-deps chromium",
+                "pnpm --filter @mdstream/example-web test:e2e",
             ),
             job_markers=(
                 "tool: wasm-pack@0.15.0",
@@ -166,14 +298,33 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 ("uses: taiki-e/install-action@v2", WASM_TOOLS_MARKER),
             ),
             marker_order=(WASM_TOOLS_MARKER, "pnpm -r build"),
+            required_needs=frozenset(("release-contract",)),
         ),
         ("ci.yml", "dart"): WorkflowJobContract(
-            run_markers=("dart analyze", "dart test"),
+            run_markers=(
+                "dart analyze",
+                "dart run tool/test_native.dart",
+                'dart run example/golden_stream.dart --library "$LIBRARY" --assert',
+            ),
             job_markers=("sdk: 3.8.1", "flutter-version: 3.32.1"),
+            required_needs=frozenset(("release-contract",)),
+        ),
+        ("ci.yml", "rust-packages"): WorkflowJobContract(
+            required_needs=frozenset(("release-contract",)),
         ),
         ("flutter-platforms.yml", "linux"): WorkflowJobContract(
-            run_markers=("flutter analyze", "flutter test"),
+            run_markers=(
+                "python3 scripts/sync-example-fixtures.py --check",
+                "flutter analyze",
+                "flutter test",
+                "flutter test test/golden_stream_test.dart",
+                "flutter test integration_test/golden_stream_smoke_test.dart -d linux",
+            ),
             job_markers=("flutter-version: 3.32.1",),
+            marker_order=(
+                "python3 scripts/sync-example-fixtures.py --check",
+                "flutter test integration_test/golden_stream_smoke_test.dart -d linux",
+            ),
         ),
         ("flutter-platforms.yml", "package"): WorkflowJobContract(
             run_markers=(
@@ -771,6 +922,58 @@ def validate_documentation_contract(root: Path) -> None:
                 )
 
 
+def validate_example_catalog(root: Path) -> None:
+    catalog_path = root / "docs" / "EXAMPLES.md"
+    readme_path = root / "README.md"
+    try:
+        catalog = catalog_path.read_text(encoding="utf-8")
+        readme = readme_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ValidationError(f"failed to read example catalog: {error}") from error
+
+    for contract in EXAMPLE_CONTRACTS:
+        opening = f"<!-- example:{contract.identifier} -->"
+        closing = "<!-- /example -->"
+        if catalog.count(opening) != 1:
+            raise ValidationError(
+                f"example {contract.identifier} must have exactly one catalog entry"
+            )
+        start = catalog.index(opening) + len(opening)
+        end = catalog.find(closing, start)
+        if end < 0:
+            raise ValidationError(
+                f"example {contract.identifier} is missing its closing marker"
+            )
+        section = catalog[start:end]
+        required_markers = {
+            "Role": ("- Role:", contract.role),
+            "Source": ("- Source:", f"](../{contract.source_path})"),
+            "Prerequisites": (
+                "- Prerequisites:",
+                contract.prerequisite_marker,
+            ),
+            "Run": ("- Run:", f"`{contract.command}`"),
+            "Expect": ("- Expect:", contract.expected_marker),
+            "Next": ("- Next:", f"]({contract.next_link})"),
+        }
+        for field, markers in required_markers.items():
+            if any(marker not in section for marker in markers):
+                raise ValidationError(
+                    f"example {contract.identifier} is missing or invalid {field}"
+                )
+        source = root / contract.source_path
+        if not source.is_file():
+            raise ValidationError(
+                f"example {contract.identifier} source does not exist: "
+                f"{contract.source_path}"
+            )
+        root_link = f"docs/EXAMPLES.md#{contract.identifier}"
+        if root_link not in readme:
+            raise ValidationError(
+                f"README.md does not map example {contract.identifier} to {root_link}"
+            )
+
+
 def validate_static_contract(root: Path = ROOT) -> ReleaseContract:
     rust_packages = load_rust_packages(root)
     versions = {name: package.version for name, package in rust_packages.items()}
@@ -811,6 +1014,7 @@ def validate_static_contract(root: Path = ROOT) -> ReleaseContract:
     validate_workflow_contract(root)
     validate_release_checklist(root)
     validate_documentation_contract(root)
+    validate_example_catalog(root)
     return ReleaseContract(version, RUST_PUBLISH_ORDER)
 
 
@@ -1100,7 +1304,12 @@ def verify_existing_archive(root: Path, ecosystem: str, archive: Path) -> None:
     if ecosystem == "dart":
         forbidden = _verify_archive_budget(root, archive, "dart_packed")
         paths, pubspec = _archive_files(archive, reject_native=True)
-        validate_inventory("Dart mdstream", paths, required=DART_REQUIRED_FILES)
+        validate_inventory(
+            "Dart mdstream",
+            paths,
+            required=DART_REQUIRED_FILES,
+            forbidden_prefixes=PUB_REPOSITORY_ONLY_PREFIXES,
+        )
         if not pubspec:
             raise ValidationError("Dart mdstream archive has no pubspec.yaml")
         if pubspec_has_path_dependency(pubspec):
@@ -1124,6 +1333,7 @@ def verify_existing_archive(root: Path, ecosystem: str, archive: Path) -> None:
             "Flutter mdstream_flutter",
             paths,
             required=FLUTTER_REQUIRED_FILES,
+            forbidden_prefixes=PUB_REPOSITORY_ONLY_PREFIXES,
         )
         if not pubspec:
             raise ValidationError("Flutter mdstream_flutter archive has no pubspec.yaml")

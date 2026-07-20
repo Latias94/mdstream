@@ -25,11 +25,15 @@ jobs:
       - name: Verify versions, publish graph, workflows, and docs
         run: python3 scripts/verify-packages.py --phase static
 
-      - name: Test package verifier failure contracts
-        run: python3 -m unittest scripts/test_verify_packages.py
+      - name: Verify Golden fixture synchronization
+        run: python3 scripts/sync-example-fixtures.py --check
+
+      - name: Test fixture and package verifier failure contracts
+        run: python3 -m unittest scripts/test_sync_example_fixtures.py scripts/test_verify_packages.py
 
   core-msrv:
     name: Core MSRV / Rust 1.85
+    needs: release-contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -47,16 +51,28 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Test core protocol, processors, and engine
-        run: cargo nextest run -p mdstream-protocol -p mdstream-processors -p mdstream --all-features
+        run: cargo nextest run -p mdstream-conformance -p mdstream-protocol -p mdstream-processors -p mdstream --all-features
 
       - name: Check mdstream examples
         run: cargo check -p mdstream --examples --all-features
+
+      - name: Run Golden first-success example
+        run: cargo run -p mdstream --example minimal -- --assert
+
+      - name: Run focused headless recipes
+        run: |
+          cargo run -p mdstream --example headless_state
+          cargo run -p mdstream --example transition_trace
+          cargo run -p mdstream --example custom_blocks
+          cargo run -p mdstream --example processor_lifecycle
+          cargo run -p mdstream --example replica_recovery
 
       - name: Replay frozen U7 calibration
         run: scripts/calibrate-budgets.sh --check
 
   workspace-msrv:
     name: Workspace MSRV / Rust 1.88
+    needs: release-contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -86,8 +102,12 @@ jobs:
       - name: Check Tokio examples
         run: cargo check -p mdstream-tokio --examples
 
+      - name: Run Tokio actor smoke path
+        run: cargo run -p mdstream-tokio --example agent_tui -- --smoke
+
   quality:
     name: Stable quality gate
+    needs: release-contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -130,6 +150,7 @@ jobs:
 
   merman:
     name: Merman adapter / Rust 1.95
+    needs: release-contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -154,8 +175,12 @@ jobs:
       - name: Test real Merman adapter
         run: cargo +1.95.0 nextest run --manifest-path mdstream-merman/Cargo.toml --all-features
 
+      - name: Render Golden Mermaid artifact
+        run: cargo +1.95.0 run --manifest-path mdstream-merman/Cargo.toml --example render_golden -- --assert
+
   web:
     name: WASM and TypeScript / Node 24
+    needs: release-contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -197,6 +222,9 @@ jobs:
       - name: Test WASM runtime
         run: wasm-pack test --node mdstream-wasm
 
+      - name: Prepare framework-neutral Web example
+        run: pnpm web:prepare
+
       - name: Typecheck TypeScript packages
         run: pnpm -r typecheck
 
@@ -206,6 +234,15 @@ jobs:
       - name: Build TypeScript packages
         run: pnpm -r build
 
+      - name: Run TypeScript transition contract probe
+        run: node bindings/typescript/examples/transition-host.mjs --assert
+
+      - name: Install pinned Chromium
+        run: pnpm --filter @mdstream/example-web exec playwright install --with-deps chromium
+
+      - name: Test Web example in desktop and mobile Chromium
+        run: pnpm --filter @mdstream/example-web test:e2e
+
       - name: Verify WASM and npm artifact budgets
         run: pnpm artifacts:check
 
@@ -214,6 +251,7 @@ jobs:
 
   dart:
     name: Dart FFI / Dart 3.8.1
+    needs: release-contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -246,21 +284,23 @@ jobs:
         working-directory: bindings/dart
         run: dart analyze
 
-      - name: Build host C FFI library
-        working-directory: bindings/dart
-        run: dart run tool/build_native.dart
-
       - name: Test standalone Dart package with required native library
-        env:
-          MDSTREAM_REQUIRE_NATIVE: "1"
         working-directory: bindings/dart
-        run: dart test
+        run: dart run tool/test_native.dart
+
+      - name: Replay standalone Dart Golden stream
+        shell: bash
+        working-directory: bindings/dart
+        run: |
+          LIBRARY="$(dart run tool/build_native.dart)"
+          dart run example/golden_stream.dart --library "$LIBRARY" --assert
 
       - name: Verify Dart package contents
         run: python3 scripts/verify-packages.py --phase local --ecosystem dart
 
   rust-packages:
     name: Rust package contents and order
+    needs: release-contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

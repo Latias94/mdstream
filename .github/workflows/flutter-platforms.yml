@@ -22,6 +22,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify Golden fixture synchronization
+        run: python3 scripts/sync-example-fixtures.py --check
+
       - name: Install Linux build dependencies
         run: sudo apt-get update && sudo apt-get install -y clang cmake libgtk-3-dev ninja-build xvfb
 
@@ -61,6 +64,18 @@ jobs:
       - name: Test Flutter controller against native runtime
         working-directory: bindings/flutter
         run: flutter test
+
+      - name: Analyze Golden stream example
+        working-directory: bindings/flutter/example
+        run: flutter analyze
+
+      - name: Test Golden stream widgets
+        working-directory: bindings/flutter/example
+        run: flutter test test/golden_stream_test.dart
+
+      - name: Test bundled Golden stream bootstrap
+        working-directory: bindings/flutter/example
+        run: xvfb-run -a flutter test integration_test/golden_stream_smoke_test.dart -d linux
 
       - name: Load bundled Linux library
         run: xvfb-run -a python3 bindings/flutter/tool/package_smoke.py --platform linux --device linux --skip-native-build --skip-archive
