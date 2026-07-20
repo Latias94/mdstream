@@ -473,6 +473,29 @@ class PackageContractTests(unittest.TestCase):
             ):
                 verify_packages.validate_example_catalog(root)
 
+    def test_flutter_catalog_distinguishes_source_and_published_runs(self) -> None:
+        flutter = next(
+            contract
+            for contract in verify_packages.EXAMPLE_CONTRACTS
+            if contract.identifier == "flutter-host"
+        )
+        self.assertEqual(
+            flutter.command,
+            "python3 bindings/flutter/tool/build_native.py macos && "
+            "cd bindings/flutter/example && flutter run -d macos",
+        )
+
+        catalog = (ROOT / "docs" / "EXAMPLES.md").read_text(encoding="utf-8")
+        section = catalog.split("<!-- example:flutter-host -->", 1)[1].split(
+            "<!-- /example -->", 1
+        )[0]
+        self.assertIn(
+            "From an extracted published package, run "
+            "`cd example && flutter run -d macos`; its native artifacts are "
+            "already staged.",
+            section,
+        )
+
     def test_repository_static_contract(self) -> None:
         contract = verify_packages.validate_static_contract(ROOT)
         self.assertEqual(contract.version, "0.4.0")
@@ -503,6 +526,23 @@ class PackageContractTests(unittest.TestCase):
 
         def comment_out_web_test(text: str) -> str:
             return text.replace("run: pnpm -r test", "# run: pnpm -r test", 1)
+
+        def disable_web_job(text: str) -> str:
+            return text.replace(
+                "  web:\n    name: WASM and TypeScript / Node 24",
+                "  web:\n    if: false\n    name: WASM and TypeScript / Node 24",
+                1,
+            )
+
+        def disable_web_test_step(text: str) -> str:
+            return text.replace(
+                "      - name: Test TypeScript packages\n"
+                "        run: pnpm -r test",
+                "      - name: Test TypeScript packages\n"
+                "        if: false\n"
+                "        run: pnpm -r test",
+                1,
+            )
 
         def move_web_test_to_quality(text: str) -> str:
             text = text.replace("run: pnpm -r test", "run: pnpm -r typecheck", 1)
@@ -542,6 +582,8 @@ class PackageContractTests(unittest.TestCase):
 
         cases = (
             ("commented command", "ci.yml", comment_out_web_test),
+            ("statically disabled job", "ci.yml", disable_web_job),
+            ("statically disabled step", "ci.yml", disable_web_test_step),
             ("wrong job", "ci.yml", move_web_test_to_quality),
             ("late wasm-tools install", "ci.yml", move_wasm_tools_after_build),
             (

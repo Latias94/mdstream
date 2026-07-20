@@ -67,12 +67,12 @@ The example reads pending source and focused state only when requested and close
 - Role: Interactive native host
 - Source: [`bindings/flutter/example/lib/main.dart`](../bindings/flutter/example/lib/main.dart)
 - Prerequisites: Flutter 3.32.1 or newer, a supported Android, iOS, macOS, Linux, or Windows toolchain, and a runnable device such as `macos`.
-- Run: `cd bindings/flutter/example && flutter run -d macos`; replace `macos` with another supported device when appropriate.
+- Run: `python3 bindings/flutter/tool/build_native.py macos && cd bindings/flutter/example && flutter run -d macos`; replace both `macos` values with the corresponding supported platform and device when appropriate.
 - Expect: Settled canonical content in an answer-first Golden stream with replay and presentation controls, stable `MdstreamNodeKey` widgets, focused pending/transition state, and semantic status announcements.
 - Next: [Merman artifact](#merman-artifact)
 - Availability: Source checkout and the published `mdstream_flutter` package example; widget composition remains example-owned.
 
-In a source checkout, the repository-only supported-platform probe runs `flutter test integration_test/golden_stream_smoke_test.dart -d macos`. Test sources are excluded from the package archive. `mdstream_flutter` supplies native loading and headless controllers, not a Markdown widget, renderer, animation system, theme, or bundled Merman binary.
+The primary command above is for a source checkout, where `build_native.py` stages the selected platform library. From an extracted published package, run `cd example && flutter run -d macos`; its native artifacts are already staged. The repository-only supported-platform probe runs `flutter test integration_test/golden_stream_smoke_test.dart -d macos`; test sources are excluded from the package archive. `mdstream_flutter` supplies native loading and headless controllers, not a Markdown widget, renderer, animation system, theme, or bundled Merman binary.
 <!-- /example -->
 
 <!-- example:tokio-actor -->

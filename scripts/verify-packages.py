@@ -184,7 +184,10 @@ EXAMPLE_CONTRACTS = (
         role="Interactive native host",
         source_path="bindings/flutter/example/lib/main.dart",
         prerequisite_marker="Flutter 3.32",
-        command="cd bindings/flutter/example && flutter run -d macos",
+        command=(
+            "python3 bindings/flutter/tool/build_native.py macos && "
+            "cd bindings/flutter/example && flutter run -d macos"
+        ),
         expected_marker="Settled",
         next_link="#merman-artifact",
     ),
@@ -219,6 +222,12 @@ class WorkflowJobContract:
     marker_order: tuple[str, str] | None = None
     required_needs: frozenset[str] | None = None
     reusable_call: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowStep:
+    text: str
+    condition: str | None
 
 
 WORKFLOW_JOB_CONTRACTS: Mapping[
@@ -702,7 +711,33 @@ def _active_workflow_text(block: str) -> str:
     return "\n".join(active)
 
 
-def _workflow_run_commands(block: str) -> str:
+def _workflow_condition(
+    block: str,
+    *,
+    mapping_indent: int,
+    sequence_item: bool = False,
+) -> str | None:
+    prefixes = [" " * mapping_indent + "if:"]
+    if sequence_item:
+        prefixes.append(" " * (mapping_indent - 2) + "- if:")
+    for line in _active_workflow_text(block).splitlines():
+        for prefix in prefixes:
+            if line.startswith(prefix):
+                return line[len(prefix) :].strip()
+    return None
+
+
+def _condition_is_statically_false(condition: str | None) -> bool:
+    if condition is None:
+        return False
+    value = condition.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1].strip()
+    value = " ".join(value.casefold().split())
+    return value in {"false", "${{ false }}"}
+
+
+def _workflow_run_commands_from_step(block: str) -> tuple[str, ...]:
     lines = block.splitlines()
     commands: list[str] = []
     index = 0
@@ -711,7 +746,7 @@ def _workflow_run_commands(block: str) -> str:
         if line.lstrip().startswith("#"):
             index += 1
             continue
-        match = re.match(r"^(\s*)run:\s*(.*)$", line)
+        match = re.match(r"^(\s*)(?:- )?run:\s*(.*)$", line)
         if match is None:
             index += 1
             continue
@@ -729,21 +764,70 @@ def _workflow_run_commands(block: str) -> str:
             if child.strip() and not child.lstrip().startswith("#"):
                 commands.append(child.strip())
             index += 1
-    return "\n".join(commands)
+    return tuple(commands)
 
 
-def _workflow_steps(block: str) -> tuple[str, ...]:
-    lines = block.splitlines()
+def _workflow_steps(block: str) -> tuple[WorkflowStep, ...]:
+    active = _active_workflow_text(block)
+    lines = active.splitlines()
+    try:
+        steps_index = lines.index("    steps:")
+    except ValueError:
+        return ()
+    steps_end = next(
+        (
+            index
+            for index in range(steps_index + 1, len(lines))
+            if lines[index].strip()
+            and len(lines[index]) - len(lines[index].lstrip(" ")) <= 4
+        ),
+        len(lines),
+    )
     starts = [
         index
-        for index, line in enumerate(lines)
-        if re.match(r"^      - (?:name|uses|run):", line) is not None
+        for index in range(steps_index + 1, steps_end)
+        if re.match(r"^      - \S", lines[index]) is not None
     ]
-    steps: list[str] = []
+    steps: list[WorkflowStep] = []
     for position, start in enumerate(starts):
-        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
-        steps.append(_active_workflow_text("\n".join(lines[start:end])))
+        end = starts[position + 1] if position + 1 < len(starts) else steps_end
+        text = "\n".join(lines[start:end])
+        steps.append(
+            WorkflowStep(
+                text=text,
+                condition=_workflow_condition(
+                    text,
+                    mapping_indent=8,
+                    sequence_item=True,
+                ),
+            )
+        )
     return tuple(steps)
+
+
+def _enabled_workflow_steps(block: str) -> tuple[WorkflowStep, ...]:
+    return tuple(
+        step
+        for step in _workflow_steps(block)
+        if not _condition_is_statically_false(step.condition)
+    )
+
+
+def _enabled_workflow_job_text(block: str) -> str:
+    active = _active_workflow_text(block)
+    for step in _workflow_steps(block):
+        if _condition_is_statically_false(step.condition):
+            active = active.replace(step.text, "", 1)
+    return active
+
+
+def _workflow_run_commands(block: str) -> str:
+    commands = (
+        command
+        for step in _enabled_workflow_steps(block)
+        for command in _workflow_run_commands_from_step(step.text)
+    )
+    return "\n".join(commands)
 
 
 def _workflow_job_needs(block: str, filename: str, job_name: str) -> frozenset[str]:
@@ -791,6 +875,16 @@ def validate_workflow_contract(root: Path) -> None:
                 f"workflow {filename} is missing trigger event(s): {missing}"
             )
 
+    for filename, job_name in WORKFLOW_JOB_CONTRACTS:
+        job = jobs_by_workflow[filename].get(job_name)
+        if job is None:
+            raise ValidationError(f"workflow {filename} is missing job {job_name}")
+        condition = _workflow_condition(job, mapping_indent=4)
+        if _condition_is_statically_false(condition):
+            raise ValidationError(
+                f"workflow {filename} job {job_name} is statically disabled"
+            )
+
     for (filename, job_name), contract in WORKFLOW_JOB_CONTRACTS.items():
         markers = contract.run_markers
         if not markers:
@@ -812,7 +906,7 @@ def validate_workflow_contract(root: Path) -> None:
         job = jobs_by_workflow[filename].get(job_name)
         if job is None:
             raise ValidationError(f"workflow {filename} is missing job {job_name}")
-        active = _active_workflow_text(job)
+        active = _enabled_workflow_job_text(job)
         missing = [marker for marker in markers if marker not in active]
         if missing:
             raise ValidationError(
@@ -826,9 +920,11 @@ def validate_workflow_contract(root: Path) -> None:
         job = jobs_by_workflow[filename].get(job_name)
         if job is None:
             raise ValidationError(f"workflow {filename} is missing job {job_name}")
-        steps = _workflow_steps(job)
+        steps = _enabled_workflow_steps(job)
         for markers in marker_groups:
-            if not any(all(marker in step for marker in markers) for step in steps):
+            if not any(
+                all(marker in step.text for marker in markers) for step in steps
+            ):
                 raise ValidationError(
                     f"workflow {filename} job {job_name} has no step containing {markers}"
                 )
@@ -840,7 +936,7 @@ def validate_workflow_contract(root: Path) -> None:
         job = jobs_by_workflow[filename].get(job_name)
         if job is None:
             raise ValidationError(f"workflow {filename} is missing job {job_name}")
-        active = _active_workflow_text(job)
+        active = _enabled_workflow_job_text(job)
         first, second = markers
         missing = [marker for marker in markers if marker not in active]
         if missing:
@@ -873,7 +969,7 @@ def validate_workflow_contract(root: Path) -> None:
         job = jobs_by_workflow[filename].get(job_name)
         if job is None:
             raise ValidationError(f"workflow {filename} is missing reusable job {job_name}")
-        if f"uses: {target}" not in _active_workflow_text(job):
+        if f"uses: {target}" not in _enabled_workflow_job_text(job):
             raise ValidationError(
                 f"workflow {filename} job {job_name} is missing reusable call {target}"
             )
