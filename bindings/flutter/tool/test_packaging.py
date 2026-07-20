@@ -62,7 +62,11 @@ class BuildNativeContractTest(unittest.TestCase):
                 / "workflows"
                 / "flutter-platforms.yml"
             ).read_text(encoding="utf-8")
-            self.assertIn(f'ndk;{selected.name}', workflow)
+            self.assertIn(
+                f'"${{ANDROID_HOME}}/cmdline-tools/latest/bin/sdkmanager" '
+                f'"ndk;{selected.name}"',
+                workflow,
+            )
 
     def test_atomic_stage_replaces_complete_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

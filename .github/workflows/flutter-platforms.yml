@@ -120,7 +120,7 @@ jobs:
         run: flutter pub get
 
       - name: Install pinned Android NDK
-        run: sdkmanager "ndk;26.3.11579264"
+        run: '"${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264"'
 
       - name: Build staged Android libraries
         run: python3 bindings/flutter/tool/build_native.py android
