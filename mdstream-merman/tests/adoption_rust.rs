@@ -1,9 +1,6 @@
 mod support;
 
-use std::path::PathBuf;
-
 use mdstream::{EngineOutput, StreamEngine};
-use mdstream_conformance::{NormalizedSnapshot, load_fixture};
 use mdstream_merman::{
     DEFAULT_CONFIGURATION_VERSION, MERMAID_ARTIFACT_PROTOCOL, MERMAID_MEDIA_TYPE, MermaidProcessor,
 };
@@ -12,11 +9,14 @@ use mdstream_processors::{
     ProcessorArtifact, ProcessorLimits, ProcessorResult, run_catching,
 };
 use mdstream_protocol::{
-    ApplyOutcome, ChangeId, ChangeSet, ContentKind, Reducer, SourceDelta, TransitionFacts,
+    ApplyOutcome, ChangeId, ChangeSet, NodeStability, SourceDelta, TransitionFacts,
     TransitionReducer,
 };
+use serde_json::Value;
 
 use support::{EPOCH, NODE_ID, mermaid_document};
+
+const GOLDEN_SCENARIO: &str = include_str!("../examples/fixtures/golden-ai-stream.json");
 
 #[derive(Debug, PartialEq, Eq)]
 enum MermaidDisplayHandoff<'a> {
@@ -35,37 +35,23 @@ fn mermaid_display_handoff(artifact: &ProcessorArtifact) -> Option<MermaidDispla
 }
 
 #[test]
-fn real_merman_adopts_the_shared_headless_fixture() {
-    let fixture = load_fixture(fixture_path()).unwrap();
-    let mut engine = StreamEngine::new();
-    let mut reducer = Reducer::new();
-    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
-    for chunk in fixture
-        .schedule("adversarial")
-        .unwrap()
-        .slices(&fixture.source)
-        .unwrap()
-    {
-        apply(&mut reducer, &mut host, engine.append(chunk).unwrap());
-    }
-    apply(&mut reducer, &mut host, engine.finish().unwrap());
+fn real_merman_adopts_the_packaged_golden_stream() {
+    let (scenario, mut engine, mut reducer, mut host) = replay_golden();
 
     let document = reducer.document().unwrap();
     assert_eq!(
-        NormalizedSnapshot::from(document.snapshot()),
-        fixture.expected.normalized_snapshot.unwrap()
+        document.source(),
+        scenario["expected"]["final_source"].as_str().unwrap()
     );
-    let mermaid_id = document
+    let mermaid_nodes = document
         .nodes()
-        .find(|node| {
-            matches!(
-                &node.content,
-                ContentKind::CodeBlock { info: Some(info), .. }
-                    if info.eq_ignore_ascii_case("mermaid")
-            )
+        .filter(|node| {
+            node.stability == NodeStability::Stable && node.content.is_mermaid_code_block()
         })
-        .unwrap()
-        .id;
+        .map(|node| node.id)
+        .collect::<Vec<_>>();
+    assert_eq!(mermaid_nodes.len(), 1);
+    let mermaid_id = mermaid_nodes[0];
     let canonical_before = document.snapshot();
     let processor = MermaidProcessor::default();
     let configuration = ConfigurationVersion::new(DEFAULT_CONFIGURATION_VERSION).unwrap();
@@ -110,6 +96,28 @@ fn real_merman_adopts_the_shared_headless_fixture() {
         CompletionOutcome::Stale
     );
     assert!(host.artifact(&slot).is_none());
+}
+
+#[test]
+fn golden_example_uses_the_engine_path_and_stops_at_the_named_trust_boundary() {
+    let example = include_str!("../examples/render_golden.rs");
+    for required in [
+        "StreamEngine",
+        "TransitionReducer",
+        "ArtifactHost",
+        "sanitizeSvgArtifact",
+    ] {
+        assert!(
+            example.contains(required),
+            "render_golden must contain `{required}`"
+        );
+    }
+    for forbidden in ["ContentNode", "ProjectionOp", "ChangeSet", "innerHTML"] {
+        assert!(
+            !example.contains(forbidden),
+            "render_golden must not contain `{forbidden}`"
+        );
+    }
 }
 
 #[test]
@@ -264,9 +272,38 @@ fn recovery_keeps_same_floor_work_and_replaces_advanced_processor_generation() {
     );
 }
 
-fn apply(reducer: &mut Reducer, host: &mut ArtifactHost, output: EngineOutput) {
+fn replay_golden() -> (Value, StreamEngine, TransitionReducer, ArtifactHost) {
+    let scenario: Value = serde_json::from_str(GOLDEN_SCENARIO).unwrap();
+    let actions = scenario["episodes"]["mainline"]["actions"]
+        .as_array()
+        .unwrap();
+    let mut engine = StreamEngine::new();
+    let mut reducer = TransitionReducer::new();
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
+
+    for action in actions {
+        match action["kind"].as_str().unwrap() {
+            "append" => apply(
+                &mut reducer,
+                &mut host,
+                engine.append(action["chunk"].as_str().unwrap()).unwrap(),
+            ),
+            "checkpoint" => assert_eq!(
+                reducer.document().unwrap().source().len() as u64,
+                action["source_cursor"].as_u64().unwrap(),
+                "checkpoint `{}`",
+                action["id"].as_str().unwrap()
+            ),
+            "finish" => apply(&mut reducer, &mut host, engine.finish().unwrap()),
+            kind => panic!("unsupported Golden scenario action `{kind}`"),
+        }
+    }
+    (scenario, engine, reducer, host)
+}
+
+fn apply(reducer: &mut TransitionReducer, host: &mut ArtifactHost, output: EngineOutput) {
     for change in output.into_changes() {
-        let outcome = reducer.apply(change).unwrap();
+        let outcome = reducer.apply(change).unwrap().outcome;
         let impact = match outcome {
             ApplyOutcome::Applied { impact, .. } | ApplyOutcome::Recovered { impact, .. } => impact,
             other => panic!("producer emitted a non-continuous change: {other:?}"),
@@ -274,11 +311,4 @@ fn apply(reducer: &mut Reducer, host: &mut ArtifactHost, output: EngineOutput) {
         host.reconcile(reducer.document().unwrap(), &impact)
             .unwrap();
     }
-}
-
-fn fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("conformance/fixtures/adoption/headless-rich-content.json")
 }

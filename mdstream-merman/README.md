@@ -12,6 +12,43 @@ by `ArtifactHost`. They never enter canonical Content IR or snapshots.
 change adapter options must issue requests with a distinct configuration
 version so the host key remains complete.
 
+## Golden stream recipe
+
+From a source checkout, run the packaged, provider-free AI stream through the
+normal Markdown path:
+
+```console
+cargo +1.95.0 run --manifest-path mdstream-merman/Cargo.toml \
+  --example render_golden -- --assert
+```
+
+The recipe executes this ownership chain:
+
+```text
+Golden token chunks
+  -> StreamEngine
+  -> TransitionReducer
+  -> typed stable Mermaid code node
+  -> ArtifactHost request generation
+  -> MermaidProcessor
+  -> opaque image/svg+xml artifact
+  -> host-owned sanitizeSvgArtifact boundary
+```
+
+Its output reports the host-owned artifact request key, artifact protocol,
+media type, and required host handoff. It deliberately does not print, mount,
+or execute the SVG. `sanitizeSvgArtifact` names the next application-owned
+boundary; it is not a sanitizer supplied by this crate. A native application
+may instead pass the opaque bytes to an isolated renderer with an equivalent
+resource-loading policy.
+
+`ArtifactHost` owns request generations and rejects late completions. A host
+should propagate each request's cooperative cancellation signal to its
+scheduler. Reset and advanced snapshot recovery clear prior derived state;
+same-floor recovery may retain work whose complete request key is still
+eligible. See `tests/adoption_rust.rs` and `tests/mermaid_processor.rs` for the
+executable recovery and A-to-B-to-A generation contracts.
+
 ## Resource boundaries
 
 - `max_source_bytes` is checked before Merman parses the semantic code value.
@@ -27,11 +64,13 @@ version so the host key remains complete.
 - The reported live input/output byte proxy is `source.len() + svg.len()`. It is
   not allocator telemetry, process RSS, or a renderer peak-memory measurement.
 
-Merman execution is synchronous. Cancellation is checked before and after the
-render call but cannot interrupt parsing, layout, or rendering already in
-progress. Treat processors as trusted cooperative code and use caller-managed
-process isolation for adversarial diagrams.
+Merman execution is synchronous. Cancellation is cooperative: it is checked
+before and after the render call but cannot interrupt parsing, layout, or
+rendering already in progress. Limits and cancellation are not a sandbox.
+Treat processors as trusted cooperative code and use caller-managed process
+isolation, timeouts, and operating-system resource controls for adversarial
+diagrams.
 
 SVG is untrusted derived output. Consumers must apply an embedding and
-sanitization policy appropriate to their UI; do not pass it to an unrestricted
-HTML `innerHTML` sink.
+sanitization policy appropriate to their UI; do not pass it directly to an
+unrestricted markup or script-capable sink.

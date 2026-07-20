@@ -5,9 +5,12 @@ use mdstream_processors::{
     ArtifactHost, ConfigurationVersion, ContentProcessor, ProcessingPolicy, ProcessorFailureCode,
     ProcessorLimits, ProcessorSlotState, run_catching,
 };
+use mdstream_protocol::{
+    CodeBlockSyntax, CodeFenceMarker, ContentKind, NodeId, NodeStability, SemanticText,
+};
 use merman::render::RenderResourceLimits;
 
-use support::{EPOCH, NODE_ID, mermaid_document};
+use support::{EPOCH, NODE_ID, document_with_content, mermaid_document};
 
 fn process(
     source: &str,
@@ -251,4 +254,68 @@ fn artifact_host_limit_includes_protocol_and_media_type_envelope() {
         &run_with_host_limit(artifact_bytes - 1),
         "processor.artifact_bytes",
     );
+}
+
+#[test]
+fn artifact_retention_limit_preserves_the_existing_artifact() {
+    let first = mermaid_document("flowchart TD\nA --> B");
+    let second_id = NodeId::new(42);
+    let second = document_with_content(
+        EPOCH,
+        second_id,
+        "flowchart TD\nC --> D",
+        NodeStability::Stable,
+        ContentKind::CodeBlock {
+            syntax: CodeBlockSyntax::Fenced {
+                marker: CodeFenceMarker::Backtick,
+                length: 3,
+            },
+            info: Some("mermaid".to_string()),
+            text: SemanticText::Source {},
+        },
+    );
+    let first_document = first.document().unwrap();
+    let second_document = second.document().unwrap();
+    let processor = MermaidProcessor::default();
+    let mut host = ArtifactHost::new(ProcessorLimits {
+        max_retained_artifacts: 1,
+        ..ProcessorLimits::default()
+    })
+    .unwrap();
+    host.begin_epoch(EPOCH).unwrap();
+
+    let first_request = host
+        .begin(
+            first_document,
+            processor.descriptor().clone(),
+            NODE_ID,
+            ConfigurationVersion::new("merman.retention.v1").unwrap(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    let first_slot = first_request.key().slot().clone();
+    host.complete(first_document, run_catching(&processor, &first_request))
+        .unwrap();
+    let first_artifact = host.artifact(&first_slot).unwrap().clone();
+
+    let second_request = host
+        .begin(
+            second_document,
+            processor.descriptor().clone(),
+            second_id,
+            ConfigurationVersion::new("merman.retention.v1").unwrap(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    let second_slot = second_request.key().slot().clone();
+    host.complete(second_document, run_catching(&processor, &second_request))
+        .unwrap();
+
+    let message = assert_limit_failure(
+        host.state(&second_slot).unwrap(),
+        "processor.retained_artifacts",
+    );
+    assert!(message.contains("limit 1 exceeded by 2"));
+    assert_eq!(host.artifact(&first_slot), Some(&first_artifact));
+    assert_eq!(host.metrics().retained_artifacts, 1);
 }

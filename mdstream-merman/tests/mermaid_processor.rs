@@ -367,6 +367,14 @@ fn request_generation_retains_only_g3_after_real_a_b_a_renders() {
     assert!(g2.is_cancelled());
     let g3_result = run_catching(&processor, &g3);
 
+    assert_eq!(
+        [
+            g1.key().generation().get(),
+            g2.key().generation().get(),
+            g3.key().generation().get(),
+        ],
+        [1, 2, 3]
+    );
     assert_eq!(g1.key().node_version(), g3.key().node_version());
     assert_eq!(g1.key().input_version(), g3.key().input_version());
     assert_ne!(g1.key().generation(), g3.key().generation());
@@ -408,6 +416,11 @@ fn manifests_keep_merman_out_of_the_core_workspace() {
     assert!(adapter_manifest.contains("rust-version = \"1.95\""));
     assert!(adapter_manifest.contains("version = \"=0.8.0-alpha.3\""));
     assert!(adapter_manifest.contains("version = \"=0.4.0\""));
+    let (runtime_manifest, development_manifest) = adapter_manifest
+        .split_once("[dev-dependencies]")
+        .expect("standalone adapter must keep a development dependency section");
+    assert!(!runtime_manifest.contains("serde_json"));
+    assert!(development_manifest.contains("serde_json = \"1.0.140\""));
     for core_manifest in [
         "mdstream/Cargo.toml",
         "mdstream-protocol/Cargo.toml",

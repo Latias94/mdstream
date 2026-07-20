@@ -76,6 +76,26 @@ process isolation.
 The default Rust, WASM, npm, Dart, and Flutter packages do not depend on
 Merman. Applications opt into `mdstream-merman` on its separate Rust 1.95 lane.
 
+## Merman Processor Recipe
+
+[`render_golden`](../mdstream-merman/examples/render_golden.rs) replays the
+packaged Golden AI Stream through `StreamEngine` and `TransitionReducer`, then
+selects the typed stable Mermaid code node and issues an `ArtifactHost` request.
+It does not construct protocol nodes or changes by hand. Run its executable
+contract with:
+
+```console
+cargo +1.95.0 run --manifest-path mdstream-merman/Cargo.toml \
+  --example render_golden -- --assert
+```
+
+The recipe reports the full processor request identity, artifact protocol, and
+media type. The canonical snapshot is checked before and after rendering to
+prove that the SVG remains derived host state. Request generations let the host
+reject late A-to-B-to-A completions even when the first and final semantic
+inputs are equal. Same-floor recovery retains eligible keyed work; reset and
+advanced replacement clear it.
+
 ## SVG Trust Boundary
 
 Merman returns an opaque `image/svg+xml` artifact. mdstream does not sanitize,
@@ -84,6 +104,10 @@ named `sanitizeSvgArtifact` boundary that rejects active content and unwanted
 external references, or render them in a separately isolated document/process.
 An embedded host owns the equivalent allowlist and resource-loading policy.
 Direct insertion into an unrestricted HTML sink is not an adoption pattern.
+
+`sanitizeSvgArtifact` is a name for required application policy, not an API or
+implementation exported by mdstream. The Golden recipe stops at that boundary
+and never emits the SVG bytes to a display sink.
 
 Source, model, label, edge, output, and retention limits make resource use
 accountable, but they do not preempt synchronous parser/layout/render work or
