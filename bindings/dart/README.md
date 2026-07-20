@@ -21,6 +21,9 @@ Platform plugins that already link the native library can use
 `MdstreamRuntime.fromDynamicLibrary`, including `DynamicLibrary.process()` on
 supported Apple builds. Runtime initialization checks ABI version 1, both 0.4
 binding schemas, and every result-structure layout before creating a session.
+Loading a dynamic library executes native code in the current process. Accept a
+path only from a source you trust: ABI, schema, and layout checks establish
+compatibility, not authenticity, integrity, or sandboxing.
 
 From an mdstream source checkout, build and record the current host library
 with:
@@ -35,6 +38,38 @@ test failure instead of silently skipping transport coverage.
 
 Turnkey library discovery and multi-platform native packaging belong to the
 separate Flutter plugin. No native binary is included in this package.
+
+## Golden AI Stream example
+
+The standalone example is the shortest end-to-end Dart host. It requires Dart
+3.8 or newer and an absolute path to a trusted, compatible `mdstream-ffi`
+library. From a source checkout, the build helper prints that path, so the
+complete assertion-mode run is:
+
+```sh
+LIBRARY=$(dart run tool/build_native.dart)
+dart run example/golden_stream.dart --library "$LIBRARY" --assert
+```
+
+The example deliberately does not read repository build metadata. A host can
+provide the same explicit path through an existing environment variable:
+
+```sh
+MDSTREAM_NATIVE_LIBRARY=/absolute/path/to/libmdstream_ffi.dylib \
+  dart run example/golden_stream.dart --assert
+```
+
+The replay prints named checkpoints, pending source only at checkpoints that
+request it, transition categories in wire order, stable final node IDs, the
+canonical source, and `final_lifecycle=finalized`. A successful assertion run
+ends with `assertions=passed` and `native_allocations=zero`; drift exits
+nonzero with a concise diagnostic. Use `--scenario PATH` to diagnose a modified
+repository scenario without changing the bundled authority.
+
+This example teaches explicit runtime setup, focused canonical state reads,
+optional transition capture, stable identity, and deterministic cleanup. The
+recommended next step is the [Flutter host example](../flutter/README.md),
+which binds the same headless state to a widget lifecycle.
 
 ## Streaming state
 
