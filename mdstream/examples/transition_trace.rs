@@ -18,6 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let output = json!({
         "schema": "mdstream.host-reconstruction/0",
+        "trace_scope": "schedule-local; compare final snapshots, not raw transition sequences",
         "source_bytes": SOURCE.len(),
         "final_snapshot": whole.final_snapshot,
         "schedules": [whole.host_trace, scalar.host_trace],

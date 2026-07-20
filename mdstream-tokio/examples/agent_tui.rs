@@ -7,12 +7,32 @@ use crossterm::terminal::{
 };
 use mdstream::StreamEngine;
 use mdstream_protocol::{DocumentLifecycle, Reducer};
-use mdstream_tokio::{ActorCommand, CoalescePreset, StreamEngineActor, spawn_stream_engine_actor};
+use mdstream_tokio::{
+    ActorCommand, ActorResult, CoalescePreset, StreamEngineActor, spawn_stream_engine_actor,
+};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+pub(crate) const INPUT_CAPACITY: usize = 8;
+
+pub(crate) const DEMO_MARKDOWN: &str = r#"# mdstream actor demo
+
+This example sends token chunks through a bounded Tokio channel.
+
+- Adjacent chunks are coalesced without loss.
+- Each output item is one atomic change-set batch.
+- Closing input finalizes the canonical document exactly once.
+
+```rust
+let change_sets = engine.append(chunk)?;
+```
+
+Done.
+"#;
 
 struct App {
     reducer: Reducer,
@@ -21,6 +41,7 @@ struct App {
     scroll_y: u16,
     batches: u64,
     changes: u64,
+    errors: u64,
     last_error: Option<String>,
 }
 
@@ -33,26 +54,87 @@ impl Default for App {
             scroll_y: 0,
             batches: 0,
             changes: 0,
+            errors: 0,
             last_error: None,
         }
     }
 }
 
+impl App {
+    fn apply_actor_result(&mut self, result: ActorResult) {
+        match result {
+            Ok(batch) => {
+                self.batches = self.batches.saturating_add(1);
+                self.changes = self.changes.saturating_add(batch.len() as u64);
+                for change in batch {
+                    if let Err(error) = self.reducer.apply(change) {
+                        self.errors = self.errors.saturating_add(1);
+                        self.last_error = Some(error.to_string());
+                        break;
+                    }
+                }
+            }
+            Err(error) => {
+                self.errors = self.errors.saturating_add(1);
+                self.last_error = Some(error.to_string());
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SmokeSummary {
+    pub(crate) source: String,
+    pub(crate) lifecycle: DocumentLifecycle,
+    pub(crate) input_capacity: usize,
+    pub(crate) commands_sent: u64,
+    pub(crate) batches: u64,
+    pub(crate) changes: u64,
+    pub(crate) errors: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ProducerCounters {
+    commands_sent: u64,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    match args.as_slice() {
+        [flag] if flag == "--smoke" => {
+            let summary = run_smoke().await?;
+            println!(
+                "SMOKE_OK lifecycle={:?} input_capacity={} commands_sent={} batches={} changes={} errors={}",
+                summary.lifecycle,
+                summary.input_capacity,
+                summary.commands_sent,
+                summary.batches,
+                summary.changes,
+                summary.errors,
+            );
+            return Ok(());
+        }
+        [] => {}
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "usage: cargo run -p mdstream-tokio --example agent_tui -- [--smoke]",
+            ));
+        }
+    }
+
+    run_interactive().await
+}
+
+async fn run_interactive() -> io::Result<()> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
     crossterm::execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let (input, input_rx) = mpsc::channel(64);
-    let mut actor = spawn_stream_engine_actor(
-        StreamEngine::new(),
-        input_rx,
-        CoalescePreset::Balanced.options(),
-    );
-    tokio::spawn(demo_stream(input));
+    let (mut actor, producer) = spawn_demo(Duration::from_millis(4));
 
     let (events, mut event_rx) = mpsc::channel(64);
     std::thread::spawn(move || {
@@ -77,11 +159,56 @@ async fn main() -> io::Result<()> {
     if let Ok(Ok(unread)) = tokio::time::timeout(Duration::from_secs(1), actor.join()).await {
         drop(unread);
     }
+    let producer_result = producer
+        .await
+        .map_err(|error| io::Error::other(format!("demo producer failed: {error}")));
 
     disable_raw_mode()?;
     crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+    producer_result?;
     result
+}
+
+pub(crate) async fn run_smoke() -> io::Result<SmokeSummary> {
+    let (mut actor, producer) = spawn_demo(Duration::ZERO);
+    let mut app = App::default();
+    while let Some(result) = actor.recv().await {
+        app.apply_actor_result(result);
+    }
+    let unread = actor
+        .join()
+        .await
+        .map_err(|error| io::Error::other(format!("actor task failed: {error}")))?;
+    assert!(unread.is_empty());
+    let producer = producer
+        .await
+        .map_err(|error| io::Error::other(format!("demo producer failed: {error}")))?;
+    let document = app
+        .reducer
+        .document()
+        .ok_or_else(|| io::Error::other("actor produced no canonical document"))?;
+
+    Ok(SmokeSummary {
+        source: document.source().to_string(),
+        lifecycle: document.lifecycle(),
+        input_capacity: INPUT_CAPACITY,
+        commands_sent: producer.commands_sent,
+        batches: app.batches,
+        changes: app.changes,
+        errors: app.errors,
+    })
+}
+
+fn spawn_demo(delay: Duration) -> (StreamEngineActor, JoinHandle<ProducerCounters>) {
+    let (input, input_rx) = mpsc::channel(INPUT_CAPACITY);
+    let actor = spawn_stream_engine_actor(
+        StreamEngine::new(),
+        input_rx,
+        CoalescePreset::Balanced.options(),
+    );
+    let producer = tokio::spawn(demo_stream(input, delay));
+    (actor, producer)
 }
 
 async fn run<B>(
@@ -132,17 +259,7 @@ where
             }
             result = actor.recv(), if app.actor_open => {
                 match result {
-                    Some(Ok(batch)) => {
-                        app.batches = app.batches.saturating_add(1);
-                        app.changes = app.changes.saturating_add(batch.len() as u64);
-                        for change in batch {
-                            if let Err(error) = app.reducer.apply(change) {
-                                app.last_error = Some(error.to_string());
-                                break;
-                            }
-                        }
-                    }
-                    Some(Err(error)) => app.last_error = Some(error.to_string()),
+                    Some(result) => app.apply_actor_result(result),
                     None => app.actor_open = false,
                 }
             }
@@ -202,7 +319,7 @@ fn status_line(app: &App) -> String {
     );
     let error = app.last_error.as_deref().unwrap_or("-");
     format!(
-        "q quit | j/k scroll | g/G top/bottom | f follow={} | actor={} | {:?} epoch={} seq={} nodes={} | batches={} changes={} | error={}",
+        "q quit | j/k scroll | g/G top/bottom | f follow={} | actor={} | {:?} epoch={} seq={} nodes={} | batches={} changes={} errors={} | error={}",
         app.follow_tail,
         if app.actor_open { "open" } else { "closed" },
         lifecycle,
@@ -211,34 +328,25 @@ fn status_line(app: &App) -> String {
         nodes,
         app.batches,
         app.changes,
+        app.errors,
         error,
     )
 }
 
-async fn demo_stream(input: mpsc::Sender<ActorCommand>) {
-    let markdown = r#"# mdstream actor demo
-
-This example sends token chunks through a bounded Tokio channel.
-
-- Adjacent chunks are coalesced without loss.
-- Each output item is one atomic change-set batch.
-- Closing input finalizes the canonical document exactly once.
-
-```rust
-let change_sets = engine.append(chunk)?;
-```
-
-Done.
-"#;
-
-    for character in markdown.chars() {
+async fn demo_stream(input: mpsc::Sender<ActorCommand>, delay: Duration) -> ProducerCounters {
+    let mut commands_sent = 0_u64;
+    for character in DEMO_MARKDOWN.chars() {
         if input
             .send(ActorCommand::Append(character.to_string()))
             .await
             .is_err()
         {
-            return;
+            return ProducerCounters { commands_sent };
         }
-        tokio::time::sleep(Duration::from_millis(4)).await;
+        commands_sent = commands_sent.saturating_add(1);
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
     }
+    ProducerCounters { commands_sent }
 }

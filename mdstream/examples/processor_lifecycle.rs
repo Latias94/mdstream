@@ -74,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .id;
     let configuration = ConfigurationVersion::new("example.default")?;
+    let canonical_before = reducer.document().unwrap().snapshot();
 
     let ready_processor = EchoProcessor::new("example.ready");
     let ready = host.begin(
@@ -91,7 +92,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?,
         CompletionOutcome::Applied
     );
-    assert!(host.artifact(&ready_slot).is_some());
+    let artifact = host
+        .artifact(&ready_slot)
+        .expect("current processor result must be available in the host");
+    assert_eq!(artifact.as_text(), Some("render me\n"));
+    assert_eq!(
+        reducer.document().unwrap().snapshot(),
+        canonical_before,
+        "derived artifacts must not mutate canonical Content IR"
+    );
+    println!(
+        "processor_result=applied artifact_protocol={} canonical_unchanged=true",
+        artifact.protocol()
+    );
 
     let pending_processor = EchoProcessor::new("example.pending");
     let pending = host.begin(
@@ -109,5 +122,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         host.complete(reducer.document().unwrap(), late_result)?,
         CompletionOutcome::Stale
     );
+    println!("processor_result=stale host_action=discard-late-artifact");
     Ok(())
 }

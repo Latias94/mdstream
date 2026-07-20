@@ -1,37 +1,33 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mdstream::{EngineOutput, StreamEngine};
-use mdstream_processors::{
-    ArtifactHost, CitationProcessor, CompletionOutcome, ConfigurationVersion, ContentProcessor,
-    ProcessingPolicy, ProcessorLimits, run_catching,
+use mdstream_protocol::{
+    ApplyOutcome, NodeStability, NodeVersion, TransitionNodeKey, TransitionReducer,
 };
-use mdstream_protocol::{ApplyOutcome, ContentKind, NodeId, NodeVersion, Reducer};
 
-#[derive(Debug)]
-struct NodeUpdate {
-    key: NodeId,
-    version: Option<NodeVersion>,
+#[derive(Debug, PartialEq, Eq)]
+enum NodeUpdate {
+    Upsert {
+        key: TransitionNodeKey,
+        version: NodeVersion,
+    },
+    Remove {
+        key: TransitionNodeKey,
+    },
 }
 
+#[derive(Default)]
 struct HeadlessState {
-    reducer: Reducer,
-    artifacts: ArtifactHost,
-    invalidated: BTreeSet<NodeId>,
+    reducer: TransitionReducer,
+    rendered: BTreeMap<TransitionNodeKey, NodeVersion>,
+    pending: Vec<NodeUpdate>,
 }
 
 impl HeadlessState {
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self {
-            reducer: Reducer::new(),
-            artifacts: ArtifactHost::new(ProcessorLimits::default())?,
-            invalidated: BTreeSet::new(),
-        })
-    }
-
     fn apply(&mut self, output: EngineOutput) -> Result<(), Box<dyn std::error::Error>> {
         for change in output.into_changes() {
             let outcome = self.reducer.apply(change)?;
-            let impact = match outcome {
+            let impact = match outcome.outcome {
                 ApplyOutcome::Applied { impact, .. } | ApplyOutcome::Recovered { impact, .. } => {
                     impact
                 }
@@ -39,61 +35,143 @@ impl HeadlessState {
                     return Err(format!("producer change was not continuous: {other:?}").into());
                 }
             };
-            self.artifacts
-                .reconcile(self.reducer.document().unwrap(), &impact)?;
-            self.invalidated.extend(impact.changed_nodes);
+            let document = self
+                .reducer
+                .document()
+                .expect("applied output has a document");
+            let epoch = document.coordinate().epoch;
+            let continuity_generation = self.reducer.continuity_generation();
+
+            if impact.full_replace {
+                self.pending.extend(
+                    std::mem::take(&mut self.rendered)
+                        .into_keys()
+                        .map(|key| NodeUpdate::Remove { key }),
+                );
+                for node in document.nodes() {
+                    let key = TransitionNodeKey {
+                        continuity_generation,
+                        epoch,
+                        node_id: node.id,
+                    };
+                    self.rendered.insert(key, node.version.clone());
+                    self.pending.push(NodeUpdate::Upsert {
+                        key,
+                        version: node.version.clone(),
+                    });
+                }
+                continue;
+            }
+
+            let removed_nodes = impact
+                .removed_nodes
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            for node_id in impact.changed_nodes {
+                let key = TransitionNodeKey {
+                    continuity_generation,
+                    epoch,
+                    node_id,
+                };
+                if removed_nodes.contains(&node_id) || document.node(node_id).is_none() {
+                    self.rendered.remove(&key);
+                    self.pending.push(NodeUpdate::Remove { key });
+                } else {
+                    let version = document.node(node_id).unwrap().version.clone();
+                    self.rendered.insert(key, version.clone());
+                    self.pending.push(NodeUpdate::Upsert { key, version });
+                }
+            }
         }
         Ok(())
     }
 
     fn take_node_updates(&mut self) -> Vec<NodeUpdate> {
-        let document = self.reducer.document();
-        std::mem::take(&mut self.invalidated)
-            .into_iter()
-            .map(|key| NodeUpdate {
-                key,
-                version: document
-                    .and_then(|document| document.node(key))
-                    .map(|node| node.version.clone()),
-            })
-            .collect()
+        std::mem::take(&mut self.pending)
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = StreamEngine::new();
-    let mut state = HeadlessState::new()?;
-    for chunk in ["See [@Engine]\n\n", "[@engine]: https://mdstream.dev\n"] {
-        state.apply(engine.append(chunk)?)?;
-        for update in state.take_node_updates() {
-            println!("node {} -> {:?}", update.key, update.version);
-        }
-    }
-    state.apply(engine.finish()?)?;
+    let mut state = HeadlessState::default();
 
-    let citation_id = state
+    state.apply(engine.append("# Stable identity\n\nThe host")?)?;
+    let document = state.reducer.document().unwrap();
+    let paragraph_id = document.roots().as_slice()[1];
+    let paragraph_key = TransitionNodeKey {
+        continuity_generation: state.reducer.continuity_generation(),
+        epoch: document.coordinate().epoch,
+        node_id: paragraph_id,
+    };
+    assert_eq!(
+        document.node(paragraph_id).unwrap().stability,
+        NodeStability::Provisional
+    );
+    state.take_node_updates();
+
+    state.apply(engine.append(" updates only changed nodes.\n\n")?)?;
+    let append_updates = state.take_node_updates();
+    assert_eq!(
+        state.reducer.document().unwrap().roots().as_slice()[1],
+        paragraph_id,
+        "stabilizing append must preserve the paragraph identity"
+    );
+    assert_eq!(
+        state
+            .reducer
+            .document()
+            .unwrap()
+            .node(paragraph_id)
+            .unwrap()
+            .stability,
+        NodeStability::Stable
+    );
+    let paragraph_version = &state
         .reducer
         .document()
         .unwrap()
-        .nodes()
-        .find(|node| matches!(node.content, ContentKind::CitationReference { .. }))
+        .node(paragraph_id)
         .unwrap()
-        .id;
-    let processor = CitationProcessor::new();
-    let request = state.artifacts.begin(
-        state.reducer.document().unwrap(),
-        processor.descriptor().clone(),
-        citation_id,
-        ConfigurationVersion::new("example.citation.v1")?,
-        ProcessingPolicy::StableOnly,
-    )?;
+        .version;
+    assert!(append_updates.iter().any(|update| {
+        matches!(
+            update,
+            NodeUpdate::Upsert { key, version }
+                if *key == paragraph_key && version == paragraph_version
+        )
+    }));
+
+    state.apply(engine.finish()?)?;
+    let finish_updates = state.take_node_updates();
     assert_eq!(
-        state.artifacts.complete(
-            state.reducer.document().unwrap(),
-            run_catching(&processor, &request),
-        )?,
-        CompletionOutcome::Applied
+        state.reducer.document().unwrap().roots().as_slice()[1],
+        paragraph_id,
+        "finish must preserve the paragraph identity"
     );
-    assert!(state.artifacts.artifact(request.key().slot()).is_some());
+
+    let rendered_before_reset = state.rendered.keys().copied().collect::<BTreeSet<_>>();
+    state.apply(engine.reset()?)?;
+    let reset_updates = state.take_node_updates();
+    assert!(rendered_before_reset.iter().all(|key| {
+        reset_updates
+            .iter()
+            .any(|update| matches!(update, NodeUpdate::Remove { key: removed } if removed == key))
+    }));
+
+    println!(
+        "append_and_stabilize identity={} invalidations={} host_action=upsert-changed-only",
+        paragraph_key.node_id,
+        append_updates.len()
+    );
+    println!(
+        "finish identity={} invalidations={} host_action=retain-key",
+        paragraph_key.node_id,
+        finish_updates.len()
+    );
+    println!(
+        "reset removed_keys={} host_action=discard-prior-epoch-state",
+        rendered_before_reset.len()
+    );
     Ok(())
 }

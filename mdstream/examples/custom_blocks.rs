@@ -133,5 +133,8 @@ fn main() {
 
     assert_eq!(display, HostDisplay::PlainText("private reasoning"));
     assert_eq!(reducer.document().unwrap().snapshot(), canonical_before);
-    println!("{display:?}");
+    println!(
+        "custom_node={} stability={:?} artifact={display:?} canonical_unchanged=true",
+        node_id, stable.stability
+    );
 }
