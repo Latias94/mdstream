@@ -220,14 +220,14 @@ export async function loadWasmBindings(loader: WasmModuleLoader): Promise<WasmBi
 
 export const defaultWasmLoader: WasmModuleLoader = async () => {
   const url = new URL("../wasm/mdstream_wasm.js", import.meta.url);
-  const loaded = await import(url.href) as Record<string, unknown>;
+  const loaded = await import(/* @vite-ignore */ url.href) as Record<string, unknown>;
   const initialize = loaded.default;
   if (typeof initialize !== "function") {
     throw new TypeError("packaged mdstream WASM module has no initializer");
   }
   if (isNodeRuntime()) {
     const fileSystemSpecifier = "node:fs/promises";
-    const fileSystem = await import(fileSystemSpecifier) as {
+    const fileSystem = await import(/* @vite-ignore */ fileSystemSpecifier) as {
       readFile(path: URL): Promise<Uint8Array>;
     };
     const wasmUrl = new URL("../wasm/mdstream_wasm_bg.wasm", import.meta.url);
