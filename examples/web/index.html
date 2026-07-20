@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>mdstream Golden AI Stream</title>
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="product-name">mdstream</p>
+        <h1>Golden AI Stream</h1>
+      </div>
+      <div class="runtime-contract" aria-label="Runtime contract">
+        <span>Content IR 0.4</span>
+        <span>Transitions 1</span>
+      </div>
+    </header>
+
+    <main id="app" aria-busy="true">
+      <section class="control-band" aria-label="Stream controls">
+        <button id="replay" type="button">Replay</button>
+        <fieldset class="mode-switch">
+          <legend>Presentation</legend>
+          <label>
+            <input type="radio" name="mode" value="immediate" checked />
+            <span>Immediate</span>
+          </label>
+          <label>
+            <input type="radio" name="mode" value="paced" />
+            <span>Paced</span>
+          </label>
+        </fieldset>
+        <button id="interrupt" type="button" disabled>Interrupt</button>
+        <button id="replace" type="button" disabled>Replace continuity</button>
+        <span id="lifecycle" class="lifecycle" aria-label="Stream lifecycle">Booting</span>
+      </section>
+
+      <section id="error-panel" class="error-panel" aria-labelledby="error-title" hidden>
+        <h2 id="error-title">Stream unavailable</h2>
+        <p id="error-message"></p>
+        <button id="retry" type="button">Retry</button>
+      </section>
+
+      <div class="workspace">
+        <section class="answer-region" aria-labelledby="answer-title">
+          <div class="section-heading">
+            <div>
+              <p class="section-label">Answer</p>
+              <h2 id="answer-title">Canonical content</h2>
+            </div>
+            <span id="mode-indicator">Immediate host policy</span>
+          </div>
+          <p id="status" class="status-line" role="status" aria-live="polite" aria-atomic="true">
+            Loading the mdstream WebAssembly runtime.
+          </p>
+          <article id="answer" class="answer" aria-label="Streamed answer"></article>
+          <pre id="pending" class="pending-source" aria-hidden="true" hidden></pre>
+        </section>
+
+        <details id="inspector" class="inspector" open>
+          <summary>State inspector</summary>
+          <div class="inspector-body">
+            <dl class="metrics">
+              <div><dt>Canonical lifecycle</dt><dd id="canonical-lifecycle">uninitialized</dd></div>
+              <div><dt>Canonical digest</dt><dd id="canonical-digest">not available</dd></div>
+              <div><dt>Node views</dt><dd id="node-views">0</dd></div>
+              <div><dt>Resource views</dt><dd id="resource-views">0</dd></div>
+              <div><dt>Pending reads</dt><dd id="pending-views">0</dd></div>
+              <div><dt>Artifact</dt><dd id="artifact-state">not requested</dd></div>
+              <div><dt>Queued graphemes</dt><dd id="queued-graphemes">0</dd></div>
+            </dl>
+
+            <section aria-labelledby="keys-title">
+              <h3 id="keys-title">Stable host keys</h3>
+              <ol id="stable-keys" class="key-list"></ol>
+            </section>
+
+            <section aria-labelledby="events-title">
+              <h3 id="events-title">Semantic status log</h3>
+              <ol id="event-log" class="event-log"></ol>
+            </section>
+          </div>
+        </details>
+      </div>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

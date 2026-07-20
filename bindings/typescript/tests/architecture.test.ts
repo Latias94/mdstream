@@ -104,6 +104,50 @@ describe("framework-neutral package boundaries", () => {
     );
     expect(presentationImports).toEqual([]);
   });
+
+  it("keeps the private Web flagship outside the published package boundary", () => {
+    const webRoot = resolve(process.cwd(), "../../examples/web");
+    const webPackage = JSON.parse(
+      readFileSync(resolve(webRoot, "package.json"), "utf8"),
+    ) as {
+      readonly private?: boolean;
+      readonly dependencies?: Readonly<Record<string, string>>;
+      readonly devDependencies?: Readonly<Record<string, string>>;
+    };
+    expect(webPackage.private).toBe(true);
+    expect(webPackage.dependencies).toEqual({ "@mdstream/core": "workspace:*" });
+    const forbiddenFrameworks = [
+      "react",
+      "react-dom",
+      "vue",
+      "svelte",
+      "solid-js",
+      "streamdown",
+      "incremark",
+      "marked",
+      "merman",
+    ];
+    expect(Object.keys(webPackage.devDependencies ?? {})).not.toEqual(
+      expect.arrayContaining(forbiddenFrameworks),
+    );
+
+    const webSource = sourceFiles(resolve(webRoot, "src"))
+      .map((file) => readFileSync(file, "utf8"))
+      .join("\n");
+    expect(webSource).not.toMatch(/\.innerHTML\s*=/u);
+    expect(webSource).not.toContain("bindings/typescript/src");
+    expect(webSource).not.toMatch(/from\s+["'](?:react|vue|svelte|solid-js)["']/u);
+
+    const workspace = readFileSync(
+      resolve(process.cwd(), "../../pnpm-workspace.yaml"),
+      "utf8",
+    );
+    expect(workspace).toContain("examples/web");
+    const publishedSource = sourceFiles(resolve(process.cwd(), "src"))
+      .map((file) => readFileSync(file, "utf8"))
+      .join("\n");
+    expect(publishedSource).not.toContain("examples/web");
+  });
 });
 
 interface SourceAnalysis {

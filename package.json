@@ -11,6 +11,7 @@
     "wasm:test": "RUSTUP_TOOLCHAIN=1.85.0 wasm-pack test --node mdstream-wasm",
     "wasm:build:web": "RUSTUP_TOOLCHAIN=1.85.0 wasm-pack build mdstream-wasm --target web --profile wasm-size --no-pack --out-name mdstream_wasm --out-dir ../target/mdstream-wasm-pkg && node scripts/optimize-wasm.mjs",
     "wasm:build:node": "RUSTUP_TOOLCHAIN=1.85.0 wasm-pack build mdstream-wasm --target nodejs --dev --no-pack --out-name mdstream_wasm --out-dir ../target/mdstream-wasm-node",
+    "web:prepare": "pnpm --filter @mdstream/core build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "build": "pnpm -r build",
