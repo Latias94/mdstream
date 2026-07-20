@@ -1,5 +1,5 @@
 name: mdstream_flutter_example
-description: Minimal bundled-runtime example for mdstream_flutter.
+description: Framework-owned Content IR host example for mdstream_flutter.
 publish_to: none
 
 environment:
@@ -11,5 +11,14 @@ dependencies:
   mdstream_flutter:
     path: ..
 
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  lints: ^5.1.1
+
 flutter:
   uses-material-design: true
+  assets:
+    - assets/golden_ai_stream.json

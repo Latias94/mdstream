@@ -6,6 +6,51 @@ stable node keys, focused node/resource/artifact notifications, snapshot
 recovery, and host-side processor leases. Rendering, widgets, themes, and rich
 content presentation remain application concerns.
 
+## Golden stream host
+
+The package archive includes a runnable host under `example/`. It replays the
+repository's deterministic Golden AI Stream through a real
+`MdstreamController` and renders typed prose, Rust code, citation state, and
+Mermaid source. The example deliberately does not parse Markdown, bundle
+Merman, or export a reusable content widget.
+
+From the repository root, stage the native plugin artifact for the target and
+run the example. For macOS:
+
+```console
+python3 bindings/flutter/tool/build_native.py macos
+cd bindings/flutter/example
+flutter pub get
+flutter run -d macos
+```
+
+The replay mode, text color transition, responsive layout, focus behavior, and
+reduced-motion policy live in the example. Canonical root order comes from the
+controller, each node listens through `controller.node(id)`, widget identity
+comes from `controller.nodeKey(id)`, and the inspector reads only focused
+pending-source and transition surfaces. This is the intended seam for a host
+to substitute its own widgets and animation policy.
+
+The repository widget suite uses an explicit host library and does not depend
+on a bundled desktop artifact:
+
+```console
+cd bindings/dart
+dart run tool/build_native.dart
+cd ../flutter/example
+flutter pub get
+flutter test test/golden_stream_test.dart
+```
+
+In a source checkout, the repository-only supported-platform integration
+target uses the same bundled bootstrap as `main.dart` and verifies the final
+named checkpoint. Test sources are intentionally excluded from the publish
+archive:
+
+```console
+flutter test integration_test/golden_stream_smoke_test.dart -d macos
+```
+
 ## Local streams
 
 The default constructor locates the library bundled for the current platform.
