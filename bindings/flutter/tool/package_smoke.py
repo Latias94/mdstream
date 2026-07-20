@@ -14,7 +14,13 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from build_native import PLUGIN_ROOT, REPOSITORY_ROOT, REQUIRED_EXPORTS
+from build_native import (
+    IOS_DEPLOYMENT_TARGET,
+    MACOS_DEPLOYMENT_TARGET,
+    PLUGIN_ROOT,
+    REPOSITORY_ROOT,
+    REQUIRED_EXPORTS,
+)
 from package_metadata import PackageMetadataError, package_archive_path
 
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
@@ -32,6 +38,10 @@ INTEGRATION_TEST = PLUGIN_ROOT / "integration_test" / "native_load_test.dart"
 TEXT_IMPORT_PATTERN = re.compile(
     rb"(?:import|export)\s+['\"]package:([a-zA-Z0-9_]+)(?:/[^'\"]*)?['\"]"
 )
+APPLE_HOST_TARGETS = {
+    "ios": ("IPHONEOS_DEPLOYMENT_TARGET", "ios", IOS_DEPLOYMENT_TARGET),
+    "macos": ("MACOSX_DEPLOYMENT_TARGET", "osx", MACOS_DEPLOYMENT_TARGET),
+}
 
 
 class PackageSmokeError(RuntimeError):
@@ -370,6 +380,49 @@ def _extract_archive(archive: Path, destination: Path) -> None:
         path.write_bytes(data)
 
 
+def configure_apple_host_target(project_root: Path, platform_name: str) -> None:
+    target = APPLE_HOST_TARGETS.get(platform_name)
+    if target is None:
+        return
+    setting, pod_platform, minimum = target
+    platform_root = project_root / platform_name
+    project_path = platform_root / "Runner.xcodeproj" / "project.pbxproj"
+    podfile_path = platform_root / "Podfile"
+    try:
+        project = project_path.read_text(encoding="utf-8")
+        podfile = podfile_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise PackageSmokeError(
+            f"failed to read generated {platform_name} host metadata: {error}"
+        ) from error
+
+    project_pattern = re.compile(
+        rf"({re.escape(setting)}\s*=\s*)[0-9]+(?:\.[0-9]+)*(;)"
+    )
+    project, project_count = project_pattern.subn(
+        lambda match: f"{match.group(1)}{minimum}{match.group(2)}",
+        project,
+    )
+    pod_pattern = re.compile(
+        rf"(?m)^\s*#?\s*platform\s+:{pod_platform},\s*['\"][^'\"]+['\"]\s*$"
+    )
+    podfile, pod_count = pod_pattern.subn(
+        f"platform :{pod_platform}, '{minimum}'",
+        podfile,
+    )
+    if project_count == 0 or pod_count == 0:
+        raise PackageSmokeError(
+            f"generated {platform_name} host omitted its deployment target metadata"
+        )
+    try:
+        project_path.write_text(project, encoding="utf-8")
+        podfile_path.write_text(podfile, encoding="utf-8")
+    except OSError as error:
+        raise PackageSmokeError(
+            f"failed to update generated {platform_name} host metadata: {error}"
+        ) from error
+
+
 def run_runtime_smoke(
     *,
     platform_name: str,
@@ -408,6 +461,7 @@ def run_runtime_smoke(
             ],
             cwd=temporary,
         )
+        configure_apple_host_target(temporary, platform_name)
         target = temporary / "integration_test" / INTEGRATION_TEST.name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(INTEGRATION_TEST, target)

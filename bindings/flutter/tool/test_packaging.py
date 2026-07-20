@@ -15,6 +15,8 @@ from unittest.mock import patch
 TOOL_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOL_ROOT))
 
+import package_smoke  # noqa: E402
+
 from build_native import (  # noqa: E402
     ANDROID_TARGETS,
     PackagingError,
@@ -67,6 +69,38 @@ class BuildNativeContractTest(unittest.TestCase):
                 f'"ndk;{selected.name}"',
                 workflow,
             )
+
+    def test_ci_resolves_the_independent_example_before_package_analysis(self) -> None:
+        workflow = (
+            TOOL_ROOT.parents[2]
+            / ".github"
+            / "workflows"
+            / "flutter-platforms.yml"
+        ).read_text(encoding="utf-8")
+        jobs = {
+            "linux": workflow[
+                workflow.index("  linux:\n") : workflow.index("  android:\n")
+            ],
+            "windows": workflow[
+                workflow.index("  windows:\n") : workflow.index("  package:\n")
+            ],
+        }
+        resolve = (
+            "      - name: Resolve Golden stream example\n"
+            "        working-directory: bindings/flutter/example\n"
+            "        run: flutter pub get"
+        )
+        analyze = (
+            "      - name: Analyze Flutter package\n"
+            "        working-directory: bindings/flutter\n"
+            "        run: flutter analyze"
+        )
+
+        for name, job in jobs.items():
+            with self.subTest(job=name):
+                self.assertIn(resolve, job)
+                self.assertIn(analyze, job)
+                self.assertLess(job.index(resolve), job.index(analyze))
 
     def test_atomic_stage_replaces_complete_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -133,6 +167,59 @@ class BuildNativeContractTest(unittest.TestCase):
 
 
 class PackageSmokeContractTest(unittest.TestCase):
+    def test_apple_smoke_host_matches_plugin_deployment_targets(self) -> None:
+        cases = {
+            "ios": (
+                "IPHONEOS_DEPLOYMENT_TARGET",
+                "# platform :ios, '12.0'\n",
+                "platform :ios, '13.0'",
+                "13.0",
+            ),
+            "macos": (
+                "MACOSX_DEPLOYMENT_TARGET",
+                "platform :osx, '10.14'\n",
+                "platform :osx, '11.0'",
+                "11.0",
+            ),
+        }
+        for platform_name, values in cases.items():
+            setting, podfile, expected_pod, expected_target = values
+            with self.subTest(platform=platform_name):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    project = (
+                        root
+                        / platform_name
+                        / "Runner.xcodeproj"
+                        / "project.pbxproj"
+                    )
+                    project.parent.mkdir(parents=True)
+                    project.write_text(
+                        f"{setting} = 10.0;\n{setting} = 12.0;\n",
+                        encoding="utf-8",
+                    )
+                    podfile_path = root / platform_name / "Podfile"
+                    podfile_path.write_text(podfile, encoding="utf-8")
+
+                    package_smoke.configure_apple_host_target(root, platform_name)
+
+                    self.assertEqual(
+                        project.read_text(encoding="utf-8").count(
+                            f"{setting} = {expected_target};"
+                        ),
+                        2,
+                    )
+                    self.assertIn(
+                        expected_pod,
+                        podfile_path.read_text(encoding="utf-8"),
+                    )
+                    podspec = (
+                        TOOL_ROOT.parent
+                        / platform_name
+                        / "mdstream_flutter.podspec"
+                    ).read_text(encoding="utf-8")
+                    self.assertIn(f"'{expected_target}'", podspec)
+
     def test_dependency_graph_rejects_forbidden_packages(self) -> None:
         graph = {
             "packages": [

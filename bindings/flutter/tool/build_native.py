@@ -30,6 +30,8 @@ BUDGET_PATH = REPOSITORY_ROOT / "bindings" / "budgets.json"
 HEADER_PATH = REPOSITORY_ROOT / "mdstream-ffi" / "include" / "mdstream.h"
 FRAMEWORK_NAME = "MdstreamFFI"
 ANDROID_NDK_VERSION = "26.3.11579264"
+IOS_DEPLOYMENT_TARGET = "13.0"
+MACOS_DEPLOYMENT_TARGET = "11.0"
 REQUIRED_EXPORTS = (
     "mdstream_abi_version",
     "mdstream_package_version",
@@ -589,7 +591,7 @@ def build_ios(options: BuildOptions) -> list[StagedArtifact]:
     _ensure_targets(IOS_TARGETS, options)
     ceiling = load_budget_ceiling("flutter_native_library")
     env = os.environ.copy()
-    env["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
+    env["IPHONEOS_DEPLOYMENT_TARGET"] = IOS_DEPLOYMENT_TARGET
     artifacts = {
         target: _cargo_artifact(target, options, env=env) for target in IOS_TARGETS
     }
@@ -600,7 +602,7 @@ def build_ios(options: BuildOptions) -> list[StagedArtifact]:
             artifacts["aarch64-apple-ios"],
             device_framework,
             platform_name="iPhoneOS",
-            minimum_version="13.0",
+            minimum_version=IOS_DEPLOYMENT_TARGET,
             options=options,
         )
         simulator_binary = root / "ios-simulator" / FRAMEWORK_NAME
@@ -622,7 +624,7 @@ def build_ios(options: BuildOptions) -> list[StagedArtifact]:
             simulator_binary,
             simulator_framework,
             platform_name="iPhoneSimulator",
-            minimum_version="13.0",
+            minimum_version=IOS_DEPLOYMENT_TARGET,
             options=options,
         )
         validate_native_artifact(
@@ -653,7 +655,7 @@ def build_macos(
     _ensure_targets(targets, options)
     ceiling = load_budget_ceiling("flutter_native_library")
     env = os.environ.copy()
-    env["MACOSX_DEPLOYMENT_TARGET"] = "11.0"
+    env["MACOSX_DEPLOYMENT_TARGET"] = MACOS_DEPLOYMENT_TARGET
     artifacts = {target: _cargo_artifact(target, options, env=env) for target in targets}
     with tempfile.TemporaryDirectory(prefix="mdstream-macos-") as temporary:
         root = Path(temporary)
@@ -675,7 +677,7 @@ def build_macos(
             combined,
             framework,
             platform_name="MacOSX",
-            minimum_version="11.0",
+            minimum_version=MACOS_DEPLOYMENT_TARGET,
             options=options,
         )
         validate_native_artifact(

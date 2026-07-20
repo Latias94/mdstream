@@ -47,6 +47,10 @@ jobs:
         working-directory: bindings
         run: flutter pub get
 
+      - name: Resolve Golden stream example
+        working-directory: bindings/flutter/example
+        run: flutter pub get
+
       - name: Prove packaging validators
         run: python3 -m unittest bindings/flutter/tool/test_packaging.py
 
@@ -227,6 +231,10 @@ jobs:
 
       - name: Resolve Pub workspace
         working-directory: bindings
+        run: flutter pub get
+
+      - name: Resolve Golden stream example
+        working-directory: bindings/flutter/example
         run: flutter pub get
 
       - name: Build staged Windows library

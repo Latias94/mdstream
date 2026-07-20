@@ -5,6 +5,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 
+import { matchesToolVersion } from "./toolchain-version.mjs";
+
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(scriptDirectory, "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -130,8 +132,14 @@ const toolchain = {
 };
 const toolchainErrors = [
   [toolchain.rust.startsWith("rustc 1.85.0 "), `Rust 1.85.0, found ${toolchain.rust}`],
-  [toolchain.wasmPack === "wasm-pack 0.15.0", `wasm-pack 0.15.0, found ${toolchain.wasmPack}`],
-  [toolchain.wasmTools === "wasm-tools 1.253.0", `wasm-tools 1.253.0, found ${toolchain.wasmTools}`],
+  [
+    matchesToolVersion(toolchain.wasmPack, "wasm-pack", "0.15.0"),
+    `wasm-pack 0.15.0, found ${toolchain.wasmPack}`,
+  ],
+  [
+    matchesToolVersion(toolchain.wasmTools, "wasm-tools", "1.253.0"),
+    `wasm-tools 1.253.0, found ${toolchain.wasmTools}`,
+  ],
   [toolchain.node.startsWith("v24."), `Node 24.x, found ${toolchain.node}`],
   [toolchain.pnpm === "11.9.0", `pnpm 11.9.0, found ${toolchain.pnpm}`],
 ].flatMap(([matches, message]) => matches ? [] : [message]);
