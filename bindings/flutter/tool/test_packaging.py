@@ -115,6 +115,8 @@ class BuildNativeContractTest(unittest.TestCase):
                 self.assertIn(analyze, job)
                 self.assertLess(job.index(resolve), job.index(analyze))
 
+        self.assertIn("    runs-on: windows-2022", jobs["windows"])
+
         linux = jobs["linux"]
         self.assertIn(generate_linux_host, linux)
         self.assertIn(integration_smoke, linux)
