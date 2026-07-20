@@ -93,6 +93,66 @@ pub(crate) struct SmokeSummary {
     pub(crate) errors: u64,
 }
 
+pub(crate) fn validate_smoke_summary(summary: &SmokeSummary) -> io::Result<()> {
+    if summary.errors != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("smoke actor reported errors={}", summary.errors),
+        ));
+    }
+    if summary.lifecycle != DocumentLifecycle::Finalized {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("smoke document lifecycle={:?}", summary.lifecycle),
+        ));
+    }
+    if summary.source != DEMO_MARKDOWN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "smoke source mismatch: expected {} bytes, received {}",
+                DEMO_MARKDOWN.len(),
+                summary.source.len()
+            ),
+        ));
+    }
+    let expected_commands = DEMO_MARKDOWN.chars().count() as u64;
+    if summary.commands_sent != expected_commands {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "smoke commands_sent mismatch: expected {expected_commands}, received {}",
+                summary.commands_sent
+            ),
+        ));
+    }
+    if summary.input_capacity != INPUT_CAPACITY {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "smoke input_capacity mismatch: expected {INPUT_CAPACITY}, received {}",
+                summary.input_capacity
+            ),
+        ));
+    }
+    if summary.batches == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "smoke actor reported batches=0",
+        ));
+    }
+    if summary.changes < summary.batches {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "smoke counter mismatch: changes={} batches={}",
+                summary.changes, summary.batches
+            ),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct ProducerCounters {
     commands_sent: u64,
@@ -104,6 +164,7 @@ async fn main() -> io::Result<()> {
     match args.as_slice() {
         [flag] if flag == "--smoke" => {
             let summary = run_smoke().await?;
+            validate_smoke_summary(&summary)?;
             println!(
                 "SMOKE_OK lifecycle={:?} input_capacity={} commands_sent={} batches={} changes={} errors={}",
                 summary.lifecycle,

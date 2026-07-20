@@ -241,6 +241,9 @@ class GoldenStreamApp {
         }
       }
       await session.engine.whenProcessorsIdle();
+      if (!this.#ownsPlayback(session, playback)) {
+        return;
+      }
       if (session.policy.queuedGraphemes > 0) {
         this.#hostState.transition(
           "draining",
@@ -248,7 +251,7 @@ class GoldenStreamApp {
         );
         await this.#waitForDrain(session, playback.signal);
       }
-      if (playback.signal.aborted || this.#session !== session) {
+      if (!this.#ownsPlayback(session, playback)) {
         return;
       }
       this.#stopFrames();
@@ -257,6 +260,9 @@ class GoldenStreamApp {
         throw new Error("The finalized engine did not produce a canonical snapshot.");
       }
       const digest = await sha256(snapshot);
+      if (!this.#ownsPlayback(session, playback)) {
+        return;
+      }
       elements.answer.dataset.finalDigest = digest;
       elements.canonicalDigest.textContent = digest.slice(0, 16);
       elements.answer.dataset.pendingPresentedBytes = String(
@@ -271,7 +277,7 @@ class GoldenStreamApp {
       );
       this.#renderDiagnostics();
     } catch (error) {
-      if (isAbort(error)) {
+      if (isAbort(error) || !this.#ownsPlayback(session, playback)) {
         return;
       }
       this.#stopFrames();
@@ -311,6 +317,10 @@ class GoldenStreamApp {
     while (session.policy.queuedGraphemes > 0) {
       await delay(16, signal);
     }
+  }
+
+  #ownsPlayback(session: HostSession, playback: AbortController): boolean {
+    return this.#session === session && this.#playback === playback && !playback.signal.aborted;
   }
 
   #stopFrames(): void {

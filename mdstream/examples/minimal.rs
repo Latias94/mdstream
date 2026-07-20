@@ -7,6 +7,7 @@ use mdstream_protocol::{
 use serde_json::Value;
 
 const SCENARIO: &str = include_str!("fixtures/golden-ai-stream.json");
+const PENDING_ENGINE_CITATION: &str = "[@engine]: https://docs.rs/mdstream \"mdstream engine\"\n";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let assert_mode = parse_args()?;
@@ -145,10 +146,13 @@ fn assert_observation(
             !document.pending_source().is_empty(),
             "checkpoint `{checkpoint}` promised pending source"
         ),
-        observation if observation.starts_with("provisional_") => assert!(
-            document
-                .nodes()
-                .any(|node| node.stability == NodeStability::Provisional),
+        "provisional_inline"
+        | "provisional_code_fence"
+        | "provisional_code_block"
+        | "provisional_mermaid_fence"
+        | "provisional_mermaid_block"
+        | "provisional_citation_definition" => assert!(
+            provisional_observation_matches(document, observation),
             "checkpoint `{checkpoint}` promised `{observation}`"
         ),
         "stable_code_block" => assert!(has_stable_code_block(document, "rust")),
@@ -189,6 +193,58 @@ fn assert_observation(
         }
         "finalized" => assert_eq!(document.lifecycle(), DocumentLifecycle::Finalized),
         observation => panic!("unsupported scenario observation `{observation}`"),
+    }
+}
+
+pub(crate) fn provisional_observation_matches(
+    document: &mdstream_protocol::Document,
+    observation: &str,
+) -> bool {
+    match observation {
+        "provisional_inline" => document.nodes().any(|node| {
+            node.stability == NodeStability::Provisional
+                && matches!(
+                    node.content,
+                    ContentKind::Paragraph {} | ContentKind::Text { .. }
+                )
+        }),
+        "provisional_code_fence" | "provisional_mermaid_fence" => document.nodes().any(|node| {
+            node.stability == NodeStability::Provisional
+                && matches!(node.content, ContentKind::CodeBlock { info: None, .. })
+        }),
+        "provisional_code_block" => document.nodes().any(|node| {
+            node.stability == NodeStability::Provisional
+                && matches!(node.content, ContentKind::CodeBlock { .. })
+        }),
+        "provisional_mermaid_block" => {
+            let has_provisional_mermaid = document.nodes().any(|node| {
+                node.stability == NodeStability::Provisional && node.content.is_mermaid_code_block()
+            });
+            let has_open_code_fence = document.nodes().any(|node| {
+                node.stability == NodeStability::Provisional
+                    && matches!(node.content, ContentKind::CodeBlock { info: None, .. })
+            });
+            has_provisional_mermaid
+                || (has_open_code_fence && document.pending_source().starts_with("mermaid\n"))
+        }
+        "provisional_citation_definition" => {
+            let has_provisional_definition = document.nodes().any(|node| {
+                node.stability == NodeStability::Provisional
+                    && matches!(
+                        &node.content,
+                        ContentKind::CitationDefinition { key, .. } if key == "engine"
+                    )
+            });
+            let definition_is_pending = document.pending_source() == PENDING_ENGINE_CITATION
+                && !document.nodes().any(|node| {
+                    matches!(
+                        &node.content,
+                        ContentKind::CitationDefinition { key, .. } if key == "engine"
+                    )
+                });
+            has_provisional_definition || definition_is_pending
+        }
+        _ => false,
     }
 }
 

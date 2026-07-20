@@ -127,7 +127,9 @@ void main() {
         'Replay stream',
       );
       expect(
-        tester.getSemantics(find.text('[engine]')).hasFlag(SemanticsFlag.isLink),
+        tester
+            .getSemantics(find.text('[engine]'))
+            .hasFlag(SemanticsFlag.isLink),
         isFalse,
       );
 
@@ -168,6 +170,75 @@ void main() {
       await tester.pump();
       expect(tester.takeException(), isNull);
       expect(bootstrap.runtime!.nativeAllocations.isZero, isTrue);
+    },
+    skip: nativeLibrary == null,
+  );
+
+  testWidgets(
+    'bootstrap ownership follows widget replacements during paced playback',
+    (tester) async {
+      final scenario = File('assets/golden_ai_stream.json').readAsStringSync();
+      final firstClock = _ObservedGateClock();
+      final secondClock = _ObservedGateClock();
+      final secondScenario = Completer<String>();
+      var firstLoads = 0;
+      var secondLoads = 0;
+      final first = GoldenStreamBootstrap(
+        loadScenario: () async {
+          firstLoads += 1;
+          return scenario;
+        },
+        openRuntime: () => MdstreamRuntime.openPath(nativeLibrary!),
+        clock: firstClock,
+      );
+      final second = GoldenStreamBootstrap(
+        loadScenario: () {
+          secondLoads += 1;
+          return secondScenario.future;
+        },
+        openRuntime: () => MdstreamRuntime.openPath(nativeLibrary!),
+        clock: secondClock,
+      );
+
+      await tester.runAsync(() => first.initialize(autoPlay: false));
+      final firstRuntime = first.runtime!;
+      await tester.pumpWidget(
+        GoldenStreamExample(bootstrap: first, autoPlay: false),
+      );
+      unawaited(first.replay(mode: GoldenPlaybackMode.paced));
+      await tester.pump();
+
+      expect(first.phase, GoldenHostPhase.streaming);
+      expect(firstClock.isWaiting, isTrue);
+      expect(firstLoads, 1);
+
+      await tester.pumpWidget(
+        GoldenStreamExample(bootstrap: second, autoPlay: false),
+      );
+      await tester.pump();
+
+      expect(firstClock.cancelledWaits, 1);
+      expect(firstRuntime.nativeAllocations.isZero, isTrue);
+      expect(secondLoads, 1);
+      expect(second.phase, GoldenHostPhase.booting);
+      expect(second.runtime, isNull);
+
+      secondScenario.complete(scenario);
+      await tester.pumpAndSettle();
+
+      expect(second.phase, GoldenHostPhase.readyEmpty);
+      expect(second.runtime, isNotNull);
+      expect(tester.takeException(), isNull);
+
+      final secondRuntime = second.runtime!;
+      final secondCancelsBeforeUnmount = secondClock.cancels;
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+
+      expect(secondClock.cancels, secondCancelsBeforeUnmount + 1);
+      expect(secondRuntime.nativeAllocations.isZero, isTrue);
+      expect(secondLoads, 1);
+      expect(tester.takeException(), isNull);
     },
     skip: nativeLibrary == null,
   );
@@ -378,4 +449,31 @@ final class _CountingClock implements GoldenPlaybackClock {
 
   @override
   void cancel() {}
+}
+
+final class _ObservedGateClock implements GoldenPlaybackClock {
+  Completer<void>? _gate;
+  int cancels = 0;
+  int cancelledWaits = 0;
+
+  bool get isWaiting {
+    final gate = _gate;
+    return gate != null && !gate.isCompleted;
+  }
+
+  @override
+  Future<void> wait(Duration duration) {
+    _gate = Completer<void>();
+    return _gate!.future;
+  }
+
+  @override
+  void cancel() {
+    cancels += 1;
+    final gate = _gate;
+    if (gate != null && !gate.isCompleted) {
+      cancelledWaits += 1;
+      gate.complete();
+    }
+  }
 }

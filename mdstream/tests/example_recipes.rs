@@ -1,5 +1,12 @@
 use std::{fs, path::PathBuf};
 
+#[allow(dead_code)]
+#[path = "../examples/minimal.rs"]
+mod minimal;
+
+use mdstream::StreamEngine;
+use mdstream_protocol::{ApplyOutcome, Reducer};
+
 fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples")
 }
@@ -45,4 +52,41 @@ fn rust_learning_ladder_has_truthful_recipe_names_and_assertion_modes() {
 
     assert!(!examples_dir().join("egui_adapter.rs").exists());
     assert!(!examples_dir().join("gpui_adapter.rs").exists());
+}
+
+#[test]
+fn minimal_provisional_observations_cannot_masquerade_as_each_other() {
+    let mermaid = reduce_append("```mermaid\nflowchart LR\n  A --> B\n```\n\n");
+    let mermaid = mermaid.document().unwrap();
+    assert!(minimal::provisional_observation_matches(
+        mermaid,
+        "provisional_mermaid_block"
+    ));
+    assert!(!minimal::provisional_observation_matches(
+        mermaid,
+        "provisional_citation_definition"
+    ));
+
+    let citation = reduce_append("[@engine]: https://docs.rs/mdstream \"mdstream engine\"\n");
+    let citation = citation.document().unwrap();
+    assert!(minimal::provisional_observation_matches(
+        citation,
+        "provisional_citation_definition"
+    ));
+    assert!(!minimal::provisional_observation_matches(
+        citation,
+        "provisional_mermaid_block"
+    ));
+}
+
+fn reduce_append(source: &str) -> Reducer {
+    let mut engine = StreamEngine::new();
+    let mut reducer = Reducer::new();
+    for change in engine.append(source).unwrap().into_changes() {
+        assert!(matches!(
+            reducer.apply(change).unwrap(),
+            ApplyOutcome::Applied { .. } | ApplyOutcome::Recovered { .. }
+        ));
+    }
+    reducer
 }

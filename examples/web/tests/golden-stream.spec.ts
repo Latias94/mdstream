@@ -80,6 +80,55 @@ test("replacement, interruption, and retry discard stale host work", async ({ pa
   expect(errors).toEqual([]);
 });
 
+test("a stale digest cannot settle a replacement session", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "digest race runs once");
+  await page.addInitScript(() => {
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    let releaseDigest = (): void => undefined;
+    const digestGate = new Promise<void>((resolve) => {
+      releaseDigest = resolve;
+    });
+    const state = {
+      entered: false,
+      release: (): void => releaseDigest(),
+    };
+    Object.defineProperty(globalThis, "__mdstreamDigestGate", { value: state });
+    Object.defineProperty(crypto.subtle, "digest", {
+      configurable: true,
+      value: async (...args: Parameters<SubtleCrypto["digest"]>) => {
+        const digest = await originalDigest(...args);
+        state.entered = true;
+        await digestGate;
+        return digest;
+      },
+    });
+  });
+  await page.goto("/?autoplay=false");
+  await page.getByRole("button", { name: "Replay" }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (globalThis as typeof globalThis & {
+      __mdstreamDigestGate: { readonly entered: boolean };
+    }).__mdstreamDigestGate.entered
+  )).toBe(true);
+
+  await page.getByLabel("Paced").check();
+  await expect(page.locator("html")).toHaveAttribute("data-lifecycle", "streaming");
+  const staleCompletion = await page.evaluate(async () => {
+    const gate = (globalThis as typeof globalThis & {
+      __mdstreamDigestGate: { release(): void };
+    }).__mdstreamDigestGate;
+    gate.release();
+    await new Promise((resolve) => window.setTimeout(resolve, 25));
+    return {
+      lifecycle: document.documentElement.dataset.lifecycle,
+      digest: document.querySelector("#answer")?.getAttribute("data-final-digest"),
+    };
+  });
+
+  expect(staleCompletion).toEqual({ lifecycle: "streaming", digest: "" });
+  await settled(page);
+});
+
 test("initialization and scenario errors expose a focused retry path", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "error workflow runs once");
   const errors = collectPageErrors(page);

@@ -34,15 +34,40 @@ final class GoldenStreamExample extends StatefulWidget {
 }
 
 final class _GoldenStreamExampleState extends State<GoldenStreamExample> {
+  late GoldenStreamBootstrap _bootstrap;
+  int _bootstrapGeneration = 0;
+
   @override
   void initState() {
     super.initState();
+    _bootstrap = widget.bootstrap;
+    _scheduleInitialization();
+  }
+
+  @override
+  void didUpdateWidget(GoldenStreamExample oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (identical(_bootstrap, widget.bootstrap)) {
+      return;
+    }
+
+    final previous = _bootstrap;
+    _bootstrap = widget.bootstrap;
+    previous.dispose();
+    _scheduleInitialization();
+  }
+
+  void _scheduleInitialization() {
+    final bootstrap = _bootstrap;
+    final generation = ++_bootstrapGeneration;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
+      if (!mounted ||
+          generation != _bootstrapGeneration ||
+          !identical(_bootstrap, bootstrap)) {
         return;
       }
       unawaited(
-        widget.bootstrap.initialize(
+        bootstrap.initialize(
           autoPlay: widget.autoPlay,
           reducedMotion: MediaQuery.disableAnimationsOf(context),
         ),
@@ -52,7 +77,8 @@ final class _GoldenStreamExampleState extends State<GoldenStreamExample> {
 
   @override
   void dispose() {
-    widget.bootstrap.dispose();
+    _bootstrapGeneration += 1;
+    _bootstrap.dispose();
     super.dispose();
   }
 
@@ -63,7 +89,7 @@ final class _GoldenStreamExampleState extends State<GoldenStreamExample> {
     theme: _theme(Brightness.light),
     darkTheme: _theme(Brightness.dark),
     home: GoldenStreamHost(
-      bootstrap: widget.bootstrap,
+      bootstrap: _bootstrap,
       onNodeBuild: widget.onNodeBuild,
     ),
   );
