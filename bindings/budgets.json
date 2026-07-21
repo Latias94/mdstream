@@ -104,9 +104,9 @@
       "regression_percent": 20,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 7696031,
-        "artifact_sha256": "143d61e60fd3c4d2b9e3ad30a1c83c8a57ee4e1b1a64ab700e76a6f8cd5cc8c6",
-        "command": "python3 bindings/flutter/tool/package_smoke.py --skip-native-build --skip-runtime"
+        "measured_bytes": 7745399,
+        "artifact_sha256": "a5f3ee1ae98e28bbb34a1405f4a93e3b5be49afd0b8eeb5cbf878be467648365",
+        "command": "python3 bindings/flutter/tool/package_smoke.py --release --skip-native-build --skip-runtime"
       }
     }
   ]
