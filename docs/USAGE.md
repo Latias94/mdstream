@@ -44,7 +44,7 @@ assert_eq!(
 
 ## Stable host state
 
-Use `NodeId` as identity within one continuity generation and `NodeVersion` as the cache version. A full host key is `(continuity generation, epoch, NodeId)`. Source offsets and collection positions are not identities.
+Use `NodeId` as identity within one continuity generation. Treat `changed_nodes` as the authoritative invalidation set for complete materialized node views; an equal `NodeVersion` does not prove that the full view is unchanged. `NodeVersion` is the projection compare-and-set token, `children.version` covers direct child identity and order, and the node view's `ProcessorInputVersion` covers processor matching and conditional admission across projection, body text, referenced resource, and direct children. A full host key is `(continuity generation, epoch, NodeId)`. Source offsets and collection positions are not identities.
 
 `changed_nodes` and `changed_resources` identify invalidated keys, including removed values. Query the current view for each key: a missing view means remove the host object. `removed_nodes` and `removed_resources` are the subsets known to be absent.
 
@@ -76,6 +76,8 @@ Use `ArtifactHost` or a binding's processor scheduler after canonical reduction.
 
 Artifacts remain derived host state and never enter Content IR or recovery snapshots. Run [processor lifecycle](EXAMPLES.md#processor-lifecycle) for generic freshness, [citation processor](EXAMPLES.md#citation-processor-contract) for resource-backed artifacts, and [Merman](EXAMPLES.md#merman-artifact) for a real `image/svg+xml` artifact.
 
+Binding processor-limit errors identify the exhausted budget through `processor.resource_limit.<field>`. Host schedulers retry only `in_flight_jobs` and `in_flight_input_bytes` after active work releases capacity; permanent `input_bytes` and `slots` failures are reported immediately so one rejected node cannot block later valid candidates.
+
 Merman output is opaque and untrusted until a host-owned sanitizer or isolated renderer accepts it. Cooperative cancellation and source/model/output/retention limits are not compute or peak-memory isolation; adversarial processors require host-owned timeouts and worker/process controls.
 
 ## TypeScript and Web frameworks
@@ -84,7 +86,7 @@ Merman output is opaque and untrusted until a host-owned sanitizer or isolated r
 
 Root, node, resource, pending-source, and artifact views use focused external stores. `engine.store.pendingSource()` returns `undefined` when projection is current and otherwise materializes the exact bounded uncovered range only when read.
 
-Enable `captureTransitions: true` with finite protocol limits and a sufficient `maxReducerUpdateBytes`, then subscribe with `engine.store.subscribeTransitions(...)`. The callback runs after the batch-tail state and invalidations are coherent and before ordinary store subscribers. Do not mutate or close the session from inside the callback.
+Enable `captureTransitions: true` with finite protocol limits and a sufficient `maxReducerUpdateBytes`, then subscribe with `engine.store.subscribeTransitions(...)`. Keep compiler work and definition-registry budgets in the sibling `compiler` option group rather than `protocol`. The callback runs after the batch-tail state and invalidations are coherent and before ordinary store subscribers. Do not mutate or close the session from inside the callback.
 
 Frameworks bind `subscribe` and `getSnapshot` to their native state primitive. React may use `useSyncExternalStore`; mdstream intentionally ships no React package, hook, renderer, component, animation dependency, or theme.
 
@@ -124,8 +126,43 @@ mdstream owns one Markdown content session, not a provider or chat message envel
 
 Give each Markdown-capable part an independent session identified by a stable host part key plus a monotonically new host generation. Reordering a retained part preserves its session; replacement resets only that part; removal closes it and cancels processor work; key reuse allocates a new generation so callbacks from the retired part cannot attach.
 
+## Session limit ownership
+
+Rust keeps parser-neutral Content IR and reducer budgets in
+`mdstream_protocol::ProtocolLimits`, compiler work and retained semantic-state
+budgets in `mdstream::CompilerLimits`, and emitted transaction/change budgets in
+`mdstream::EngineLimits`. Pass them independently through
+`StreamEngineBuilder::protocol_limits`, `compiler_limits`, and `engine_limits`.
+
+The binding wire schema places compiler-owned `max_markdown_events`,
+`max_markdown_overlap_work`, `max_definitions`, `max_definition_edges`, and
+`max_definition_metadata_bytes` fields under the sibling `compiler` group.
+TypeScript exposes their camel-case forms under `compiler`. Dart exposes them as typed
+`MdstreamCompilerLimits` parameters:
+
+```dart
+import 'package:mdstream/mdstream.dart';
+
+void main() {
+  final options = MdstreamSessionOptions(
+    compiler: MdstreamCompilerLimits(
+      maxMarkdownEvents: '300000',
+      maxMarkdownOverlapWork: '1000000',
+      maxDefinitions: '100000',
+      maxDefinitionEdges: '100000',
+      maxDefinitionMetadataBytes: '16777216',
+    ),
+  );
+  options.toJson('mdstream.bindings-options/0.4');
+}
+```
+
+Both bindings encode those public fields to snake-case wire keys internally.
+Dart callers construct `MdstreamCompilerLimits` rather than passing a native
+schema map, and compiler fields are not part of the public protocol-limit type.
+
 ## Migrating from 0.3
 
-Replace `MdStream`/`Update`/`DocumentState` flows with `StreamEngine`, ordered `ChangeSet` values, and `Reducer`. Replace block positions with `NodeId`, cached block values with typed `ContentNode` plus `NodeVersion`, analyzers with processors, runtime parser mutation with setup-only custom blocks, and terminator/pending-transformer output with the bounded pending-source view plus host presentation policy.
+Replace `MdStream`/`Update`/`DocumentState` flows with `StreamEngine`, ordered `ChangeSet` values, and `Reducer`. Replace block positions with stable `NodeId` values and invalidate complete cached nodes through `ChangeImpact.changed_nodes`; use `NodeVersion` only for projection compare-and-set and `children.version` for direct child topology. Replace analyzers with processors, runtime parser mutation with setup-only custom blocks, and terminator/pending-transformer output with the bounded pending-source view plus host presentation policy. The old `Options` footnote and reference-definition modes have no switches because those semantics now use canonical correction. Use `ProtocolLimits::max_source_bytes`, `CompilerLimits`, and `EngineLimits` for their separate hard-limit planes; they reject atomically and do not emulate 0.3 buffer compaction.
 
 Tokio users replace `spawn_mdstream_actor` with `spawn_stream_engine_actor` and consume `ActorResult`. Replace `DropNew` with `Block` or `CoalesceLocal`; flush any buffered canonical input before dropping a sender. No deprecated 0.3 aliases are available.

@@ -56,6 +56,13 @@ const engine = runtime.createEngine({
     maxChangeStructuralItems: "4096",
     maxChildrenPerList: "4096",
   },
+  compiler: {
+    maxMarkdownEvents: "300000",
+    maxMarkdownOverlapWork: "1000000",
+    maxDefinitions: "100000",
+    maxDefinitionEdges: "100000",
+    maxDefinitionMetadataBytes: "16777216",
+  },
   wire: { maxReducerUpdateBytes: "67108864" },
 });
 
@@ -69,6 +76,34 @@ const unsubscribe = engine.store.subscribeTransitions((batch) => {
   }
 });
 ```
+
+`protocol` contains only parser-neutral Content IR and reducer limits. Parser
+work and retained definition-registry budgets belong to the independent
+`compiler` group. Compiler fields are available only in that group, and the
+native binding schema rejects unknown or misplaced option fields.
+
+Processor scheduling uses the effective limits reported by the native reducer
+session. Host adapters do not duplicate Rust defaults, so omitted and custom
+processor budgets stay consistent across WASM versions.
+
+Binary artifact snapshots expose `ImmutableBytesView` instead of a mutable
+`Uint8Array`. Read their size without copying, and request an owned mutable copy
+only when a consumer needs bytes:
+
+```ts
+const artifact = engine.store.getArtifactSnapshot(slot);
+if (
+  artifact?.state === "ready" &&
+  artifact.artifact?.payload.kind === "binary"
+) {
+  const retainedBytes = artifact.artifact.payload.bytes.byteLength;
+  const ownedBytes = artifact.artifact.payload.bytes.copyBytes();
+  consumeBinaryArtifact(ownedBytes, retainedBytes);
+}
+```
+
+Each `copyBytes()` call returns an independent `Uint8Array`; mutating that copy
+does not change the retained store snapshot.
 
 The callback is an ordered event feed, not a latest-value external store. One
 callback represents one public operation and may contain multiple reducer

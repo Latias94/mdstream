@@ -1,9 +1,5 @@
 # mdstream
 
-[![crates.io](https://img.shields.io/crates/v/mdstream.svg)](https://crates.io/crates/mdstream)
-[![docs.rs](https://docs.rs/mdstream/badge.svg)](https://docs.rs/mdstream)
-[![CI](https://github.com/Latias94/mdstream/actions/workflows/ci.yml/badge.svg)](https://github.com/Latias94/mdstream/actions/workflows/ci.yml)
-
 `mdstream` is a headless streaming content state engine for AI-generated Markdown. It turns arbitrary token chunks into replayable canonical changes, typed Content IR, stable identities, bounded pending source, and optional factual transitions so any UI framework can own presentation without reparsing Markdown.
 
 ```text
@@ -23,7 +19,7 @@ Version 0.4 is intentionally breaking. It replaces the 0.3 block-splitter and `c
 With Rust 1.85 or newer, a fresh checkout needs one command for the first deterministic AI stream:
 
 ```sh
-cargo +1.85.0 run -p mdstream --example minimal -- --assert
+cargo run -p mdstream --example minimal -- --assert
 ```
 
 The tutorial prints named pending, stabilization, citation-correction, and finalization checkpoints, then ends with:
@@ -104,9 +100,17 @@ apply(&mut reducer, engine.finish().unwrap());
 assert_eq!(reducer.document().unwrap().source(), "# Title\n\nHello **world**");
 ```
 
+Limit configuration follows module ownership. Use
+`mdstream_protocol::ProtocolLimits` for legal Content IR and reducer state,
+`mdstream::CompilerLimits` for parser work and retained compiler semantic state, and
+`mdstream::EngineLimits` for emitted transaction and change sizes. The builder
+accepts these independently through `protocol_limits`, `compiler_limits`, and
+`engine_limits`; parser- and compiler-state-specific fields are intentionally
+not part of the framework-neutral protocol crate.
+
 `finish` is terminal and idempotent. `reset` starts a predecessor-linked epoch. A gap, fork, or unannounced epoch moves a replica reducer to `NeedsSnapshot`; one explicit current snapshot restores it before ordinary changes resume.
 
-`NodeId` is stable within a continuity generation. `NodeVersion` invalidates a cached view or processor input. Across a full replacement, host keys include continuity generation, epoch, and `NodeId`; collection position and source offsets are not keys.
+`NodeId` is stable within a continuity generation. `ChangeImpact.changed_nodes` is the authoritative invalidation set for complete materialized node views. `NodeVersion` is a compare-and-set token for projection-local stability, ranges, and content; an equal value does not prove that child topology or processor context is unchanged. `ContentNode.children.version` covers direct child identity and order, while `ProcessorInputVersion` covers processor matching and conditional admission across the node projection, body text, referenced resource, and direct children. Across a full replacement, host keys include continuity generation, epoch, and `NodeId`; collection position and source offsets are not keys.
 
 When accepted source runs ahead of typed projection, adapters expose exactly `projection_cursor..source_cursor` as a bounded, lazy pending-source view. A host may paint those bytes once, but must not parse them into competing Markdown semantics.
 
@@ -153,7 +157,10 @@ mdstream owns one Markdown content session, not an AI message envelope. Chat mes
 | Dart `mdstream` | Flutter-independent native binding using a host-supplied library |
 | `mdstream_flutter` | Turnkey native delivery and Flutter state controllers without widgets |
 
-The default Rust, WASM, TypeScript, Dart, and Flutter dependency graphs do not contain Merman or a UI framework.
+The default Rust, WASM, TypeScript, and Dart dependency graphs contain neither
+Merman nor a UI framework. `mdstream_flutter` depends on the Flutter SDK but
+exports state controllers only: it includes no widget, renderer, animation
+policy, or Merman dependency.
 
 ## Migrating from 0.3
 
@@ -162,9 +169,10 @@ There are no deprecated aliases for the removed 0.3 surface.
 | 0.3 surface | 0.4 action |
 | --- | --- |
 | `MdStream` / `MdStreamBuilder` | Use `StreamEngine` / `StreamEngineBuilder`. |
+| `Options` (`footnotes`, `reference_definitions`, `terminator`, `terminator_window_bytes`, `max_buffer_bytes`) | Remove the old parsing modes: footnotes and reference definitions now use canonical semantic correction; pending repair and its display window belong to the host. Replace the old buffer-cap intent with independently owned `ProtocolLimits::max_source_bytes`, `CompilerLimits`, and `EngineLimits`; these limits reject atomically rather than compacting canonical source. |
 | `append` / `finalize` | Call fallible `StreamEngine::append` / `finish`; use `reset` for a new epoch. |
 | `Update` / `UpdateRef` / `DocumentState` | Apply every ordered `ChangeSet` through `mdstream_protocol::Reducer` and consume `ChangeImpact`. |
-| `Block` / `BlockStatus` / collection positions | Use typed `ContentNode`, `NodeStability`, stable `NodeId`, and cache-validating `NodeVersion`. |
+| `Block` / `BlockStatus` / collection positions | Use typed `ContentNode`, `NodeStability`, and stable `NodeId`; invalidate complete cached node views through `ChangeImpact.changed_nodes`, use `NodeVersion` for projection compare-and-set, and compare `children.version` for direct child topology. |
 | `AnalyzedStream` / `BlockAnalyzer` | Read typed Content IR or use a versioned processor whose artifact remains derived host state. |
 | `BoundaryPlugin` / runtime grammar mutation | Register setup-only `CustomBlockSpec` values before accepting input. |
 | `TerminatorOptions` / `terminate_markdown` / pending transformers | Read bounded pending source on demand and keep incomplete-source presentation in host policy. |

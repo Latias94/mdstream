@@ -36,7 +36,11 @@ The [example catalog](EXAMPLES.md) is the navigation authority. These entries ex
 - Within one continuity generation, `NodeId` is the stable identity. Across a
   full replacement, use `(continuity generation, epoch, NodeId)` as the UI key.
   Source offsets and collection positions are never keys.
-- `NodeVersion` invalidates a cached node view and processor input.
+- `NodeVersion` covers projection-local stability, ranges, and content; it is
+  not a complete node-view cache key. `ContentNode.children.version` covers
+  direct child identity and order. `ProcessorInputVersion` covers processor
+  matching and conditional admission across the node projection, body text,
+  referenced resource, and direct children.
 - `changed_nodes` is the set of invalidated node keys. It includes removed
   nodes; `removed_nodes` is the subset that no longer has a view. Resource
   impacts follow the same rule.

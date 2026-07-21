@@ -21,6 +21,8 @@ run the example. For macOS:
 python3 bindings/flutter/tool/build_native.py macos
 cd bindings/flutter/example
 flutter pub get
+flutter create --empty --platforms macos --project-name mdstream_flutter_example --org io.mdstream.example --no-pub .
+dart run configure_host.dart macos
 flutter run -d macos
 ```
 
@@ -49,6 +51,7 @@ archive:
 
 ```console
 flutter create --empty --platforms macos --project-name mdstream_flutter_example --org io.mdstream.example --no-pub .
+dart run configure_host.dart macos
 flutter test integration_test/golden_stream_smoke_test.dart -d macos
 ```
 
@@ -94,14 +97,19 @@ enable transition capture with a finite protocol profile:
 final controller = MdstreamController.open(
   options: MdstreamSessionOptions(
     captureTransitions: true,
-    protocol: const {
-      'max_source_bytes': '1048576',
-      'max_nodes': '4096',
-      'max_resources': '256',
-      'max_operations': '4096',
-      'max_change_structural_items': '4096',
-      'max_children_per_list': '4096',
-    },
+    protocol: MdstreamProtocolLimits(
+      maxSourceBytes: '1048576',
+      maxNodes: '4096',
+      maxResources: '256',
+      maxOperations: '4096',
+      maxChangeStructuralItems: '4096',
+      maxChildrenPerList: '4096',
+    ),
+    compiler: MdstreamCompilerLimits(
+      maxDefinitions: '100000',
+      maxDefinitionEdges: '100000',
+      maxDefinitionMetadataBytes: '16777216',
+    ),
   ),
 );
 
@@ -116,9 +124,10 @@ Capture-enabled public operations publish one batch even when its facts are
 empty; capture-disabled controllers remain at revision zero. Tail state and
 focused values are coherent before transition listeners run, and ordinary
 focused/root listeners run afterward. Transition callbacks may read state or
-unsubscribe, and may dispose the controller synchronously. Document mutation,
-processor registration, and processor-registration disposal are rejected until
-the callback returns.
+unsubscribe, but must not synchronously dispose the controller or mutate the
+document, register processors, or dispose processor registrations. Those
+mutations are rejected until the callback returns; schedule them after the
+callback when needed.
 
 Use `MdstreamNodeKey`, which combines continuity generation, epoch, and node ID,
 for keyed widget state. Advanced recovery crosses a continuity barrier even
@@ -143,11 +152,25 @@ Processor artifacts remain outside canonical snapshots. Registered processors
 run after native transitions, receive cancellation when their input becomes
 stale, and settle through the Rust request-generation checks. Await
 `whenProcessorsIdle()` when a workflow needs all scheduled processor work to
-finish.
+finish. Artifact state is a strongly typed `ArtifactState`; changes and payloads
+are sealed variants with non-null fields for each case. Dispatch concurrency and
+candidate capacity come from the native session's effective limits; the Flutter
+layer does not duplicate Rust defaults or parse session options again.
 
 ## Supported platforms
 
-Version 0.4 packages native libraries for Android arm64/armv7/x86_64, iOS
-device and simulator, universal macOS, Linux x86_64, and Windows x64. The
+Version 0.4 packages native libraries for Android arm64/armv7/x86_64, iOS 14+
+device and simulator, universal macOS 11+, Linux x86_64, and Windows x64. The
 standalone `mdstream` Dart package remains available for hosts that supply an
 explicit native-library path.
+
+Android libraries use 16 KiB ELF LOAD alignment. The release smoke builds a
+modern downstream APK with AGP 8.7.3 and uncompressed native-library packaging,
+verifies it with `zipalign -P 16`, and loads it on an Android 15 16 KiB system
+image. The plugin still supports minSdk 21 through Android's extracted-library
+path. Consumers packaging uncompressed native libraries need AGP 8.5.1 or newer
+to preserve ZIP alignment.
+
+Linux x86_64 libraries target a glibc 2.17 baseline. Local Linux native builds
+therefore require Zig and `cargo-zigbuild`; the release workflow also loads the
+exact packaged library on the declared legacy runtime baseline.

@@ -23,8 +23,8 @@ ContentNode + semantic resource
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
-| `mdstream-protocol` | Content IR, IDs, versions, changes, snapshots, reducer, lifecycle, wire schema | Markdown parsing, UI state, processor execution |
-| `mdstream` | Streaming input, framing, Markdown compilation, reconciliation, semantic correction | Async runtime, renderer, artifact storage |
+| `mdstream-protocol` | Content IR, IDs, versions, changes, snapshots, reducer, lifecycle, wire schema, canonical-state limits | Markdown parsing, parser work budgets, UI state, processor execution |
+| `mdstream` | Streaming input, framing, Markdown compilation and its work budgets, reconciliation, semantic correction | Async runtime, renderer, artifact storage |
 | `mdstream-processors` | Processor requests, freshness keys, cancellation, artifact state and limits | Scheduling threads, sandboxing, canonical state |
 | `mdstream-tokio` | Lossless async input transport and actor lifecycle | Alternative document semantics |
 | `mdstream-bindings-core` | Stateful foreign-language sessions, command envelopes, typed transport errors | A second reducer or parser |
@@ -47,12 +47,32 @@ Source progress and typed projection coverage use separate cursors. This keeps
 uncovered streaming bytes observable without requiring a second incremental
 CommonMark parser. See [ADR 0002](ADR_0002_PROJECTION_FRONTIER.md).
 
+Resource limits follow the same ownership boundary. `ProtocolLimits` bounds
+legal Content IR and reducer state without naming a parser. `CompilerLimits`
+bounds Markdown-specific event/classification work plus the compiler's retained
+definition registry, reverse dependency edges, and definition metadata. Engine,
+processor-host, and binding-wire limits remain separate because they constrain
+different failure domains.
+
 ## Identity
 
 `NodeId` is stable across chunk schedules and semantic correction inside one
 continuity generation. `NodeVersion` is a deterministic opaque compare-and-set
 value and changes when the node projection changes. Source offsets may guide
 reconciliation but are not identity.
+
+`ChangeImpact.changed_nodes` is the authoritative invalidation set for complete
+materialized node views. An equal `NodeVersion` does not prove that the full view
+is unchanged: `ContentNode.children.version` independently covers direct child
+identity and order, while resource changes may invalidate nodes that reference
+the resource.
+
+`ProcessorInputVersion` is a separate deterministic compare token for the
+complete node-local processor input: the node projection, body text, referenced
+resource, and direct child-list topology. Adapters use it for matching caches
+and conditional processor admission. They must not substitute `NodeVersion`,
+because processor-visible context can change while the node projection version
+remains stable.
 
 Across advanced recovery or another full replacement, hosts qualify UI identity
 with `(continuity generation, epoch, NodeId)`. A capture-disabled host advances

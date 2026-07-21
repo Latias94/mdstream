@@ -25,7 +25,7 @@ Example roles are deliberate:
 - Role: First-success tutorial
 - Source: [`mdstream/examples/minimal.rs`](../mdstream/examples/minimal.rs)
 - Prerequisites: A source checkout and Rust 1.85 or newer; no credentials, provider, network service, or graphical environment.
-- Run: `cargo +1.85.0 run -p mdstream --example minimal -- --assert`
+- Run: `cargo run -p mdstream --example minimal -- --assert`
 - Expect: Named Golden AI Stream checkpoints, explicit mdstream/host ownership lines, and `ASSERTIONS_OK scenario=golden-ai-stream`.
 - Next: [Framework-neutral Web flagship](../examples/web/README.md)
 - Availability: Source checkout and the published `mdstream` crate archive.
@@ -67,12 +67,12 @@ The example reads pending source and focused state only when requested and close
 - Role: Interactive native host
 - Source: [`bindings/flutter/example/lib/main.dart`](../bindings/flutter/example/lib/main.dart)
 - Prerequisites: Flutter 3.32.1 or newer, a supported Android, iOS, macOS, Linux, or Windows toolchain, and a runnable device such as `macos`.
-- Run: `python3 bindings/flutter/tool/build_native.py macos && cd bindings/flutter/example && flutter create --empty --platforms macos --project-name mdstream_flutter_example --org io.mdstream.example --no-pub . && flutter run -d macos`; replace all three `macos` values with the corresponding supported platform and device when appropriate.
+- Run: `python3 bindings/flutter/tool/build_native.py macos && cd bindings/flutter/example && flutter create --empty --platforms macos --project-name mdstream_flutter_example --org io.mdstream.example --no-pub . && dart run configure_host.dart macos && flutter run -d macos`; replace the platform and device values when appropriate. The helper raises generated Apple deployment targets to the native package minimum.
 - Expect: Settled canonical content in an answer-first Golden stream with replay and presentation controls, stable `MdstreamNodeKey` widgets, focused pending/transition state, and semantic status announcements.
 - Next: [Merman artifact](#merman-artifact)
 - Availability: Source checkout and the published `mdstream_flutter` package example; widget composition remains example-owned.
 
-The primary command above is for a source checkout, where `build_native.py` stages the selected platform library. From an extracted published package, start at `cd example && flutter create --empty --platforms macos --project-name mdstream_flutter_example --org io.mdstream.example --no-pub . && flutter run -d macos`; its native artifacts are already staged. Platform runners are generated on demand and stay outside the package. The repository-only supported-platform probe uses the same generation command before `flutter test integration_test/golden_stream_smoke_test.dart -d macos`; test sources are excluded from the package archive. `mdstream_flutter` supplies native loading and headless controllers, not a Markdown widget, renderer, animation system, theme, or bundled Merman binary.
+The primary command above is for a source checkout, where `build_native.py` stages the selected platform library. From an extracted published package, start at `cd example && flutter create --empty --platforms macos --project-name mdstream_flutter_example --org io.mdstream.example --no-pub . && dart run configure_host.dart macos && flutter run -d macos`; its native artifacts are already staged. Platform runners are generated on demand and stay outside the package. The repository-only supported-platform probe uses the same generation command, then `dart run configure_host.dart macos`, before `flutter test integration_test/golden_stream_smoke_test.dart -d macos`; test sources are excluded from the package archive. `mdstream_flutter` supplies native loading and headless controllers, not a Markdown widget, renderer, animation system, theme, or bundled Merman binary.
 <!-- /example -->
 
 <!-- example:tokio-actor -->
@@ -110,7 +110,7 @@ The recipe starts with streamed Markdown, selects the typed stable Mermaid node,
 - Role: Focused identity and invalidation recipe.
 - Source: [`mdstream/examples/headless_state.rs`](../mdstream/examples/headless_state.rs)
 - Prerequisites: Rust 1.85 or newer.
-- Run: `cargo +1.85.0 run -p mdstream --example headless_state`
+- Run: `cargo run -p mdstream --example headless_state`
 - Expect: One paragraph identity survives append, stabilization, and finish; reset reports removals for every prior-epoch host key.
 - Next: [Processor lifecycle recipe](#processor-lifecycle)
 
@@ -119,7 +119,7 @@ The recipe starts with streamed Markdown, selects the typed stable Mermaid node,
 - Role: Focused generic derived-artifact recipe.
 - Source: [`mdstream/examples/processor_lifecycle.rs`](../mdstream/examples/processor_lifecycle.rs)
 - Prerequisites: Rust 1.85 or newer.
-- Run: `cargo +1.85.0 run -p mdstream --example processor_lifecycle`
+- Run: `cargo run -p mdstream --example processor_lifecycle`
 - Expect: An applied artifact leaves canonical state unchanged, then a completion from before reset is rejected as stale.
 - Next: [Custom blocks recipe](#custom-blocks)
 
@@ -128,7 +128,7 @@ The recipe starts with streamed Markdown, selects the typed stable Mermaid node,
 - Role: Focused typed-syntax extension recipe.
 - Source: [`mdstream/examples/custom_blocks.rs`](../mdstream/examples/custom_blocks.rs)
 - Prerequisites: Rust 1.85 or newer.
-- Run: `cargo +1.85.0 run -p mdstream --example custom_blocks`
+- Run: `cargo run -p mdstream --example custom_blocks`
 - Expect: A stable `app.thinking/1` node and a versioned derived text artifact with unchanged canonical state.
 - Next: [Replica recovery recipe](#replica-recovery)
 
@@ -137,7 +137,7 @@ The recipe starts with streamed Markdown, selects the typed stable Mermaid node,
 - Role: Focused continuity and snapshot-recovery recipe.
 - Source: [`mdstream/examples/replica_recovery.rs`](../mdstream/examples/replica_recovery.rs)
 - Prerequisites: Rust 1.85 or newer.
-- Run: `cargo +1.85.0 run -p mdstream --example replica_recovery`
+- Run: `cargo run -p mdstream --example replica_recovery`
 - Expect: `retained_same_floor`, `replaced_advanced`, and `new_epoch` decisions with the corresponding host-key action.
 - Next: [Transition trace](#transition-trace)
 
@@ -146,7 +146,7 @@ The recipe starts with streamed Markdown, selects the typed stable Mermaid node,
 - Role: Machine contract probe for fixed-schedule host work, not starter application code.
 - Source: [`mdstream/examples/transition_trace.rs`](../mdstream/examples/transition_trace.rs)
 - Prerequisites: Rust 1.85 or newer.
-- Run: `cargo +1.85.0 run -p mdstream --example transition_trace`
+- Run: `cargo run -p mdstream --example transition_trace`
 - Expect: Deterministic JSON with schedule-local reconstruction traces and an equal shared final snapshot; raw intermediate facts are not claimed to match across schedules.
 - Next: [Web flagship](#web-flagship)
 

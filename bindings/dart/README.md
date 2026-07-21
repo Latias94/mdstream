@@ -23,6 +23,8 @@ Platform plugins that already link the native library can use
 `MdstreamRuntime.fromDynamicLibrary`, including `DynamicLibrary.process()` on
 supported Apple builds. Runtime initialization checks ABI version 1, both 0.4
 binding schemas, and every result-structure layout before creating a session.
+Reducer creation also reads the native session's effective processor scheduler
+limits, so adapters do not duplicate Rust defaults or option normalization.
 Loading a dynamic library executes native code in the current process. Accept a
 path only from a source you trust: ABI, schema, and layout checks establish
 compatibility, not authenticity, integrity, or sandboxing.
@@ -123,14 +125,21 @@ budget:
 ```dart
 final options = MdstreamSessionOptions(
   captureTransitions: true,
-  protocol: const {
-    'max_source_bytes': '1048576',
-    'max_nodes': '4096',
-    'max_resources': '256',
-    'max_operations': '4096',
-    'max_change_structural_items': '4096',
-    'max_children_per_list': '4096',
-  },
+  protocol: MdstreamProtocolLimits(
+    maxSourceBytes: '1048576',
+    maxNodes: '4096',
+    maxResources: '256',
+    maxOperations: '4096',
+    maxChangeStructuralItems: '4096',
+    maxChildrenPerList: '4096',
+  ),
+  compiler: MdstreamCompilerLimits(
+    maxMarkdownEvents: '300000',
+    maxMarkdownOverlapWork: '1000000',
+    maxDefinitions: '100000',
+    maxDefinitionEdges: '100000',
+    maxDefinitionMetadataBytes: '16777216',
+  ),
 );
 final engine = runtime.createEngine(options: options);
 
@@ -139,6 +148,13 @@ for (final facts in result.transitionFacts) {
   scheduleHostPresentation(facts, engine.state);
 }
 ```
+
+`MdstreamProtocolLimits` contains only parser-neutral Content IR and reducer
+limits. Parser work and retained definition-registry budgets belong to
+`MdstreamCompilerLimits`. All five limit groups expose only supported
+camel-case fields and encode the native snake-case schema internally. Arbitrary
+native-schema maps are not part of the public Dart API, and compiler fields are
+available only on `MdstreamCompilerLimits`.
 
 `EngineResult.transitionFacts` and `ReducerResult.transitionFacts` preserve
 wire order and are immutable. Facts distinguish projected text append,
@@ -160,9 +176,41 @@ an oversized chunk. Metrics report input, forwarded, pending, copy, payload,
 and native append counts as decimal strings.
 
 Processor methods expose native begin, complete, fail, and cancel leases. Their
-text, binary, or citation artifacts are keyed by epoch, node, processor, node
-version, configuration, and request generation. Artifacts remain outside the
-canonical snapshot.
+text, binary, or citation artifacts are keyed by epoch, node identity, processor
+identity, node projection version, complete input version, processor
+implementation version, configuration version, and request generation.
+Conditional admission reads the complete input version from the materialized
+node view:
+
+```dart
+void beginCurrentProcessor(MdstreamEngine engine, NodeId nodeId) {
+  final document = engine.state.currentState.document;
+  final nodeView = engine.state.nodeView(nodeId);
+  if (document != null && nodeView != null) {
+    engine.beginProcessorIfCurrent(
+      expectedEpoch: document.coordinate.epoch,
+      nodeId: nodeView.node.id,
+      expectedInputVersion: nodeView.processorInputVersion,
+      processorId: 'app.example',
+      processorVersion: '1',
+      configurationVersion: 'default',
+      acceptsProvisional: false,
+      allowProvisional: false,
+    );
+  }
+}
+```
+
+Artifacts remain outside the canonical snapshot.
+`engine.processorSchedulerLimits` and the equivalent reducer property expose
+the native effective concurrency and candidate-queue capacities for framework
+adapters.
+
+Processor completion outcomes and artifact slot states are exposed as
+`ProcessorCompletionOutcome` and `ArtifactState`. Artifact changes and payloads
+are sealed variants, so consumers switch on the concrete variant instead of
+checking strings and nullable fields. Variant-specific fields are non-nullable,
+and decoding rejects inconsistent native state/payload combinations.
 
 All engine and reducer handles support idempotent `close()`. Explicit close is
 the lifecycle contract; short-lived native outputs and buffers are copied and

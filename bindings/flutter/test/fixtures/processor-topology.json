@@ -1,0 +1,146 @@
+{
+  "schema": "mdstream.flutter-test/0.4",
+  "changes": [
+    {
+      "change_id": "topology:start",
+      "epoch": "1",
+      "epoch_start": {
+        "predecessor": null
+      },
+      "maturity": "final",
+      "operations": [
+        {
+          "kind": "insert_node",
+          "node": {
+            "body": {
+              "end": "0",
+              "start": "0"
+            },
+            "children": {
+              "children": [],
+              "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5"
+            },
+            "content": {
+              "kind": "thematic_break"
+            },
+            "id": "2",
+            "source": {
+              "end": "0",
+              "start": "0"
+            },
+            "stability": "stable",
+            "version": "sha256:a45925dc348823e908c315a0f1ad0bb249736391ef677cbf3bdb1599e8e8d7e3"
+          }
+        },
+        {
+          "kind": "insert_node",
+          "node": {
+            "body": {
+              "end": "0",
+              "start": "0"
+            },
+            "children": {
+              "children": [],
+              "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5"
+            },
+            "content": {
+              "kind": "block_quote",
+              "style": "plain"
+            },
+            "id": "1",
+            "source": {
+              "end": "0",
+              "start": "0"
+            },
+            "stability": "stable",
+            "version": "sha256:348e3831379ce7113516f124dead91788de7c763966390d4b600ab04c1578f59"
+          }
+        },
+        {
+          "delete_count": 0,
+          "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+          "insert": [
+            "2"
+          ],
+          "kind": "splice_children",
+          "new_version": "sha256:ae0e1b1b2ef01d15dca0915be14359468bbe7ed2564aae1d810a81fc18f93574",
+          "owner": {
+            "kind": "node",
+            "node_id": "1"
+          },
+          "start": 0
+        },
+        {
+          "delete_count": 0,
+          "expected_version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+          "insert": [
+            "1"
+          ],
+          "kind": "splice_children",
+          "new_version": "sha256:9b747965e761a5e22f178f4189efc3d44f832a717f754934912ed5b719d82c21",
+          "owner": {
+            "kind": "document"
+          },
+          "start": 0
+        }
+      ],
+      "schema": "mdstream.content/0.4",
+      "sequence": "0",
+      "source": {
+        "expected_cursor": "0",
+        "suffix": ""
+      }
+    },
+    {
+      "change_id": "topology:append",
+      "epoch": "1",
+      "epoch_start": null,
+      "maturity": "final",
+      "operations": [
+        {
+          "kind": "insert_node",
+          "node": {
+            "body": {
+              "end": "0",
+              "start": "0"
+            },
+            "children": {
+              "children": [],
+              "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5"
+            },
+            "content": {
+              "kind": "thematic_break"
+            },
+            "id": "3",
+            "source": {
+              "end": "0",
+              "start": "0"
+            },
+            "stability": "stable",
+            "version": "sha256:a45925dc348823e908c315a0f1ad0bb249736391ef677cbf3bdb1599e8e8d7e3"
+          }
+        },
+        {
+          "delete_count": 0,
+          "expected_version": "sha256:ae0e1b1b2ef01d15dca0915be14359468bbe7ed2564aae1d810a81fc18f93574",
+          "insert": [
+            "3"
+          ],
+          "kind": "splice_children",
+          "new_version": "sha256:1b166e7270f8062210ede008e683565cb3abdecca04d9bc18eec13d1c9c0a559",
+          "owner": {
+            "kind": "node",
+            "node_id": "1"
+          },
+          "start": 1
+        }
+      ],
+      "schema": "mdstream.content/0.4",
+      "sequence": "1",
+      "source": {
+        "expected_cursor": "0",
+        "suffix": ""
+      }
+    }
+  ]
+}

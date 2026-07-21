@@ -7,10 +7,85 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mdstream_flutter/mdstream_flutter.dart';
 import 'package:mdstream_flutter_example/bootstrap.dart';
+import 'package:mdstream_flutter_example/configure_host.dart';
 import 'package:mdstream_flutter_example/golden_stream_host.dart';
 
 void main() {
   final nativeLibrary = _nativeLibraryPath();
+
+  test('generated Apple hosts use the native package deployment targets', () {
+    final root = Directory.systemTemp.createTempSync('mdstream-flutter-host-');
+    try {
+      for (final target
+          in <
+                String,
+                ({
+                  String setting,
+                  String before,
+                  String after,
+                  String podPlatform,
+                })
+              >{
+                'ios': (
+                  setting: 'IPHONEOS_DEPLOYMENT_TARGET',
+                  before: '13.0',
+                  after: '14.0',
+                  podPlatform: 'ios',
+                ),
+                'macos': (
+                  setting: 'MACOSX_DEPLOYMENT_TARGET',
+                  before: '10.14',
+                  after: '11.0',
+                  podPlatform: 'osx',
+                ),
+              }
+              .entries) {
+        final platformRoot = Directory(
+          '${root.path}${Platform.pathSeparator}${target.key}',
+        );
+        final project = File(
+          '${platformRoot.path}${Platform.pathSeparator}Runner.xcodeproj'
+          '${Platform.pathSeparator}project.pbxproj',
+        );
+        final podfile = File(
+          '${platformRoot.path}${Platform.pathSeparator}Podfile',
+        );
+        project.parent.createSync(recursive: true);
+        project.writeAsStringSync(
+          '${target.value.setting} = ${target.value.before};\n',
+        );
+        podfile.writeAsStringSync(
+          "# platform :${target.value.podPlatform}, '${target.value.before}'\n",
+        );
+
+        configureHost(projectRoot: root, platform: target.key);
+        configureHost(projectRoot: root, platform: target.key);
+        expect(
+          project.readAsStringSync(),
+          contains('${target.value.setting} = ${target.value.after};'),
+        );
+        expect(
+          podfile.readAsStringSync(),
+          contains(
+            "platform :${target.value.podPlatform}, '${target.value.after}'",
+          ),
+        );
+      }
+
+      expect(
+        () => configureHost(projectRoot: root, platform: 'windows'),
+        throwsA(
+          isA<ConfigureHostException>().having(
+            (error) => error.message,
+            'message',
+            contains('unsupported Apple platform'),
+          ),
+        ),
+      );
+    } finally {
+      root.deleteSync(recursive: true);
+    }
+  });
 
   testWidgets(
     'focused nodes retain their key and unrelated roots do not rebuild',
