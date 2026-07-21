@@ -95,7 +95,10 @@ impl BindingError {
         Self::new(
             BindingStatus::ResourceLimit,
             "bindings.resource_limit",
-            format!("{field} uses {actual} bytes, limit is {limit}"),
+            format!(
+                "{field} uses {actual} {}, limit is {limit}",
+                resource_unit(field)
+            ),
         )
     }
 
@@ -211,11 +214,14 @@ pub(crate) fn host_error(error: HostError) -> BindingError {
         }
         _ => BindingStatus::Processor,
     };
-    BindingError::new(
-        status,
-        format!("processor.{}", error.code()),
-        error.to_string(),
-    )
+    let detail_code = match &error {
+        HostError::LimitExceeded { field, .. } => {
+            let field = field.strip_prefix("processor.").unwrap_or(field);
+            format!("processor.resource_limit.{field}")
+        }
+        _ => format!("processor.{}", error.code()),
+    };
+    BindingError::new(status, detail_code, error.to_string())
 }
 
 pub(crate) fn identifier_error(error: IdentifierError) -> BindingError {
@@ -261,6 +267,15 @@ fn protocol_code_name(code: ProtocolErrorCode) -> &'static str {
     }
 }
 
+fn resource_unit(field: &str) -> &'static str {
+    match field {
+        "markdown.events" => "events",
+        "markdown.footnote_overlap_work" => "work units",
+        _ if field.ends_with("_bytes") => "bytes",
+        _ => "items",
+    }
+}
+
 fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value;
@@ -271,4 +286,34 @@ fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
     }
     value.truncate(end);
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{host_error, resource_unit};
+    use mdstream_processors::HostError;
+
+    #[test]
+    fn resource_messages_use_domain_units() {
+        assert_eq!(resource_unit("markdown.events"), "events");
+        assert_eq!(
+            resource_unit("markdown.footnote_overlap_work"),
+            "work units"
+        );
+        assert_eq!(resource_unit("engine.change_bytes"), "bytes");
+        assert_eq!(resource_unit("protocol.nodes"), "items");
+    }
+
+    #[test]
+    fn processor_limit_detail_identifies_the_releasing_budget() {
+        let error = host_error(HostError::LimitExceeded {
+            field: "processor.in_flight_jobs",
+            limit: 1,
+            actual: 2,
+        });
+        assert_eq!(
+            error.detail_code(),
+            "processor.resource_limit.in_flight_jobs"
+        );
+    }
 }

@@ -1,6 +1,8 @@
-use std::sync::Mutex;
+use std::{panic::AssertUnwindSafe, sync::Mutex};
 
-use mdstream_bindings_core::{BindingError, BindingOutput, EngineSession, ReducerSession};
+use mdstream_bindings_core::{
+    BindingError, BindingOutput, EngineSession, ProcessorSchedulerLimits, ReducerSession,
+};
 
 use crate::{
     buffers::{
@@ -34,14 +36,34 @@ impl Drop for MdstreamEngine {
 
 pub struct MdstreamReducer {
     inner: Mutex<ReducerSession>,
+    processor_scheduler_limits: MdstreamProcessorSchedulerLimits,
 }
 
 impl MdstreamReducer {
     fn into_raw(inner: ReducerSession) -> *mut Self {
         record_reducer_created();
+        let processor_scheduler_limits = inner.processor_scheduler_limits().into();
         Box::into_raw(Box::new(Self {
             inner: Mutex::new(inner),
+            processor_scheduler_limits,
         }))
+    }
+}
+
+/// Effective native budgets used by a host-language processor scheduler.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MdstreamProcessorSchedulerLimits {
+    pub max_in_flight_jobs: usize,
+    pub max_queued_candidates: usize,
+}
+
+impl From<ProcessorSchedulerLimits> for MdstreamProcessorSchedulerLimits {
+    fn from(limits: ProcessorSchedulerLimits) -> Self {
+        Self {
+            max_in_flight_jobs: limits.max_in_flight_jobs,
+            max_queued_candidates: limits.max_queued_candidates,
+        }
     }
 }
 
@@ -144,6 +166,29 @@ pub unsafe extern "C" fn mdstream_reducer_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mdstream_reducer_free(reducer: *mut MdstreamReducer) {
     unsafe { crate::errors::drop_opaque(reducer) };
+}
+
+/// Returns the immutable processor scheduler limits captured by a reducer.
+///
+/// A null pointer returns an all-zero value. For a non-null pointer, the
+/// returned structure remains valid independently of the reducer handle.
+///
+/// # Safety
+///
+/// A non-null pointer must be a live handle returned by `mdstream_reducer_new`.
+/// The caller must not race this query with `mdstream_reducer_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mdstream_reducer_processor_scheduler_limits(
+    reducer: *const MdstreamReducer,
+) -> MdstreamProcessorSchedulerLimits {
+    std::panic::catch_unwind(AssertUnwindSafe(|| unsafe {
+        reducer
+            .as_ref()
+            .map_or_else(MdstreamProcessorSchedulerLimits::default, |reducer| {
+                reducer.processor_scheduler_limits
+            })
+    }))
+    .unwrap_or_default()
 }
 
 /// Applies one canonical change JSON payload without a command wrapper.

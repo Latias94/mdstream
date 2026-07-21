@@ -591,14 +591,14 @@ fn conditional_processor_begin_rejects_stale_coordinates_without_a_lease() {
         BindingPayloadKind::NodeView,
     ))
     .unwrap();
-    let node_version = node["node"]["version"].as_str().unwrap();
+    let input_version = node["processor_input_version"].as_str().unwrap();
 
     let stale = serde_json::json!({
         "schema": BINDING_SCHEMA,
         "kind": "begin_processor_if_current",
         "expected_epoch": "2",
         "node_id": node_id.get().to_string(),
-        "expected_node_version": node_version,
+        "expected_input_version": input_version,
         "processor_id": "test.conditional",
         "processor_version": "v1",
         "configuration_version": "test.conditional.default"
@@ -615,7 +615,7 @@ fn conditional_processor_begin_rejects_stale_coordinates_without_a_lease() {
         "kind": "begin_processor_if_current",
         "expected_epoch": "1",
         "node_id": node_id.get().to_string(),
-        "expected_node_version": node_version,
+        "expected_input_version": input_version,
         "processor_id": "test.conditional",
         "processor_version": "v1",
         "configuration_version": "test.conditional.default"
@@ -859,6 +859,86 @@ fn replaced_foreign_requests_remain_registered_until_their_leases_settle() {
     }
     assert_eq!(reducer.metrics().pending_processor_requests, 0);
     assert_eq!(reducer.processor_metrics().in_flight_jobs, 0);
+}
+
+#[test]
+fn reducer_reconcile_retires_every_binding_request_whose_native_lease_was_removed() {
+    let options = format!(
+        r#"{{
+          "schema":"{BINDING_OPTIONS_SCHEMA}",
+          "processor":{{"max_in_flight_jobs":"2"}}
+        }}"#
+    );
+    let mut reducer = ReducerSession::new(options.as_bytes()).unwrap();
+    let node_id = initialize_single_stable_node(&mut reducer);
+    let descriptor =
+        ProcessorDescriptor::new("test.reconcile", "v1", ProcessorCapabilities::stable_only())
+            .unwrap();
+    let configuration = ConfigurationVersion::new("test.reconcile.default").unwrap();
+    let (first, _) = reducer
+        .begin_native_processor(
+            descriptor.clone(),
+            node_id,
+            configuration.clone(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    let (second, _) = reducer
+        .begin_native_processor(
+            descriptor,
+            node_id,
+            configuration,
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    reducer.cancel_processor(second.key().generation()).unwrap();
+    assert_eq!(reducer.metrics().pending_processor_requests, 1);
+    assert_eq!(reducer.processor_metrics().in_flight_jobs, 1);
+
+    let range = SourceRange::new(SourceCursor::new(0), SourceCursor::new(0));
+    let node_version = ContentNode::leaf(
+        node_id,
+        NodeStability::Stable,
+        range,
+        ContentKind::Paragraph {},
+    )
+    .version;
+    let roots_version = ChildList::new(vec![node_id]).version().clone();
+    let removal = ChangeSet::new(
+        Epoch::new(1),
+        Sequence::new(1),
+        ChangeId::new("bindings:single-node:remove").unwrap(),
+        SourceDelta::unchanged(SourceCursor::new(0)),
+        vec![
+            ProjectionOp::SpliceChildren {
+                owner: ChildListOwner::Document,
+                expected_version: roots_version,
+                start: 0,
+                delete_count: 1,
+                insert: Vec::new(),
+                new_version: ChildList::empty().version().clone(),
+            },
+            ProjectionOp::RemoveNode {
+                node_id,
+                expected_version: node_version,
+            },
+        ],
+    )
+    .unwrap();
+    let encoded = encode_change_json(&removal, usize::MAX, ProtocolLimits::default()).unwrap();
+    reducer.apply_change(&encoded).unwrap();
+
+    assert_eq!(reducer.processor_metrics().in_flight_jobs, 0);
+    assert_eq!(reducer.metrics().pending_processor_requests, 0);
+    let stale = reducer
+        .execute(&foreign_text_completion(
+            first.key().generation().get(),
+            "test.reconcile/1",
+        ))
+        .unwrap();
+    let stale: serde_json::Value =
+        serde_json::from_slice(payload(&stale, BindingPayloadKind::ProcessorCompletion)).unwrap();
+    assert_eq!(stale["outcome"], "stale");
 }
 
 #[test]

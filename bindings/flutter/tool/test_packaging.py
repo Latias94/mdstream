@@ -4,6 +4,9 @@ import io
 import gzip
 import json
 import os
+import plistlib
+import struct
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -19,14 +22,32 @@ import package_smoke  # noqa: E402
 
 from build_native import (  # noqa: E402
     ANDROID_TARGETS,
+    BuildOptions,
     PackagingError,
     _android_ndk_home,
+    _exported_symbols,
+    _make_framework,
     atomic_stage,
-    detect_native_format,
     validate_native_artifact,
+)
+from native_artifact import (  # noqa: E402
+    FRAMEWORK_MODULE_MAP,
+    NATIVE_CONTRACTS,
+    NativeArtifactError,
+    inspect_xcframework,
+    validate_native_image,
+)
+from native_test_fixture import (  # noqa: E402
+    REQUIRED_SYMBOL_TEXT as _REQUIRED_SYMBOL_TEXT,
+    elf_image as _elf_image,
+    required_symbols as _required_symbols,
 )
 from package_smoke import (  # noqa: E402
     PackageSmokeError,
+    SWIFTPM_CONSUMER_NAME,
+    _validate_swiftpm_manifest,
+    _swiftpm_manifest_root,
+    _write_swiftpm_consumer,
     _extract_archive,
     inspect_package_archive,
     validate_dependency_graph,
@@ -66,9 +87,15 @@ class BuildNativeContractTest(unittest.TestCase):
             ).read_text(encoding="utf-8")
             self.assertIn(
                 f'"${{ANDROID_HOME}}/cmdline-tools/latest/bin/sdkmanager" '
-                f'"ndk;{selected.name}"',
+                f'"ndk;{selected.name}" "build-tools;35.0.0"',
                 workflow,
             )
+            self.assertIn("target: google_apis_ps16k", workflow)
+            android_smoke = (TOOL_ROOT / "android_smoke.py").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('"-c", "-P", "16", "-v", "4"', android_smoke)
+            self.assertIn('"getconf", "PAGE_SIZE"', android_smoke)
 
     def test_ci_resolves_the_independent_example_before_package_analysis(self) -> None:
         workflow = (
@@ -120,10 +147,15 @@ class BuildNativeContractTest(unittest.TestCase):
         linux = jobs["linux"]
         self.assertIn(generate_linux_host, linux)
         self.assertIn(integration_smoke, linux)
+        self.assertIn("uses: mlugg/setup-zig@v2", linux)
+        self.assertIn("tool: cargo-zigbuild@0.23.0", linux)
         self.assertLess(
             linux.index(generate_linux_host),
             linux.index(integration_smoke),
         )
+        self.assertIn("package-linux-legacy-smoke:", workflow)
+        self.assertIn("debian:10.13-slim /mdstream/c-consumer", workflow)
+        self.assertIn("target/flutter-extracted/linux/lib/x86_64", workflow)
 
     def test_atomic_stage_replaces_complete_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -144,49 +176,296 @@ class BuildNativeContractTest(unittest.TestCase):
                 b"\x7fELFpayload",
             )
 
+    def test_atomic_stage_preserves_relative_framework_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            version = source / "Versions" / "A"
+            version.mkdir(parents=True)
+            (version / "MdstreamFFI").write_bytes(b"binary")
+            (source / "Versions" / "Current").symlink_to("A")
+            (source / "MdstreamFFI").symlink_to(
+                Path("Versions") / "Current" / "MdstreamFFI"
+            )
+
+            destination = root / "staged"
+            atomic_stage(source, destination)
+
+            self.assertTrue((destination / "Versions" / "Current").is_symlink())
+            self.assertEqual(
+                (destination / "Versions" / "Current").readlink(), Path("A")
+            )
+            self.assertTrue((destination / "MdstreamFFI").is_symlink())
+            self.assertEqual(
+                (destination / "MdstreamFFI").readlink(),
+                Path("Versions") / "Current" / "MdstreamFFI",
+            )
+
+    def test_macos_framework_is_shallow_before_cocoapods_prepares_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "libmdstream_ffi.dylib"
+            source.write_bytes(b"binary")
+            framework = root / "MdstreamFFI.framework"
+            options = BuildOptions(
+                profile="debug",
+                toolchain="1.85.0",
+                install_targets=False,
+                skip_strip=True,
+                ndk_home=None,
+            )
+
+            with patch("build_native._run"), patch(
+                "build_native._copy_and_strip",
+                side_effect=lambda source, destination, **_: destination.write_bytes(
+                    source.read_bytes()
+                ),
+            ):
+                binary = _make_framework(
+                    source,
+                    framework,
+                    platform_name="MacOSX",
+                    minimum_version="11.0",
+                    options=options,
+                )
+
+            self.assertEqual(binary, framework / "MdstreamFFI")
+            self.assertTrue((framework / "Info.plist").is_file())
+            self.assertTrue((framework / "Headers" / "mdstream.h").is_file())
+            self.assertTrue((framework / "Modules" / "module.modulemap").is_file())
+            self.assertFalse((framework / "Versions").exists())
+
+    def test_macos_cocoapods_framework_prepare_script_is_shell_valid(self) -> None:
+        script = TOOL_ROOT.parent / "macos" / "prepare_macos_framework.sh"
+        result = subprocess.run(
+            ["sh", "-n", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        podspec = (TOOL_ROOT.parent / "macos" / "mdstream_flutter.podspec").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("prepare_macos_framework.sh", podspec)
+        self.assertIn(":always_out_of_date => '1'", podspec)
+
+    def test_macos_cocoapods_prepare_script_versions_a_shallow_framework(self) -> None:
+        script = TOOL_ROOT.parent / "macos" / "prepare_macos_framework.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "plugin" / "macos"
+            framework = (
+                source_root
+                / "MdstreamFFI.xcframework"
+                / "macos-arm64_x86_64"
+                / "MdstreamFFI.framework"
+            )
+            (framework / "Headers").mkdir(parents=True)
+            (framework / "Modules").mkdir()
+            (framework / "MdstreamFFI").write_bytes(b"binary")
+            (framework / "Info.plist").write_text("plist", encoding="utf-8")
+            (framework / "Headers" / "mdstream.h").write_text(
+                "header", encoding="utf-8"
+            )
+            (framework / "Modules" / "module.modulemap").write_text(
+                "module", encoding="utf-8"
+            )
+
+            env = os.environ.copy()
+            env["PODS_XCFRAMEWORKS_BUILD_DIR"] = str(root / "intermediates")
+            env["PODS_TARGET_SRCROOT"] = str(source_root)
+            for _ in range(2):
+                result = subprocess.run(
+                    ["sh", str(script)],
+                    env=env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            self.assertEqual(
+                (framework / "Versions" / "A" / "MdstreamFFI").read_bytes(),
+                b"binary",
+            )
+            self.assertEqual(
+                (framework / "Versions" / "A" / "Resources" / "Info.plist").read_text(
+                    encoding="utf-8"
+                ),
+                "plist",
+            )
+            links = {
+                "MdstreamFFI": "Versions/Current/MdstreamFFI",
+                "Headers": "Versions/Current/Headers",
+                "Modules": "Versions/Current/Modules",
+                "Resources": "Versions/Current/Resources",
+            }
+            for name, target in links.items():
+                with self.subTest(link=name):
+                    self.assertTrue((framework / name).is_symlink())
+                    self.assertEqual((framework / name).readlink().as_posix(), target)
+
+            package_smoke._restore_macos_frameworks(root / "plugin")
+            self.assertFalse((framework / "Versions").exists())
+            self.assertEqual((framework / "MdstreamFFI").read_bytes(), b"binary")
+            self.assertTrue((framework / "Info.plist").is_file())
+            self.assertTrue((framework / "Headers" / "mdstream.h").is_file())
+            self.assertTrue(
+                (framework / "Modules" / "module.modulemap").is_file()
+            )
+
+            env.pop("PODS_XCFRAMEWORKS_BUILD_DIR")
+            result = subprocess.run(
+                ["sh", str(script)],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((framework / "Versions" / "Current").is_symlink())
+            package_smoke._restore_macos_frameworks(root / "plugin")
+
     def test_native_validation_checks_magic_and_absolute_ceiling(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             library = Path(temporary) / "libmdstream_ffi.so"
-            library.write_bytes(b"\x7fELFpayload")
-            self.assertEqual(detect_native_format(library), "elf")
+            native = _elf_image("x86_64")
+            library.write_bytes(native)
             validate_native_artifact(
                 library,
-                expected_format="elf",
-                ceiling_bytes=64,
+                contract=NATIVE_CONTRACTS["linux/x86_64"],
+                ceiling_bytes=len(native),
                 check_exports=False,
             )
 
             with self.assertRaisesRegex(PackagingError, "ceiling"):
                 validate_native_artifact(
                     library,
-                    expected_format="elf",
-                    ceiling_bytes=4,
+                    contract=NATIVE_CONTRACTS["linux/x86_64"],
+                    ceiling_bytes=len(native) - 1,
                     check_exports=False,
                 )
 
             library.write_bytes(b"not-an-elf")
-            with self.assertRaisesRegex(PackagingError, "format"):
+            with self.assertRaisesRegex(PackagingError, "contract mismatch"):
                 validate_native_artifact(
                     library,
-                    expected_format="elf",
-                    ceiling_bytes=64,
+                    contract=NATIVE_CONTRACTS["linux/x86_64"],
+                    ceiling_bytes=len(native),
                     check_exports=False,
                 )
+
+    def test_native_validation_checks_architecture_alignment_and_apple_platform(
+        self,
+    ) -> None:
+        validate_native_image(
+            _elf_image("arm64", alignment=16 * 1024),
+            NATIVE_CONTRACTS["android/arm64-v8a"],
+        )
+        with self.assertRaisesRegex(NativeArtifactError, "alignment"):
+            validate_native_image(
+                _elf_image("arm64", alignment=4 * 1024),
+                NATIVE_CONTRACTS["android/arm64-v8a"],
+            )
+        with self.assertRaisesRegex(NativeArtifactError, "architecture"):
+            validate_native_image(
+                _elf_image("x86_64"),
+                NATIVE_CONTRACTS["android/arm64-v8a"],
+            )
+        with self.assertRaisesRegex(NativeArtifactError, "platform"):
+            validate_native_image(
+                _macho_image("arm64", platform=1),
+                NATIVE_CONTRACTS["ios/ios-arm64"],
+            )
+        with self.assertRaisesRegex(NativeArtifactError, "minimum OS version"):
+            validate_native_image(
+                _macho_image("arm64", platform=2, minimum=(13, 0, 0)),
+                NATIVE_CONTRACTS["ios/ios-arm64"],
+            )
+        validate_native_image(
+            _pe_image("x86_64"),
+            NATIVE_CONTRACTS["windows/x64"],
+        )
+        fat = bytearray(_fat_macho_image(("arm64", "x86_64"), platform=7))
+        struct.pack_into(">I", fat, 16, len(fat) + 1)
+        with self.assertRaisesRegex(NativeArtifactError, "slice range"):
+            validate_native_image(
+                bytes(fat),
+                NATIVE_CONTRACTS["ios/ios-arm64_x86_64-simulator"],
+            )
+
+    def test_native_validation_rejects_header_only_elf_and_pe_images(self) -> None:
+        with self.assertRaisesRegex(NativeArtifactError, "dynamic|shared object"):
+            validate_native_image(
+                _header_only_elf_image("x86_64"),
+                NATIVE_CONTRACTS["linux/x86_64"],
+            )
+        with self.assertRaisesRegex(NativeArtifactError, "optional header|DLL|section"):
+            validate_native_image(
+                _header_only_pe_image("x86_64"),
+                NATIVE_CONTRACTS["windows/x64"],
+            )
+
+    def test_native_validation_rejects_invalid_or_forwarded_exports(self) -> None:
+        with self.assertRaisesRegex(NativeArtifactError, "no exports"):
+            validate_native_image(
+                _elf_image("x86_64", export_section_index=99),
+                NATIVE_CONTRACTS["linux/x86_64"],
+            )
+        with self.assertRaisesRegex(NativeArtifactError, "forwarded exports"):
+            validate_native_image(
+                _pe_image("x86_64", forwarded=True),
+                NATIVE_CONTRACTS["windows/x64"],
+            )
+
+    def test_xcframework_metadata_requires_exact_slice_inventory(self) -> None:
+        ios = _xcframework_plist("ios")
+        slices = inspect_xcframework(ios, "ios")
+        self.assertEqual(
+            {slice_.group for slice_ in slices},
+            {
+                "ios/ios-arm64",
+                "ios/ios-arm64_x86_64-simulator",
+            },
+        )
+        value = plistlib.loads(ios)
+        value["AvailableLibraries"][0]["SupportedPlatform"] = "macos"
+        with self.assertRaisesRegex(NativeArtifactError, "supported platform"):
+            inspect_xcframework(plistlib.dumps(value), "ios")
 
     def test_symbol_text_without_an_export_table_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             library = Path(temporary) / "libmdstream_ffi.so"
-            library.write_bytes(
-                b"\x7fELFmdstream_abi_version mdstream_package_version "
-                b"mdstream_engine_new mdstream_reducer_new"
-            )
-            with self.assertRaisesRegex(PackagingError, "command failed"):
+            library.write_bytes(_elf_image("x86_64"))
+            with patch(
+                "build_native._exported_symbols",
+                return_value={f"{name}_v2" for name in _required_symbols()},
+            ), self.assertRaisesRegex(PackagingError, "export table is missing"):
                 validate_native_artifact(
                     library,
-                    expected_format="elf",
-                    ceiling_bytes=256,
+                    contract=NATIVE_CONTRACTS["linux/x86_64"],
+                    ceiling_bytes=len(library.read_bytes()),
                     check_exports=True,
                 )
+
+    def test_external_symbol_inspection_uses_exact_names(self) -> None:
+        output = "\n".join(
+            (
+                "0000 T mdstream_abi_version_v2",
+                "0000 T mdstream_package_version_v2",
+                "0000 T mdstream_engine_new_v2",
+                "0000 T mdstream_reducer_new_v2",
+            )
+        )
+        completed = subprocess.CompletedProcess([], 0, stdout=output, stderr="")
+        with patch("build_native._run", return_value=completed):
+            exported = _exported_symbols(
+                Path("library.so"),
+                native_format="elf",
+                symbol_tool=Path("llvm-nm"),
+            )
+        self.assertTrue(exported.isdisjoint(_required_symbols()))
 
 
 class PackageSmokeContractTest(unittest.TestCase):
@@ -196,13 +475,144 @@ class PackageSmokeContractTest(unittest.TestCase):
         with patch.object(package_smoke.sys, "platform", "linux"):
             self.assertEqual(package_smoke._flutter_tool(), "flutter")
 
+    def test_swiftpm_consumer_imports_plugin_and_probes_bundled_abi(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package_root = root / "ios" / "mdstream_flutter"
+            _write_swiftpm_consumer(root / "consumer", "ios", package_root)
+
+            package = (root / "consumer" / "Package.swift").read_text(
+                encoding="utf-8"
+            )
+            source = (
+                root
+                / "consumer"
+                / "Sources"
+                / SWIFTPM_CONSUMER_NAME
+                / "MdstreamSwiftPMSmoke.swift"
+            ).read_text(encoding="utf-8")
+            tests = (
+                root
+                / "consumer"
+                / "Tests"
+                / SWIFTPM_CONSUMER_NAME
+                / "MdstreamSwiftPMSmokeTests.swift"
+            ).read_text(encoding="utf-8")
+
+            self.assertIn(
+                '.product(name: "mdstream-flutter", package: "mdstream_flutter")',
+                package,
+            )
+            self.assertIn("platforms: [.iOS(.v14)]", package)
+            self.assertIn("import mdstream_flutter", source)
+            self.assertIn("mdstream_abi_version()", source)
+            self.assertIn("mdstream_package_version()", source)
+            self.assertIn("testBundledLibraryLoads", tests)
+            self.assertFalse((root / "consumer" / "Podfile").exists())
+
+    def test_swiftpm_manifest_contract_covers_binary_target_and_wrapper(self) -> None:
+        manifest = {
+            "name": "mdstream_flutter",
+            "platforms": [{"platformName": "macos", "version": "11.0"}],
+            "products": [
+                {"name": "mdstream-flutter", "targets": ["mdstream_flutter"]}
+            ],
+            "targets": [
+                {
+                    "name": "MdstreamFFI",
+                    "type": "binary",
+                    "path": "../MdstreamFFI.xcframework",
+                },
+                {
+                    "name": "mdstream_flutter",
+                    "dependencies": [{"byName": ["MdstreamFFI", None]}],
+                },
+            ],
+        }
+        _validate_swiftpm_manifest("macos", manifest)
+
+        broken = dict(manifest)
+        broken["targets"] = [
+            {
+                "name": "MdstreamFFI",
+                "type": "binary",
+                "path": "../wrong.xcframework",
+            },
+            manifest["targets"][1],
+        ]
+        with self.assertRaisesRegex(PackageSmokeError, "unexpected path"):
+            _validate_swiftpm_manifest("macos", broken)
+
+    def test_swiftpm_manifest_root_can_be_loaded_from_an_extracted_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            plugin = Path(temporary) / "plugin"
+            root = plugin / "macos" / "mdstream_flutter"
+            root.mkdir(parents=True)
+            (root / "Package.swift").write_text("// fixture", encoding="utf-8")
+            (plugin / "macos" / "MdstreamFFI.xcframework").mkdir()
+
+            self.assertEqual(_swiftpm_manifest_root("macos", plugin), root)
+
+    def test_swiftpm_smoke_rejects_non_macos_hosts(self) -> None:
+        with patch.object(package_smoke.sys, "platform", "linux"):
+            with self.assertRaisesRegex(PackageSmokeError, "requires a macOS runner"):
+                package_smoke.run_swiftpm_smoke(
+                    platform_name="ios",
+                    device="simulator",
+                    keep_temporary=False,
+                )
+
+    def test_apple_workflow_calls_both_swiftpm_variants_and_keeps_pods(self) -> None:
+        workflow = (
+            TOOL_ROOT.parents[2]
+            / ".github"
+            / "workflows"
+            / "flutter-platforms.yml"
+        ).read_text(encoding="utf-8")
+        apple = workflow[
+            workflow.index("  apple:\n") : workflow.index("  windows:\n")
+        ]
+        macos_pods = (
+            "package_smoke.py --platform macos --device macos "
+            "--skip-native-build --skip-archive"
+        )
+        macos_swiftpm = (
+            "package_smoke.py --swiftpm --platform macos --skip-native-build"
+        )
+        ios_pods = (
+            "package_smoke.py --platform ios --device \"$DEVICE_ID\" "
+            "--skip-native-build --skip-archive"
+        )
+        ios_swiftpm = (
+            "package_smoke.py --swiftpm --platform ios --device \"$DEVICE_ID\" "
+            "--skip-native-build"
+        )
+
+        self.assertEqual(apple.count(macos_swiftpm), 1)
+        self.assertEqual(apple.count(ios_swiftpm), 1)
+        self.assertIn(macos_pods, apple)
+        self.assertIn(ios_pods, apple)
+        self.assertLess(apple.index(macos_pods), apple.index(macos_swiftpm))
+        self.assertLess(apple.index(ios_pods), apple.index(ios_swiftpm))
+
+        exact_archive_job = workflow[
+            workflow.index("  package-apple-swiftpm-smoke:\n") :
+        ]
+        self.assertIn("needs: package", exact_archive_job)
+        self.assertIn("name: mdstream-flutter-package", exact_archive_job)
+        self.assertIn(
+            'package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" '
+            "--platform macos --skip-native-build",
+            exact_archive_job,
+        )
+
     def test_apple_smoke_host_matches_plugin_deployment_targets(self) -> None:
         cases = {
             "ios": (
                 "IPHONEOS_DEPLOYMENT_TARGET",
                 "# platform :ios, '12.0'\n",
-                "platform :ios, '13.0'",
-                "13.0",
+                "platform :ios, '14.0'",
+                "14.0",
             ),
             "macos": (
                 "MACOSX_DEPLOYMENT_TARGET",
@@ -280,10 +690,7 @@ class PackageSmokeContractTest(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             archive = Path(temporary) / "mdstream_flutter.tar.gz"
-            native = (
-                b"\x7fELFmdstream_abi_version|mdstream_package_version|"
-                b"mdstream_engine_new|mdstream_reducer_new"
-            )
+            native = _elf_image("x86_64")
             entries = {
                 "pubspec.yaml": b"name: mdstream_flutter\n",
                 "android/build.gradle": b"android {}\n",
@@ -294,12 +701,15 @@ class PackageSmokeContractTest(unittest.TestCase):
             report = inspect_package_archive(
                 archive,
                 forbidden_terms={"merman", "react"},
-                native_ceiling_bytes=128,
-                increment_ceiling_bytes=128,
+                native_ceiling_bytes=len(native),
+                increment_ceiling_bytes=len(native) + 11,
                 require_all_platforms=False,
             )
-            self.assertEqual(report.max_native_bytes, 90)
-            self.assertEqual(report.max_platform_increment_bytes, 101)
+            self.assertEqual(report.max_native_bytes, len(native))
+            self.assertEqual(
+                report.max_platform_increment_bytes,
+                len(native) + len(entries["android/build.gradle"]),
+            )
 
             entries["lib/leak.dart"] = b"import 'package:react/react.dart';\n"
             _write_archive(archive, entries)
@@ -307,16 +717,162 @@ class PackageSmokeContractTest(unittest.TestCase):
                 inspect_package_archive(
                     archive,
                     forbidden_terms={"merman", "react"},
-                    native_ceiling_bytes=128,
-                    increment_ceiling_bytes=128,
+                    native_ceiling_bytes=len(native),
+                    increment_ceiling_bytes=len(native) + 11,
+                    require_all_platforms=False,
+                )
+
+    def test_archive_rejects_native_files_outside_inventory(self) -> None:
+        cases = {
+            "native-like extension": ("lib/hidden.so", b"not an ELF"),
+            "native-like container": (
+                "lib/Hidden.xcframework/Info.plist",
+                b"not a framework",
+            ),
+            "native binary magic": ("lib/hidden.bin", b"\x7fELFpayload"),
+            "fat Mach-O magic": ("lib/hidden-fat.bin", b"\xca\xfe\xba\xbfpayload"),
+        }
+        for label, (name, data) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
+                archive = Path(temporary) / "mdstream_flutter.tar.gz"
+                native = _elf_image("x86_64")
+                _write_archive(
+                    archive,
+                    {
+                        "pubspec.yaml": b"name: mdstream_flutter\n",
+                        "android/src/main/jniLibs/x86_64/libmdstream_ffi.so": native,
+                        name: data,
+                    },
+                )
+
+                with self.assertRaisesRegex(
+                    PackageSmokeError,
+                    "outside canonical native inventory",
+                ):
+                    inspect_package_archive(
+                        archive,
+                        forbidden_terms=set(),
+                        native_ceiling_bytes=len(native),
+                        increment_ceiling_bytes=len(native),
+                        require_all_platforms=False,
+                    )
+
+    def test_archive_budget_sums_every_native_slice_for_a_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "mdstream_flutter.tar.gz"
+            entries = {
+                "pubspec.yaml": b"name: mdstream_flutter\n",
+                "android/src/main/jniLibs/arm64-v8a/libmdstream_ffi.so": (
+                    _elf_image("arm64")
+                ),
+                "android/src/main/jniLibs/armeabi-v7a/libmdstream_ffi.so": (
+                    _elf_image("armv7")
+                ),
+                "android/src/main/jniLibs/x86_64/libmdstream_ffi.so": (
+                    _elf_image("x86_64")
+                ),
+            }
+            _write_archive(archive, entries)
+            total = sum(len(data) for name, data in entries.items() if name.endswith(".so"))
+
+            with self.assertRaisesRegex(PackageSmokeError, "package increment"):
+                inspect_package_archive(
+                    archive,
+                    forbidden_terms=set(),
+                    native_ceiling_bytes=max(map(len, entries.values())),
+                    increment_ceiling_bytes=total - 1,
+                    require_all_platforms=False,
+                )
+
+    def test_archive_cross_checks_apple_metadata_and_binary_platforms(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "mdstream_flutter.tar.gz"
+            entries = {
+                "pubspec.yaml": b"name: mdstream_flutter\n",
+                **_apple_framework_entries("ios"),
+            }
+            _write_archive(archive, entries)
+            ceiling = max(map(len, entries.values()))
+            inspect_package_archive(
+                archive,
+                forbidden_terms=set(),
+                native_ceiling_bytes=ceiling,
+                increment_ceiling_bytes=sum(map(len, entries.values())),
+                require_all_platforms=False,
+            )
+
+            device = next(name for name in entries if name.endswith("ios-arm64/MdstreamFFI.framework/MdstreamFFI"))
+            entries[device] = _macho_image("arm64", platform=1)
+            _write_archive(archive, entries)
+            with self.assertRaisesRegex(PackageSmokeError, "platform"):
+                inspect_package_archive(
+                    archive,
+                    forbidden_terms=set(),
+                    native_ceiling_bytes=ceiling,
+                    increment_ceiling_bytes=sum(map(len, entries.values())),
+                    require_all_platforms=False,
+                )
+
+    def test_archive_requires_every_apple_framework_interface_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "mdstream_flutter.tar.gz"
+            entries = {
+                "pubspec.yaml": b"name: mdstream_flutter\n",
+                "ios/MdstreamFFI.xcframework/Info.plist": _xcframework_plist("ios"),
+                (
+                    "ios/MdstreamFFI.xcframework/ios-arm64/"
+                    "MdstreamFFI.framework/MdstreamFFI"
+                ): _macho_image("arm64", platform=2),
+                (
+                    "ios/MdstreamFFI.xcframework/ios-arm64_x86_64-simulator/"
+                    "MdstreamFFI.framework/MdstreamFFI"
+                ): _fat_macho_image(("arm64", "x86_64"), platform=7),
+            }
+            _write_archive(archive, entries)
+
+            with self.assertRaisesRegex(
+                PackageSmokeError,
+                "Headers/mdstream.h|module.modulemap|framework Info.plist",
+            ):
+                inspect_package_archive(
+                    archive,
+                    forbidden_terms=set(),
+                    native_ceiling_bytes=max(map(len, entries.values())),
+                    increment_ceiling_bytes=sum(map(len, entries.values())),
+                    require_all_platforms=False,
+                )
+
+    def test_archive_rejects_inconsistent_apple_framework_info(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "mdstream_flutter.tar.gz"
+            entries = {
+                "pubspec.yaml": b"name: mdstream_flutter\n",
+                **_apple_framework_entries("ios"),
+            }
+            info_name = next(
+                name
+                for name in entries
+                if "ios-arm64/MdstreamFFI.framework/Info.plist" in name
+            )
+            info = plistlib.loads(entries[info_name])
+            info["MinimumOSVersion"] = "13.0"
+            entries[info_name] = plistlib.dumps(info)
+            _write_archive(archive, entries)
+
+            with self.assertRaisesRegex(
+                PackageSmokeError,
+                "MinimumOSVersion",
+            ):
+                inspect_package_archive(
+                    archive,
+                    forbidden_terms=set(),
+                    native_ceiling_bytes=max(map(len, entries.values())),
+                    increment_ceiling_bytes=sum(map(len, entries.values())),
                     require_all_platforms=False,
                 )
 
     def test_archive_rejects_noncanonical_and_unsupported_members(self) -> None:
-        native = (
-            b"\x7fELFmdstream_abi_version|mdstream_package_version|"
-            b"mdstream_engine_new|mdstream_reducer_new"
-        )
+        native = _elf_image("x86_64")
         base = [
             _tar_file("pubspec.yaml", b"name: mdstream_flutter\n"),
             _tar_file(
@@ -348,16 +904,44 @@ class PackageSmokeContractTest(unittest.TestCase):
                     inspect_package_archive(
                         archive,
                         forbidden_terms=set(),
-                        native_ceiling_bytes=128,
-                        increment_ceiling_bytes=128,
+                        native_ceiling_bytes=len(native),
+                        increment_ceiling_bytes=len(native),
                         require_all_platforms=False,
                     )
 
+    def test_archive_rejects_extra_gzip_members_and_tar_eoa_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "mdstream_flutter.tar.gz"
+            native = _elf_image("x86_64")
+            entries = {
+                "pubspec.yaml": b"name: mdstream_flutter\n",
+                "android/src/main/jniLibs/x86_64/libmdstream_ffi.so": native,
+            }
+            _write_archive(archive, entries)
+            raw_tar = gzip.decompress(archive.read_bytes())
+            cases = {
+                "multiple gzip members": (
+                    gzip.compress(raw_tar) + gzip.compress(b"second member")
+                ),
+                "non-zero data after tar end-of-archive": gzip.compress(
+                    raw_tar + b"trailing"
+                ),
+            }
+
+            for message, data in cases.items():
+                with self.subTest(case=message):
+                    archive.write_bytes(data)
+                    with self.assertRaisesRegex(PackageSmokeError, message):
+                        inspect_package_archive(
+                            archive,
+                            forbidden_terms=set(),
+                            native_ceiling_bytes=len(native),
+                            increment_ceiling_bytes=len(native),
+                            require_all_platforms=False,
+                        )
+
     def test_archive_rejects_resource_limits_before_reading_payload(self) -> None:
-        native = (
-            b"\x7fELFmdstream_abi_version|mdstream_package_version|"
-            b"mdstream_engine_new|mdstream_reducer_new"
-        )
+        native = _elf_image("x86_64")
         entries = {
             "pubspec.yaml": b"name: mdstream_flutter\n",
             "android/src/main/jniLibs/x86_64/libmdstream_ffi.so": native,
@@ -390,8 +974,8 @@ class PackageSmokeContractTest(unittest.TestCase):
                     inspect_package_archive(
                         archive,
                         forbidden_terms=set(),
-                        native_ceiling_bytes=128,
-                        increment_ceiling_bytes=128,
+                        native_ceiling_bytes=len(native),
+                        increment_ceiling_bytes=len(native),
                         require_all_platforms=False,
                         archive_limits=limits,
                     )
@@ -402,8 +986,8 @@ class PackageSmokeContractTest(unittest.TestCase):
                 inspect_package_archive(
                     declared,
                     forbidden_terms=set(),
-                    native_ceiling_bytes=128,
-                    increment_ceiling_bytes=128,
+                    native_ceiling_bytes=len(native),
+                    increment_ceiling_bytes=len(native),
                     require_all_platforms=False,
                     archive_limits=default_limits,
                 )
@@ -414,8 +998,8 @@ class PackageSmokeContractTest(unittest.TestCase):
                 inspect_package_archive(
                     pax,
                     forbidden_terms=set(),
-                    native_ceiling_bytes=128,
-                    increment_ceiling_bytes=128,
+                    native_ceiling_bytes=len(native),
+                    increment_ceiling_bytes=len(native),
                     require_all_platforms=False,
                     archive_limits={
                         **default_limits,
@@ -435,10 +1019,304 @@ class PackageSmokeContractTest(unittest.TestCase):
             outside.mkdir()
             (destination / "linked").symlink_to(outside, target_is_directory=True)
 
-            with self.assertRaisesRegex(PackageSmokeError, "extraction path"):
+            with self.assertRaisesRegex(
+                PackageSmokeError,
+                "extraction destination|extraction path",
+            ):
                 _extract_archive(archive, destination)
 
             self.assertFalse((outside / "escape.txt").exists())
+
+
+def _header_only_elf_image(
+    architecture: str, *, alignment: int = 16 * 1024
+) -> bytes:
+    machine = {"armv7": 40, "x86_64": 62, "arm64": 183}[architecture]
+    elf_class = 1 if architecture == "armv7" else 2
+    ident = b"\x7fELF" + bytes((elf_class, 1, 1, 0)) + (b"\0" * 8)
+    if elf_class == 1:
+        header = struct.pack(
+            "<HHIIIIIHHHHHH",
+            3,
+            machine,
+            1,
+            0,
+            52,
+            0,
+            0,
+            52,
+            32,
+            1,
+            0,
+            0,
+            0,
+        )
+        program = struct.pack("<IIIIIIII", 1, 0, 0, 0, 0, 0, 5, alignment)
+    else:
+        header = struct.pack(
+            "<HHIQQQIHHHHHH",
+            3,
+            machine,
+            1,
+            0,
+            64,
+            0,
+            0,
+            64,
+            56,
+            1,
+            0,
+            0,
+            0,
+        )
+        program = struct.pack("<IIQQQQQQ", 1, 5, 0, 0, 0, 0, 0, alignment)
+    return ident + header + program + _REQUIRED_SYMBOL_TEXT
+
+
+def _macho_image(
+    architecture: str,
+    *,
+    platform: int,
+    minimum: tuple[int, int, int] | None = None,
+) -> bytes:
+    cpu_type = {"x86_64": 0x01000007, "arm64": 0x0100000C}[architecture]
+    if minimum is None:
+        minimum = (11, 0, 0) if platform == 1 else (14, 0, 0)
+    packed_minimum = (minimum[0] << 16) | (minimum[1] << 8) | minimum[2]
+    build_version = struct.pack(
+        "<IIIIII", 0x32, 24, platform, packed_minimum, 0, 0
+    )
+    install_name = b"@rpath/MdstreamFFI.framework/MdstreamFFI\0"
+    dylib_command_size = (24 + len(install_name) + 7) & ~7
+    dylib_command = bytearray(b"\0" * dylib_command_size)
+    struct.pack_into("<IIIIII", dylib_command, 0, 0xD, dylib_command_size, 24, 0, 0, 0)
+    dylib_command[24 : 24 + len(install_name)] = install_name
+    header_size = 32
+    command_size = 24 + dylib_command_size + 24
+    symbol_offset = header_size + command_size
+    strings = b"\0" + b"\0".join(
+        f"_{symbol}".encode("ascii") for symbol in _required_symbols()
+    ) + b"\0"
+    string_positions = {
+        symbol: strings.index(f"_{symbol}".encode("ascii"))
+        for symbol in _required_symbols()
+    }
+    symbol_table = b"".join(
+        struct.pack("<IBBHQ", string_positions[symbol], 0x0F, 1, 0, 0)
+        for symbol in _required_symbols()
+    )
+    string_offset = symbol_offset + len(symbol_table)
+    symtab_command = struct.pack(
+        "<IIIIII",
+        0x2,
+        24,
+        symbol_offset,
+        len(_required_symbols()),
+        string_offset,
+        len(strings),
+    )
+    header = b"\xcf\xfa\xed\xfe" + struct.pack(
+        "<IIIIIII", cpu_type, 0, 6, 3, command_size, 0, 0
+    )
+    return (
+        header
+        + build_version
+        + bytes(dylib_command)
+        + symtab_command
+        + symbol_table
+        + strings
+    )
+
+
+def _fat_macho_image(architectures: tuple[str, ...], *, platform: int) -> bytes:
+    slices = [(_macho_image(architecture, platform=platform), architecture) for architecture in architectures]
+    header_size = 8 + len(slices) * 20
+    offset = (header_size + 255) & ~255
+    entries: list[bytes] = []
+    payload = bytearray(b"\0" * offset)
+    for data, architecture in slices:
+        cpu_type = {"x86_64": 0x01000007, "arm64": 0x0100000C}[architecture]
+        entries.append(struct.pack(">IIIII", cpu_type, 0, offset, len(data), 8))
+        payload.extend(data)
+        offset += len(data)
+        padding = (-offset) % 256
+        payload.extend(b"\0" * padding)
+        offset += padding
+    payload[:8] = struct.pack(">II", 0xCAFEBABE, len(slices))
+    payload[8:header_size] = b"".join(entries)
+    return bytes(payload)
+
+
+def _header_only_pe_image(architecture: str) -> bytes:
+    machine = {"x86_64": 0x8664, "arm64": 0xAA64}[architecture]
+    data = bytearray(b"\0" * 0x80)
+    data[:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, 0x40)
+    data[0x40:0x44] = b"PE\0\0"
+    struct.pack_into("<H", data, 0x44, machine)
+    data.extend(_REQUIRED_SYMBOL_TEXT)
+    return bytes(data)
+
+
+def _pe_image(architecture: str, *, forwarded: bool = False) -> bytes:
+    machine = {"x86_64": 0x8664, "arm64": 0xAA64}[architecture]
+    pe_offset = 0x80
+    optional_size = 0xF0
+    headers_size = 0x200
+    section_rva = 0x1000
+    section_offset = 0x200
+    section_size = 0x400
+    image = bytearray(b"\0" * (section_offset + section_size))
+    image[:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3C, pe_offset)
+    image[pe_offset : pe_offset + 4] = b"PE\0\0"
+    struct.pack_into(
+        "<HHIIIHH", image, pe_offset + 4, machine, 1, 0, 0, 0, optional_size, 0x2022
+    )
+    optional = pe_offset + 24
+    struct.pack_into("<H", image, optional, 0x20B)
+    struct.pack_into("<II", image, optional + 32, 0x1000, 0x200)
+    struct.pack_into("<II", image, optional + 56, 0x2000, headers_size)
+    struct.pack_into("<I", image, optional + 108, 16)
+    struct.pack_into("<II", image, optional + 112, section_rva, 0x180)
+    section_header = optional + optional_size
+    image[section_header : section_header + 8] = b".rdata\0\0"
+    struct.pack_into(
+        "<IIIIIIHHI",
+        image,
+        section_header + 8,
+        section_size,
+        section_rva,
+        section_size,
+        section_offset,
+        0,
+        0,
+        0,
+        0,
+        0x40000040,
+    )
+    function_offset = section_offset + 0x40
+    name_offset = section_offset + 0x60
+    ordinal_offset = section_offset + 0x80
+    strings_offset = section_offset + 0x100
+    cursor = strings_offset
+    dll_name = b"mdstream_ffi.dll\0"
+    image[cursor : cursor + len(dll_name)] = dll_name
+    dll_name_rva = section_rva + cursor - section_offset
+    cursor += len(dll_name)
+    name_rvas = []
+    for symbol in _required_symbols():
+        encoded = symbol.encode("ascii") + b"\0"
+        name_rvas.append(section_rva + cursor - section_offset)
+        image[cursor : cursor + len(encoded)] = encoded
+        cursor += len(encoded)
+    count = len(name_rvas)
+    struct.pack_into(
+        "<IIHHIIIIIII",
+        image,
+        section_offset,
+        0,
+        0,
+        0,
+        0,
+        dll_name_rva,
+        1,
+        count,
+        count,
+        section_rva + 0x40,
+        section_rva + 0x60,
+        section_rva + 0x80,
+    )
+    for index, name_rva in enumerate(name_rvas):
+        target_rva = section_rva + (0x100 if forwarded else 0x300 + index)
+        struct.pack_into("<I", image, function_offset + index * 4, target_rva)
+        struct.pack_into("<I", image, name_offset + index * 4, name_rva)
+        struct.pack_into("<H", image, ordinal_offset + index * 2, index)
+    return bytes(image)
+
+
+def _xcframework_plist(platform: str) -> bytes:
+    libraries = []
+    for group, contract in NATIVE_CONTRACTS.items():
+        if not group.startswith(f"{platform}/"):
+            continue
+        identifier = group.split("/", 1)[1]
+        library = {
+            "BinaryPath": "MdstreamFFI.framework/MdstreamFFI",
+            "LibraryIdentifier": identifier,
+            "LibraryPath": "MdstreamFFI.framework",
+            "SupportedArchitectures": sorted(contract.architectures),
+            "SupportedPlatform": contract.apple_platform,
+        }
+        if contract.apple_variant is not None:
+            library["SupportedPlatformVariant"] = contract.apple_variant
+        libraries.append(library)
+    return plistlib.dumps(
+        {
+            "AvailableLibraries": libraries,
+            "CFBundlePackageType": "XFWK",
+            "XCFrameworkFormatVersion": "1.0",
+        },
+        sort_keys=True,
+    )
+
+
+def _framework_info_plist(group: str) -> bytes:
+    contract = NATIVE_CONTRACTS[group]
+    platform_name = {
+        ("macos", None): "MacOSX",
+        ("ios", None): "iPhoneOS",
+        ("ios", "simulator"): "iPhoneSimulator",
+    }[(contract.apple_platform, contract.apple_variant)]
+    minimum = contract.apple_minimum_version
+    assert minimum is not None
+    return plistlib.dumps(
+        {
+            "CFBundleExecutable": "MdstreamFFI",
+            "CFBundleIdentifier": "io.mdstream.flutter.MdstreamFFI",
+            "CFBundleName": "MdstreamFFI",
+            "CFBundlePackageType": "FMWK",
+            "CFBundleSupportedPlatforms": [platform_name],
+            "MinimumOSVersion": f"{minimum[0]}.{minimum[1]}",
+        },
+        sort_keys=True,
+    )
+
+
+def _apple_framework_entries(platform: str) -> dict[str, bytes]:
+    entries = {
+        f"{platform}/MdstreamFFI.xcframework/Info.plist": _xcframework_plist(
+            platform
+        )
+    }
+    canonical_header = (
+        TOOL_ROOT.parents[2] / "mdstream-ffi" / "include" / "mdstream.h"
+    ).read_bytes()
+    for group, contract in NATIVE_CONTRACTS.items():
+        if not group.startswith(f"{platform}/"):
+            continue
+        identifier = group.split("/", 1)[1]
+        root = (
+            f"{platform}/MdstreamFFI.xcframework/{identifier}/"
+            "MdstreamFFI.framework/"
+        )
+        platform_number = {
+            ("macos", None): 1,
+            ("ios", None): 2,
+            ("ios", "simulator"): 7,
+        }[(contract.apple_platform, contract.apple_variant)]
+        architectures = tuple(sorted(contract.architectures))
+        entries[f"{root}MdstreamFFI"] = (
+            _macho_image(architectures[0], platform=platform_number)
+            if len(architectures) == 1
+            else _fat_macho_image(architectures, platform=platform_number)
+        )
+        entries[f"{root}Headers/mdstream.h"] = canonical_header
+        entries[f"{root}Modules/module.modulemap"] = FRAMEWORK_MODULE_MAP.encode(
+            "utf-8"
+        )
+        entries[f"{root}Info.plist"] = _framework_info_plist(group)
+    return entries
 
 
 def _write_archive(path: Path, entries: dict[str, bytes]) -> None:

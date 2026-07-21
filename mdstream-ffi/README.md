@@ -26,6 +26,9 @@ panic-containment contract and is rejected at compile time.
   commands using `mdstream.bindings/0.4`.
 - `mdstream_reducer_execute` carries snapshot, view, and processor lifecycle
   commands using the same versioned schema.
+- `mdstream_reducer_processor_scheduler_limits` exposes the effective native
+  job and candidate budgets without reparsing session options in host code;
+  passing null returns an all-zero sentinel.
 - Successful calls return a non-null `MdstreamOutput`. Payload order and kinds
   match `mdstream-bindings-core`; each index may be taken once.
 - Errors use the stable `MDSTREAM_*` status table and an owned JSON envelope.

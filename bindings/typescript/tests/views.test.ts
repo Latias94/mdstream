@@ -330,6 +330,7 @@ function decodeNode(
       kind: "node_view",
       node,
       body_text: "body",
+      processor_input_version: "sha256:processor-input",
     })),
     schema,
   ) as NodeView;

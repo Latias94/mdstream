@@ -1,37 +1,48 @@
-// ignore_for_file: public_member_api_docs
-
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'errors.dart';
 import 'ffi.dart';
+import 'options.dart';
 import 'protocol.dart';
 import 'views.dart';
 
 /// Immutable reducer state needed by UI-framework adapters.
 final class MdstreamStateSnapshot {
+  /// Creates an immutable snapshot from reducer [status], [document], and [impact].
   const MdstreamStateSnapshot({
     required this.status,
     required this.document,
     required this.impact,
   });
 
+  /// Current continuity status of the reducer.
   final ReducerStatusView status;
+
+  /// Current document summary, or `null` before initialization.
   final DocumentSummaryView? document;
+
+  /// Cache invalidations produced by the latest state transition.
   final ChangeImpactView impact;
 }
 
 /// Stable identity of one derived processor artifact slot.
 final class ArtifactSlot {
+  /// Creates the stable slot for [processorId] on [nodeId] in [epoch].
   const ArtifactSlot({
     required this.epoch,
     required this.nodeId,
     required this.processorId,
   });
 
+  /// Document epoch that owns the artifact.
   final Epoch epoch;
+
+  /// Content node processed to produce the artifact.
   final NodeId nodeId;
+
+  /// Application-defined processor identifier.
   final String processorId;
 
   String get _cacheKey =>
@@ -51,6 +62,7 @@ final class ArtifactSlot {
 
 /// Typed output from one canonical reducer transition.
 final class ReducerResult {
+  /// Creates the immutable output of one reducer command.
   const ReducerResult({
     required this.updates,
     required this.processorRequests,
@@ -59,10 +71,19 @@ final class ReducerResult {
     required this.outputPayloadBytes,
   });
 
+  /// Ordered canonical state updates emitted by the command.
   final List<ReducerUpdateView> updates;
+
+  /// Processor jobs that became runnable during the command.
   final List<ProcessorRequestView> processorRequests;
+
+  /// Native acceptance decisions for processor completions.
   final List<ProcessorCompletionView> processorCompletions;
+
+  /// Artifact slot changes emitted by the processor host.
   final List<ArtifactChangeView> artifactChanges;
+
+  /// Exact number of native payload bytes consumed for this result.
   final DecimalCounter outputPayloadBytes;
 
   /// Ordered transition facts from every reducer update in this result.
@@ -79,12 +100,14 @@ final class ReducerResult {
         : List<TransitionFactsView>.unmodifiable(facts);
   }
 
+  /// Distinct node identities changed by all updates in emission order.
   List<NodeId> get changedNodeIds => List.unmodifiable(
     LinkedHashSet<NodeId>.from(
       updates.expand((update) => update.impact.changedNodeIds),
     ),
   );
 
+  /// Distinct node identities removed by all updates in emission order.
   List<NodeId> get removedNodeIds => List.unmodifiable(
     LinkedHashSet<NodeId>.from(
       updates.expand((update) => update.impact.removedNodeIds),
@@ -94,6 +117,7 @@ final class ReducerResult {
 
 /// Dart-side counters that prove the binding remains delta-first.
 final class ReducerTransportMetrics {
+  /// Creates an immutable snapshot of reducer transport counters.
   const ReducerTransportMetrics({
     required this.commands,
     required this.outputPayloadBytes,
@@ -109,19 +133,43 @@ final class ReducerTransportMetrics {
     required this.pendingSourceViewPayloads,
   });
 
+  /// Number of native reducer commands issued by this handle.
   final DecimalCounter commands;
+
+  /// Total bytes received across all native payloads.
   final DecimalCounter outputPayloadBytes;
+
+  /// Number of canonical change payloads received.
   final DecimalCounter changePayloads;
+
+  /// Number of canonical snapshot payloads received.
   final DecimalCounter snapshotPayloads;
+
+  /// Number of reducer update payloads received.
   final DecimalCounter reducerUpdatePayloads;
+
+  /// Number of materialized node view payloads received.
   final DecimalCounter nodeViewPayloads;
+
+  /// Number of materialized resource view payloads received.
   final DecimalCounter resourceViewPayloads;
+
+  /// Number of processor request payloads received.
   final DecimalCounter processorRequestPayloads;
+
+  /// Number of processor completion payloads received.
   final DecimalCounter processorCompletionPayloads;
+
+  /// Number of artifact change payloads received.
   final DecimalCounter artifactChangePayloads;
+
+  /// Number of materialized artifact view payloads received.
   final DecimalCounter artifactViewPayloads;
+
+  /// Number of bounded pending-source payloads received.
   final DecimalCounter pendingSourceViewPayloads;
 
+  /// Returns the received payload count for [kind].
   DecimalCounter payloadCount(BindingPayloadKind kind) => switch (kind) {
     BindingPayloadKind.change => changePayloads,
     BindingPayloadKind.snapshot => snapshotPayloads,
@@ -142,14 +190,19 @@ final class MdstreamStateView {
 
   late final MdstreamReducer _owner;
 
+  /// Returns the reducer's current immutable state snapshot.
   MdstreamStateSnapshot get currentState => _owner.currentState;
 
+  /// Materializes the current view for [id], or `null` when absent.
   NodeView? nodeView(NodeId id) => _owner.nodeView(id);
 
+  /// Materializes the current semantic resource [id], or `null` when absent.
   ResourceView? resourceView(ResourceId id) => _owner.resourceView(id);
 
+  /// Materializes the bounded, unprojected source suffix when one exists.
   PendingSourceView? pendingSourceView() => _owner.pendingSourceView();
 
+  /// Materializes the retained processor artifact for [slot], if present.
   ArtifactView? artifactView(ArtifactSlot slot) => _owner.artifactView(slot);
 }
 
@@ -157,13 +210,19 @@ final class MdstreamStateView {
 final class MdstreamReducer {
   MdstreamReducer._(this._handle, this._schema)
     : state = MdstreamStateView._(),
+      processorSchedulerLimits = _handle.processorSchedulerLimits,
       _currentState = _initialState {
     state._owner = this;
   }
 
   final NativeReducerHandle _handle;
   final String _schema;
+
+  /// Read-only facade for canonical state and lazily materialized views.
   final MdstreamStateView state;
+
+  /// Effective native capacity for framework-side processor scheduling.
+  final MdstreamProcessorSchedulerLimits processorSchedulerLimits;
 
   MdstreamStateSnapshot _currentState;
   final Map<NodeId, NodeView> _nodeCache = {};
@@ -180,10 +239,13 @@ final class MdstreamReducer {
   int _commands = 0;
   int _outputPayloadBytes = 0;
 
+  /// Whether the native reducer handle has been closed.
   bool get isClosed => _handle.isClosed;
 
+  /// Returns the latest immutable state snapshot.
   MdstreamStateSnapshot get currentState => _currentState;
 
+  /// Applies one canonical [change] and returns all emitted delta payloads.
   ReducerResult applyChange(CanonicalChangeBytes change) {
     _commands += 1;
     return _publicResult(
@@ -191,6 +253,7 @@ final class MdstreamReducer {
     );
   }
 
+  /// Replaces reducer state from a canonical recovery [snapshot].
   ReducerResult recoverSnapshot(CanonicalSnapshotBytes snapshot) {
     _commands += 1;
     return _publicResult(
@@ -198,6 +261,7 @@ final class MdstreamReducer {
     );
   }
 
+  /// Creates a canonical snapshot of current state, if state is initialized.
   CanonicalSnapshotBytes? createRecoverySnapshot() {
     final output = _execute({'schema': _schema, 'kind': 'snapshot'});
     _expectOnly(output, {BindingPayloadKind.snapshot}, 'reducer snapshot');
@@ -207,6 +271,7 @@ final class MdstreamReducer {
     return output.snapshots.firstOrNull;
   }
 
+  /// Returns the bounded source suffix not yet represented by projected nodes.
   PendingSourceView? pendingSourceView() {
     if (_pendingSourceLoaded) {
       return _pendingSourceCache;
@@ -225,6 +290,7 @@ final class MdstreamReducer {
     return _pendingSourceCache;
   }
 
+  /// Returns the current materialized node [id], or `null` when absent.
   NodeView? nodeView(NodeId id) {
     validateDecimalU128Input(id, 'node_id');
     final cached = _nodeCache[id];
@@ -262,6 +328,7 @@ final class MdstreamReducer {
     }
   }
 
+  /// Returns the current semantic resource [id], or `null` when absent.
   ResourceView? resourceView(ResourceId id) {
     validateDecimalU128Input(id, 'resource_id');
     final cached = _resourceCache[id];
@@ -300,6 +367,7 @@ final class MdstreamReducer {
     }
   }
 
+  /// Returns the retained processor artifact for [slot], or `null` when absent.
   ArtifactView? artifactView(ArtifactSlot slot) {
     validateDecimalU64Input(slot.epoch, 'epoch');
     validateDecimalU128Input(slot.nodeId, 'node_id');
@@ -337,6 +405,7 @@ final class MdstreamReducer {
     return view;
   }
 
+  /// Starts a processor request for the current version of [nodeId].
   ReducerResult beginProcessor({
     required NodeId nodeId,
     required String processorId,
@@ -357,10 +426,11 @@ final class MdstreamReducer {
     }),
   );
 
+  /// Starts a processor only if [nodeId] still matches the expected state.
   ReducerResult beginProcessorIfCurrent({
     required Epoch expectedEpoch,
     required NodeId nodeId,
-    required NodeVersion expectedNodeVersion,
+    required ProcessorInputVersion expectedInputVersion,
     required String processorId,
     required String processorVersion,
     required String configurationVersion,
@@ -375,7 +445,10 @@ final class MdstreamReducer {
         'expected_epoch',
       ),
       'node_id': validateDecimalU128Input(nodeId, 'node_id'),
-      'expected_node_version': expectedNodeVersion,
+      'expected_input_version': validateOpaqueIdentifierInput(
+        expectedInputVersion,
+        'expected_input_version',
+      ),
       'processor_id': processorId,
       'processor_version': processorVersion,
       'configuration_version': configurationVersion,
@@ -384,6 +457,7 @@ final class MdstreamReducer {
     }),
   );
 
+  /// Completes [requestId] with a protocol-labelled text artifact.
   ReducerResult completeProcessorText({
     required RequestGeneration requestId,
     required String protocol,
@@ -396,6 +470,7 @@ final class MdstreamReducer {
     'text': text,
   });
 
+  /// Completes [requestId] with a protocol-labelled binary artifact.
   ReducerResult completeProcessorBinary({
     required RequestGeneration requestId,
     required String protocol,
@@ -408,6 +483,7 @@ final class MdstreamReducer {
     'bytes': _validatedOctets(bytes),
   });
 
+  /// Completes [requestId] with a structured processor failure.
   ReducerResult failProcessor({
     required RequestGeneration requestId,
     required String code,
@@ -418,6 +494,7 @@ final class MdstreamReducer {
     'message': message,
   });
 
+  /// Cancels the active processor request identified by [requestId].
   ReducerResult cancelProcessor(RequestGeneration requestId) => _publicResult(
     _execute({
       'schema': _schema,
@@ -426,9 +503,10 @@ final class MdstreamReducer {
     }),
   );
 
+  /// Returns transport counters accumulated by this reducer handle.
   ReducerTransportMetrics get metrics => ReducerTransportMetrics(
-    commands: _commands.toString(),
-    outputPayloadBytes: _outputPayloadBytes.toString(),
+    commands: decimalCounterFromTrustedInt(_commands),
+    outputPayloadBytes: decimalCounterFromTrustedInt(_outputPayloadBytes),
     changePayloads: _count(BindingPayloadKind.change),
     snapshotPayloads: _count(BindingPayloadKind.snapshot),
     reducerUpdatePayloads: _count(BindingPayloadKind.reducerUpdate),
@@ -441,6 +519,7 @@ final class MdstreamReducer {
     pendingSourceViewPayloads: _count(BindingPayloadKind.pendingSourceView),
   );
 
+  /// Releases the native reducer and clears all Dart-side caches.
   void close() {
     if (_handle.isClosed) {
       return;
@@ -536,7 +615,7 @@ final class MdstreamReducer {
       );
       _artifactCache.remove(slot._cacheKey);
       _missingArtifacts.remove(slot._cacheKey);
-      if (change.change.kind == 'removed') {
+      if (change.change is RemovedArtifactChangeView) {
         _missingArtifacts.add(slot._cacheKey);
       }
     }
@@ -544,10 +623,11 @@ final class MdstreamReducer {
   }
 
   void _applyUpdate(ReducerUpdateView update) {
-    final statusChanged = update.status.kind != _currentState.status.kind;
+    final statusChanged =
+        update.status.runtimeType != _currentState.status.runtimeType;
     final stateChanged =
-        update.outcome.kind == 'applied' ||
-        update.outcome.kind == 'recovered' ||
+        update.outcome is AppliedOutcomeView ||
+        update.outcome is RecoveredOutcomeView ||
         statusChanged;
     if (!stateChanged) {
       return;
@@ -584,7 +664,8 @@ final class MdstreamReducer {
     final previousDocument = _currentState.document;
     final incomingDocument = update.document;
     final document =
-        update.outcome.kind == 'recovery_required' && previousDocument != null
+        update.outcome is RecoveryRequiredOutcomeView &&
+            previousDocument != null
         ? previousDocument
         : incomingDocument == null
         ? previousDocument
@@ -615,7 +696,9 @@ final class MdstreamReducer {
       processorRequests: List.unmodifiable(output.processorRequests),
       processorCompletions: List.unmodifiable(output.processorCompletions),
       artifactChanges: List.unmodifiable(output.artifactChanges),
-      outputPayloadBytes: output.outputPayloadBytes.toString(),
+      outputPayloadBytes: decimalCounterFromTrustedInt(
+        output.outputPayloadBytes,
+      ),
     );
   }
 
@@ -634,8 +717,8 @@ final class MdstreamReducer {
     }
   }
 
-  String _count(BindingPayloadKind kind) =>
-      (_payloadCounts[kind] ?? 0).toString();
+  DecimalCounter _count(BindingPayloadKind kind) =>
+      decimalCounterFromTrustedInt(_payloadCounts[kind] ?? 0);
 
   void _invalidatePendingSource() {
     _pendingSourceCache = null;
@@ -643,6 +726,7 @@ final class MdstreamReducer {
   }
 }
 
+/// Package-internal bridge that wraps an allocated native reducer [handle].
 MdstreamReducer createNativeReducer(
   NativeReducerHandle handle,
   String schema,
@@ -695,7 +779,7 @@ const _emptyImpact = ChangeImpactView(
 );
 
 const _initialState = MdstreamStateSnapshot(
-  status: ReducerStatusView(kind: 'uninitialized'),
+  status: UninitializedReducerStatusView(),
   document: null,
   impact: _emptyImpact,
 );

@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use mdstream::{
-    CompilerError, EngineError, EngineLimits, EngineOutput, StreamEngine,
+    CompilerError, CompilerLimits, EngineError, EngineLimits, EngineOutput, StreamEngine,
 };
 use mdstream_conformance::{
     NormalizedSnapshot, ProtocolTrace, TraceInputEvent, assert_last_retry_idempotent,
@@ -111,7 +111,9 @@ fn run_canonical(id: &str, input_chunks: &[&str]) -> NormalizedSnapshot {
         emitted_source_bytes += consume_output(
             &mut reducer,
             &mut changes,
-            engine.append(chunk).expect("arbitrary UTF-8 is valid Markdown input"),
+            engine
+                .append(chunk)
+                .expect("arbitrary UTF-8 is valid Markdown input"),
         );
         input_events.push(TraceInputEvent::Append {
             chunk: (*chunk).to_string(),
@@ -123,7 +125,9 @@ fn run_canonical(id: &str, input_chunks: &[&str]) -> NormalizedSnapshot {
     emitted_source_bytes += consume_output(
         &mut reducer,
         &mut changes,
-        engine.finish().expect("default limits accept bounded fuzz input"),
+        engine
+            .finish()
+            .expect("default limits accept bounded fuzz input"),
     );
     input_events.push(TraceInputEvent::Finish {
         change_end: changes.len(),
@@ -219,22 +223,24 @@ fn measured_limit_bounds(plane: LimitPlane, heavy: &str) -> (usize, usize) {
 fn configured_engine(
     plane: LimitPlane,
     limit: usize,
-) -> (StreamEngine, ProtocolLimits, EngineLimits) {
+) -> (StreamEngine, ProtocolLimits, CompilerLimits, EngineLimits) {
     let mut protocol_limits = ProtocolLimits::default();
+    let mut compiler_limits = CompilerLimits::default();
     let mut engine_limits = EngineLimits::default();
     match plane {
         LimitPlane::SourceBytes => protocol_limits.max_source_bytes = limit,
         LimitPlane::ChangeBytes => engine_limits.max_change_bytes = limit,
         LimitPlane::TransactionBytes => engine_limits.max_transaction_bytes = limit,
         LimitPlane::Operations => protocol_limits.max_operations = limit,
-        LimitPlane::DefinitionEdges => protocol_limits.max_definition_edges = limit,
+        LimitPlane::DefinitionEdges => compiler_limits.max_definition_edges = limit,
     }
     let engine = StreamEngine::builder()
         .protocol_limits(protocol_limits)
+        .compiler_limits(compiler_limits)
         .engine_limits(engine_limits)
         .build()
         .unwrap();
-    (engine, protocol_limits, engine_limits)
+    (engine, protocol_limits, compiler_limits, engine_limits)
 }
 
 fn assert_limit_error(error: &EngineError, plane: LimitPlane, limit: usize) {
@@ -280,7 +286,10 @@ fn assert_limit_error(error: &EngineError, plane: LimitPlane, limit: usize) {
         ) => *seen == limit && *actual > limit,
         _ => false,
     };
-    assert!(matches, "unexpected {plane:?} rejection at {limit}: {error:?}");
+    assert!(
+        matches,
+        "unexpected {plane:?} rejection at {limit}: {error:?}"
+    );
 }
 
 fn assert_engine_equivalent(left: &StreamEngine, right: &StreamEngine) {
@@ -299,6 +308,7 @@ fn assert_success_within_limits(
     engine: &StreamEngine,
     output: &EngineOutput,
     protocol_limits: ProtocolLimits,
+    compiler_limits: CompilerLimits,
     engine_limits: EngineLimits,
 ) {
     assert!(engine.metrics().work.last_change_bytes <= engine_limits.max_change_bytes);
@@ -311,7 +321,7 @@ fn assert_success_within_limits(
     );
     assert!(
         engine.metrics().compiler.retained_semantic_dependencies
-            <= protocol_limits.max_definition_edges
+            <= compiler_limits.max_definition_edges
     );
     assert!(
         engine
@@ -326,8 +336,9 @@ fn assert_random_limit_atomicity(case: &StreamCase) {
     let heavy = heavy_transition(block_count);
     let (floor, actual) = measured_limit_bounds(plane, &heavy);
     let limit = floor + usize::from(case.limit_cut) % (actual - floor);
-    let (mut candidate, protocol_limits, engine_limits) = configured_engine(plane, limit);
-    let (mut control, _, _) = configured_engine(plane, limit);
+    let (mut candidate, protocol_limits, compiler_limits, engine_limits) =
+        configured_engine(plane, limit);
+    let (mut control, _, _, _) = configured_engine(plane, limit);
     let mut candidate_reducer = Reducer::new();
     let mut control_reducer = Reducer::new();
     let mut scratch = Vec::new();
@@ -339,6 +350,7 @@ fn assert_random_limit_atomicity(case: &StreamCase) {
         &candidate,
         &candidate_prefix,
         protocol_limits,
+        compiler_limits,
         engine_limits,
     );
     consume_output(&mut candidate_reducer, &mut scratch, candidate_prefix);
@@ -368,6 +380,7 @@ fn assert_random_limit_atomicity(case: &StreamCase) {
             &candidate,
             &candidate_output,
             protocol_limits,
+            compiler_limits,
             engine_limits,
         );
         consume_output(&mut candidate_reducer, &mut scratch, candidate_output);
@@ -385,6 +398,7 @@ fn assert_random_limit_atomicity(case: &StreamCase) {
         &candidate,
         &candidate_finish,
         protocol_limits,
+        compiler_limits,
         engine_limits,
     );
     consume_output(&mut candidate_reducer, &mut scratch, candidate_finish);
@@ -422,11 +436,7 @@ fn assert_compaction_semantics(case: &StreamCase) {
     let mut reducer = Reducer::new();
     let mut scratch = Vec::new();
     for chunk in chunks(&prefix, &case.split_bytes) {
-        consume_output(
-            &mut reducer,
-            &mut scratch,
-            engine.append(chunk).unwrap(),
-        );
+        consume_output(&mut reducer, &mut scratch, engine.append(chunk).unwrap());
         scratch.clear();
     }
     let before = engine.snapshot().unwrap();

@@ -47,7 +47,7 @@ export interface WasmReducerSession {
   beginProcessorIfCurrent(
     expectedEpoch: string,
     nodeId: string,
-    expectedNodeVersion: string,
+    expectedInputVersion: string,
     processorId: string,
     processorVersion: string,
     configurationVersion: string,
@@ -70,6 +70,8 @@ export interface WasmReducerSession {
   failProcessor(requestId: string, code: string, message: string): WasmOutput;
   cancelProcessor(requestId: string): WasmOutput;
   status(): string;
+  processorMaxInFlightJobs(): number;
+  processorMaxQueuedCandidates(): number;
   metrics(): Uint8Array;
   processorMetrics(): Uint8Array;
   free(): void;
@@ -84,6 +86,20 @@ export interface WasmBindings {
   bindingOptionsSchema(): string;
   transitionSchema(): string;
   default?: (input?: unknown) => Promise<unknown>;
+}
+
+export interface WasmBindingMetadata {
+  readonly abiVersion: number;
+  readonly packageVersion: string;
+  readonly bindingSchema: string;
+  readonly bindingOptionsSchema: string;
+  readonly transitionSchema: typeof TRANSITION_SCHEMA;
+}
+
+export interface ValidatedWasmBindings {
+  readonly MdstreamEngineSession: new (optionsJson?: string) => WasmEngineSession;
+  readonly MdstreamReducerSession: new (optionsJson?: string) => WasmReducerSession;
+  readonly metadata: WasmBindingMetadata;
 }
 
 export type WasmModuleLoader = () => unknown | Promise<unknown>;
@@ -142,7 +158,24 @@ export function drainOutput(output: WasmOutput): DrainedOutput {
   return { payloads, payloadBytes };
 }
 
-export async function loadWasmBindings(loader: WasmModuleLoader): Promise<WasmBindings> {
+export function readProcessorSchedulerLimits(
+  session: WasmReducerSession,
+) {
+  return {
+    maxInFlightJobs: positiveSafeInteger(
+      session.processorMaxInFlightJobs(),
+      "processorMaxInFlightJobs",
+    ),
+    maxCandidates: positiveSafeInteger(
+      session.processorMaxQueuedCandidates(),
+      "processorMaxQueuedCandidates",
+    ),
+  };
+}
+
+export async function loadWasmBindings(
+  loader: WasmModuleLoader,
+): Promise<ValidatedWasmBindings> {
   const loaded = await loader();
   const namespace = asModuleRecord(loaded);
   const candidate = hasBindingModuleShape(namespace)
@@ -215,7 +248,29 @@ export async function loadWasmBindings(loader: WasmModuleLoader): Promise<WasmBi
       bindingSchema,
     );
   }
-  return candidate as Record<string, unknown> & WasmBindings;
+  if (typeof reducerPrototype.processorMaxInFlightJobs !== "function") {
+    throw new WasmContractError(
+      "mdstream WASM reducer is missing required processorMaxInFlightJobs capability",
+      bindingSchema,
+    );
+  }
+  if (typeof reducerPrototype.processorMaxQueuedCandidates !== "function") {
+    throw new WasmContractError(
+      "mdstream WASM reducer is missing required processorMaxQueuedCandidates capability",
+      bindingSchema,
+    );
+  }
+  return Object.freeze({
+    MdstreamEngineSession: candidate.MdstreamEngineSession,
+    MdstreamReducerSession: candidate.MdstreamReducerSession,
+    metadata: Object.freeze({
+      abiVersion,
+      packageVersion,
+      bindingSchema,
+      bindingOptionsSchema,
+      transitionSchema: TRANSITION_SCHEMA,
+    }),
+  });
 }
 
 export const defaultWasmLoader: WasmModuleLoader = async () => {
@@ -243,6 +298,15 @@ function asModuleRecord(value: unknown): Record<string, unknown> {
     return {};
   }
   return value as Record<string, unknown>;
+}
+
+function positiveSafeInteger(value: unknown, capability: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new TypeError(
+      `mdstream WASM ${capability} must return a positive safe integer`,
+    );
+  }
+  return value as number;
 }
 
 function hasBindings(

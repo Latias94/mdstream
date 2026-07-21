@@ -190,6 +190,27 @@ fn metadata_payload_kinds_and_consumption_are_stable() {
 }
 
 #[wasm_bindgen_test]
+fn reducer_exposes_effective_processor_scheduler_limits() {
+    let defaults = MdstreamReducerSession::new(None).unwrap();
+    assert_eq!(defaults.processor_max_in_flight_jobs(), 32);
+    assert_eq!(defaults.processor_max_queued_candidates(), 256);
+
+    let options = format!(
+        r#"{{
+          "schema":"{}",
+          "processor":{{
+            "max_in_flight_jobs":"2",
+            "max_slots":"25"
+          }}
+        }}"#,
+        binding_options_schema()
+    );
+    let custom = MdstreamReducerSession::new(Some(options)).unwrap();
+    assert_eq!(custom.processor_max_in_flight_jobs(), 2);
+    assert_eq!(custom.processor_max_queued_candidates(), 25);
+}
+
+#[wasm_bindgen_test]
 fn transition_facts_use_the_existing_reducer_update_transport() {
     let options = transition_options_json();
     let mut reducer = MdstreamReducerSession::new(Some(options)).unwrap();
@@ -458,6 +479,12 @@ fn maximum_decimal_ids_and_opaque_versions_survive_js_transport() {
     assert_eq!(view["node"]["id"], u128::MAX.to_string());
     assert!(
         view["node"]["version"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        view["processor_input_version"]
             .as_str()
             .unwrap()
             .starts_with("sha256:")

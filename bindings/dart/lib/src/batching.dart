@@ -1,10 +1,9 @@
-// ignore_for_file: public_member_api_docs
-
 /// Metrics for lossless input batching.
 ///
 /// Counters use decimal strings so their representation stays exact on every
 /// Dart target and matches the rest of the mdstream binding surface.
 final class BatchMetrics {
+  /// Creates an immutable snapshot of batching counters.
   const BatchMetrics({
     required this.maxBatchBytes,
     required this.inputChunks,
@@ -17,14 +16,31 @@ final class BatchMetrics {
     required this.appendCalls,
   });
 
+  /// Configured upper bound for accumulated input, in UTF-8 bytes.
   final String maxBatchBytes;
+
+  /// Number of chunks supplied by callers.
   final String inputChunks;
+
+  /// Total UTF-8 bytes supplied by callers.
   final String inputBytes;
+
+  /// Total UTF-8 bytes forwarded to the append callback.
   final String forwardedBytes;
+
+  /// UTF-8 bytes currently retained in the pending batch.
   final String pendingBytes;
+
+  /// Bytes copied while joining batches that contained multiple chunks.
   final String joinCopyBytes;
+
+  /// Total output bytes reported by the optional result measurer.
   final String outputPayloadBytes;
+
+  /// Number of batches forwarded to the append callback.
   final String batchCount;
+
+  /// Number of append callback invocations.
   final String appendCalls;
 
   /// Returns a read-only JSON-compatible metrics object.
@@ -44,6 +60,7 @@ final class BatchMetrics {
 
 /// Reports a failed compound batch operation without hiding committed results.
 final class BatchOperationException<Result> implements Exception {
+  /// Creates an error that preserves results committed before [cause].
   const BatchOperationException({
     required this.completedResults,
     required this.cause,
@@ -71,6 +88,10 @@ final class BatchOperationException<Result> implements Exception {
 /// the limit bounds accumulated batching memory and never splits a caller's
 /// string at an unsafe UTF-8 boundary.
 final class LosslessInputBatcher<Result> {
+  /// Creates a lossless batcher backed by the supplied lifecycle callbacks.
+  ///
+  /// [outputPayloadBytes] may report the encoded size of each result for
+  /// metrics. Negative measurements are rejected.
   LosslessInputBatcher({
     required int maxBatchBytes,
     required Result Function(String chunk) append,
@@ -177,11 +198,11 @@ final class LosslessInputBatcher<Result> {
 
   /// Flushes pending input and finalizes the underlying stream.
   List<Result> finish() {
-    final results = _flushResults();
     final callback = _finish;
     if (callback == null) {
       throw StateError('this batcher does not provide a finish callback');
     }
+    final results = _flushResults();
     final result = _afterCommitted(results, callback);
     _recordOutput(result);
     results.add(result);
@@ -190,11 +211,11 @@ final class LosslessInputBatcher<Result> {
 
   /// Flushes pending input and resets the underlying stream.
   List<Result> reset() {
-    final results = _flushResults();
     final callback = _reset;
     if (callback == null) {
       throw StateError('this batcher does not provide a reset callback');
     }
+    final results = _flushResults();
     final result = _afterCommitted(results, callback);
     _recordOutput(result);
     results.add(result);
@@ -203,13 +224,13 @@ final class LosslessInputBatcher<Result> {
 
   /// Flushes pending input and requests an explicit recovery snapshot.
   List<Result> createRecoverySnapshot() {
-    final results = _flushResults();
     final callback = _createRecoverySnapshot;
     if (callback == null) {
       throw StateError(
         'this batcher does not provide a recovery snapshot callback',
       );
     }
+    final results = _flushResults();
     final result = _afterCommitted(results, callback);
     _recordOutput(result);
     results.add(result);

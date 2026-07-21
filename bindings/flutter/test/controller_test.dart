@@ -6,14 +6,19 @@ import 'support/native_library.dart';
 
 final _capturedOptions = MdstreamSessionOptions(
   captureTransitions: true,
-  protocol: const {
-    'max_source_bytes': '1048576',
-    'max_nodes': '4096',
-    'max_resources': '256',
-    'max_operations': '4096',
-    'max_change_structural_items': '4096',
-    'max_children_per_list': '4096',
-  },
+  protocol: MdstreamProtocolLimits(
+    maxSourceBytes: '1048576',
+    maxNodes: '4096',
+    maxResources: '256',
+    maxOperations: '4096',
+    maxChangeStructuralItems: '4096',
+    maxChildrenPerList: '4096',
+  ),
+  compiler: MdstreamCompilerLimits(
+    maxDefinitions: '100000',
+    maxDefinitionEdges: '100000',
+    maxDefinitionMetadataBytes: '16777216',
+  ),
 );
 
 void main() {
@@ -178,13 +183,15 @@ void main() {
   test(
     'citation updates notify only the targeted resource',
     () {
-      const resourceId = '154582791709149689190109869243805354114';
+      final resourceId = ResourceId.parse(
+        '154582791709149689190109869243805354114',
+      );
       final runtime = MdstreamRuntime.openPath(libraryPath!);
       final controller = MdstreamController.fromRuntime(runtime);
       try {
         controller.append('# Adoption\n\n');
         final resource = controller.resource(resourceId);
-        final unrelated = controller.resource('999');
+        final unrelated = controller.resource(ResourceId.parse('999'));
         var resourceNotifications = 0;
         var unrelatedNotifications = 0;
         resource.addListener(() => resourceNotifications += 1);

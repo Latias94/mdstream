@@ -62,10 +62,14 @@ final class _EngineBackend implements _ControllerBackend {
   MdstreamStateView get state => engine.state;
 
   @override
+  MdstreamProcessorSchedulerLimits get processorSchedulerLimits =>
+      engine.processorSchedulerLimits;
+
+  @override
   ReducerResult beginProcessor({
     required Epoch expectedEpoch,
     required NodeId nodeId,
-    required NodeVersion expectedNodeVersion,
+    required ProcessorInputVersion expectedInputVersion,
     required String processorId,
     required String processorVersion,
     required String configurationVersion,
@@ -74,7 +78,7 @@ final class _EngineBackend implements _ControllerBackend {
   }) => engine.beginProcessorIfCurrent(
     expectedEpoch: expectedEpoch,
     nodeId: nodeId,
-    expectedNodeVersion: expectedNodeVersion,
+    expectedInputVersion: expectedInputVersion,
     processorId: processorId,
     processorVersion: processorVersion,
     configurationVersion: configurationVersion,
@@ -136,10 +140,14 @@ final class _ReducerBackend implements _ControllerBackend {
   MdstreamStateView get state => reducer.state;
 
   @override
+  MdstreamProcessorSchedulerLimits get processorSchedulerLimits =>
+      reducer.processorSchedulerLimits;
+
+  @override
   ReducerResult beginProcessor({
     required Epoch expectedEpoch,
     required NodeId nodeId,
-    required NodeVersion expectedNodeVersion,
+    required ProcessorInputVersion expectedInputVersion,
     required String processorId,
     required String processorVersion,
     required String configurationVersion,
@@ -148,7 +156,7 @@ final class _ReducerBackend implements _ControllerBackend {
   }) => reducer.beginProcessorIfCurrent(
     expectedEpoch: expectedEpoch,
     nodeId: nodeId,
-    expectedNodeVersion: expectedNodeVersion,
+    expectedInputVersion: expectedInputVersion,
     processorId: processorId,
     processorVersion: processorVersion,
     configurationVersion: configurationVersion,
@@ -214,6 +222,7 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     _processors = _ProcessorScheduler(
       backend: _backend,
       onResult: _consumeProcessorResult,
+      limits: _backend.processorSchedulerLimits,
     );
   }
 
@@ -573,6 +582,7 @@ abstract class _MdstreamControllerBase extends ChangeNotifier
     if (_disposed) {
       return;
     }
+    _assertNoTransitionReentry();
     _disposed = true;
     _processors.close();
     _backend.close();

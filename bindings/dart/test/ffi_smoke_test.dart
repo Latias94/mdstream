@@ -54,6 +54,8 @@ void main() {
       final engine = bindings.createEngine(Uint8List(0));
       final reducer = bindings.createReducer(Uint8List(0));
       try {
+        expect(reducer.processorSchedulerLimits.maxInFlightJobs, 32);
+        expect(reducer.processorSchedulerLimits.maxQueuedCandidates, 256);
         final produced = engine.append(_bytes('# Hello\n'));
         expect(produced, isNotEmpty);
         for (final payload in produced) {
@@ -98,6 +100,34 @@ void main() {
         engine.close();
         engine.close();
       }
+      expect(bindings.allocationMetrics().isZero, isTrue);
+
+      final customReducer = bindings.createReducer(
+        _bytes(
+          jsonEncode({
+            'schema': bindingOptionsSchema,
+            'processor': {'max_in_flight_jobs': '3', 'max_slots': '7'},
+          }),
+        ),
+      );
+      expect(customReducer.processorSchedulerLimits.maxInFlightJobs, 3);
+      expect(customReducer.processorSchedulerLimits.maxQueuedCandidates, 7);
+      customReducer.close();
+      expect(bindings.allocationMetrics().isZero, isTrue);
+
+      expect(
+        () => bindings.createReducer(
+          _bytes(
+            jsonEncode({
+              'schema': bindingOptionsSchema,
+              'processor': {'max_in_flight_jobs': '0'},
+            }),
+          ),
+        ),
+        throwsA(
+          isA<MdstreamException>().having((error) => error.status, 'status', 3),
+        ),
+      );
       expect(bindings.allocationMetrics().isZero, isTrue);
 
       expect(

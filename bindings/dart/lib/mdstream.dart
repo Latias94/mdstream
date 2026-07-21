@@ -17,15 +17,28 @@ export 'src/engine.dart'
 export 'src/errors.dart';
 export 'src/options.dart';
 export 'src/protocol.dart'
-    hide
-        canonicalChangeBytesFromOwned,
-        canonicalChangeBytesView,
-        canonicalSnapshotBytesFromOwned,
-        canonicalSnapshotBytesView,
-        decodeDecimalU128,
-        decodeDecimalU64,
-        validateDecimalU128Input,
-        validateDecimalU64Input;
+    show
+        bindingSchema,
+        bindingOptionsSchema,
+        transitionSchema,
+        mdstreamAbiVersion,
+        DecimalCounter,
+        Epoch,
+        Sequence,
+        SourceCursor,
+        RequestGeneration,
+        ContinuityGeneration,
+        NodeId,
+        ResourceId,
+        ChangeId,
+        NodeVersion,
+        ResourceVersion,
+        StructureVersion,
+        ProcessorInputVersion,
+        CanonicalChangeBytes,
+        CanonicalSnapshotBytes,
+        BindingPayloadKind,
+        BindingStatus;
 export 'src/reducer_handle.dart'
     show
         ArtifactSlot,

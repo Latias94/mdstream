@@ -1,20 +1,17 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+use std::{collections::BTreeMap, fmt};
 
 use mdstream::{EngineOutput, StreamEngine};
 use mdstream_processors::{
-    ArtifactChange, ArtifactChangeKind, ArtifactHost, ArtifactReleaseReason, CompletionOutcome,
-    ConfigurationVersion, ProcessingPolicy, ProcessorArtifact, ProcessorCapabilities,
-    ProcessorDescriptor, ProcessorExpectation, ProcessorFailure, ProcessorFailureCode, ProcessorId,
-    ProcessorRequest, ProcessorRequestKey, ProcessorResult, ProcessorSlotKey,
+    ArtifactHost, CompletionOutcome, ConfigurationVersion, ProcessingPolicy, ProcessorArtifact,
+    ProcessorCapabilities, ProcessorDescriptor, ProcessorExpectation, ProcessorFailure,
+    ProcessorFailureCode, ProcessorId, ProcessorRequest, ProcessorRequestKey, ProcessorResult,
+    ProcessorSlotKey,
 };
 use mdstream_protocol::{
-    ApplyOutcome, ChangeImpact, ChangeSet, Document, NodeId, NodeVersion, ProtocolLimits, Reducer,
-    ReducerStatus, RequestGeneration, ResourceId, Snapshot, TransitionError, TransitionOutcome,
-    TransitionReducer, decode_change_json, decode_snapshot_json, encode_change_json,
-    encode_snapshot_json,
+    ApplyOutcome, ChangeImpact, ChangeSet, Document, NodeId, ProcessorInputVersion, ProtocolLimits,
+    Reducer, ReducerStatus, RequestGeneration, ResourceId, Snapshot, TransitionError,
+    TransitionOutcome, TransitionReducer, decode_change_json, decode_snapshot_json,
+    encode_change_json, encode_snapshot_json,
 };
 
 use crate::{
@@ -200,6 +197,15 @@ fn transition_error(error: TransitionError) -> BindingError {
             BindingError::internal("transition continuity generation overflowed")
         }
     }
+}
+
+/// Effective native budgets that bound a host-language processor scheduler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessorSchedulerLimits {
+    /// Maximum processor jobs that may hold unsettled native leases.
+    pub max_in_flight_jobs: usize,
+    /// Maximum queued candidates retained before native slot admission.
+    pub max_queued_candidates: usize,
 }
 
 pub struct ReducerSession {
@@ -643,7 +649,7 @@ impl ReducerSession {
             ReducerCommand::BeginProcessorIfCurrent {
                 expected_epoch,
                 node_id,
-                expected_node_version,
+                expected_input_version,
                 processor_id,
                 processor_version,
                 configuration_version,
@@ -654,10 +660,10 @@ impl ReducerSession {
                 ProcessorExpectation::new(
                     parse_decimal_id(&expected_epoch, "expected_epoch")?,
                     parse_decimal_id(&node_id, "node_id")?,
-                    NodeVersion::new(expected_node_version).map_err(|error| {
+                    ProcessorInputVersion::new(expected_input_version).map_err(|error| {
                         BindingError::new(
                             BindingStatus::InvalidArgument,
-                            "processor.invalid_node_version",
+                            "processor.invalid_input_version",
                             error.to_string(),
                         )
                     })?,
@@ -694,6 +700,15 @@ impl ReducerSession {
 
     pub fn status(&self) -> ReducerStatus {
         self.reducer.status()
+    }
+
+    /// Returns the scheduler projection of the processor host's effective limits.
+    pub const fn processor_scheduler_limits(&self) -> ProcessorSchedulerLimits {
+        let limits = self.host.limits();
+        ProcessorSchedulerLimits {
+            max_in_flight_jobs: limits.max_in_flight_jobs,
+            max_queued_candidates: limits.max_slots,
+        }
     }
 
     pub const fn metrics(&self) -> BindingMetrics {
@@ -846,7 +861,7 @@ impl ReducerSession {
 
     fn drain_artifact_changes(&mut self) -> Result<BindingOutput, BindingError> {
         let changes = self.host.take_changes();
-        self.retire_invalidated_requests(&changes);
+        self.retire_requests_without_leases();
         let mut output = BindingOutput::default();
         for change in changes {
             let bytes = encode_artifact_change(&change, self.wire_limits.max_artifact_event_bytes)?;
@@ -865,30 +880,10 @@ impl ReducerSession {
         self.sync_pending_request_metric();
     }
 
-    fn retire_invalidated_requests(&mut self, changes: &[ArtifactChange]) {
-        let mut retired_slots = BTreeSet::new();
-        let mut retired_keys = BTreeSet::new();
-        for change in changes {
-            let ArtifactChangeKind::Removed { reason, .. } = change.kind() else {
-                continue;
-            };
-            match reason {
-                ArtifactReleaseReason::Replaced => {}
-                ArtifactReleaseReason::Cancelled => {
-                    retired_keys.insert(change.key().clone());
-                }
-                ArtifactReleaseReason::NodeChanged
-                | ArtifactReleaseReason::NodeRemoved
-                | ArtifactReleaseReason::EpochReset => {
-                    retired_slots.insert(change.key().slot().clone());
-                }
-            }
-        }
-        if retired_slots.is_empty() && retired_keys.is_empty() {
-            return;
-        }
+    fn retire_requests_without_leases(&mut self) {
+        let host = &self.host;
         self.pending_requests
-            .retain(|_, key| !retired_slots.contains(key.slot()) && !retired_keys.contains(key));
+            .retain(|_, key| host.has_request_lease(key));
         self.sync_pending_request_metric();
     }
 

@@ -1,10 +1,9 @@
-// ignore_for_file: public_member_api_docs
-
 import 'dart:convert';
 import 'dart:typed_data';
 
 /// A structured error returned by mdstream or synthesized by the Dart binding.
 final class MdstreamException implements Exception {
+  /// Creates a structured mdstream error.
   MdstreamException(
     this.message, {
     this.status = 12,

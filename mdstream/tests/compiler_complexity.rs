@@ -1,4 +1,6 @@
-use mdstream::{CompilerError, CompilerMetrics, CustomBlockSpec, EngineError, StreamEngine};
+use mdstream::{
+    CompilerError, CompilerLimits, CompilerMetrics, CustomBlockSpec, EngineError, StreamEngine,
+};
 use mdstream_protocol::{ChildListOwner, ContentKind, ProjectionOp, ProtocolLimits};
 use pulldown_cmark::{Options, Parser};
 
@@ -235,13 +237,13 @@ fn seeded_irregular_leaps(total: usize, seed: u64) -> Vec<usize> {
 
 #[test]
 fn unresolved_footnote_parser_events_use_a_bounded_preflight_budget() {
-    let limits = ProtocolLimits {
+    let limits = CompilerLimits {
         max_markdown_events: 32,
-        ..ProtocolLimits::default()
+        ..CompilerLimits::default()
     };
     let source = format!("{}\n\n", nested_formatting_footnotes(1, 20));
     let mut engine = StreamEngine::builder()
-        .protocol_limits(limits)
+        .compiler_limits(limits)
         .build()
         .unwrap();
     engine.append("accepted\n\n").unwrap();
@@ -288,9 +290,9 @@ fn old_footnote_classification_has_an_independent_event_budget() {
     assert_eq!(canonical_events, 7);
     assert_eq!(old_footnote_events, 8);
     let mut engine = StreamEngine::builder()
-        .protocol_limits(ProtocolLimits {
+        .compiler_limits(CompilerLimits {
             max_markdown_events: event_limit,
-            ..ProtocolLimits::default()
+            ..CompilerLimits::default()
         })
         .build()
         .unwrap();
@@ -307,10 +309,10 @@ fn old_footnote_classification_has_an_independent_event_budget() {
 
 #[test]
 fn nested_unresolved_footnotes_stop_at_the_overlap_work_budget() {
-    let limits = ProtocolLimits::default();
+    let limits = CompilerLimits::default();
     let source = nested_formatting_footnotes(128, 4_096);
     let mut engine = StreamEngine::builder()
-        .protocol_limits(limits)
+        .compiler_limits(limits)
         .build()
         .unwrap();
 

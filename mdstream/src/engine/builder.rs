@@ -1,11 +1,12 @@
-use super::{CompilerError, CustomBlockSpec, EngineLimits, StreamEngine};
+use super::{CompilerError, CompilerLimits, CustomBlockSpec, EngineLimits, StreamEngine};
 use crate::syntax::containers::names_match;
 use mdstream_protocol::ProtocolLimits;
 
 #[derive(Debug, Default)]
 pub struct StreamEngineBuilder {
     custom_blocks: Vec<CustomBlockSpec>,
-    limits: ProtocolLimits,
+    protocol_limits: ProtocolLimits,
+    compiler_limits: CompilerLimits,
     engine_limits: EngineLimits,
 }
 
@@ -20,7 +21,12 @@ impl StreamEngineBuilder {
     }
 
     pub fn protocol_limits(mut self, limits: ProtocolLimits) -> Self {
-        self.limits = limits;
+        self.protocol_limits = limits;
+        self
+    }
+
+    pub fn compiler_limits(mut self, limits: CompilerLimits) -> Self {
+        self.compiler_limits = limits;
         self
     }
 
@@ -30,10 +36,11 @@ impl StreamEngineBuilder {
     }
 
     pub fn build(self) -> Result<StreamEngine, CompilerError> {
-        validate_custom_blocks(&self.custom_blocks, self.limits)?;
+        validate_custom_blocks(&self.custom_blocks, self.protocol_limits)?;
         Ok(StreamEngine::with_custom_blocks(
             self.custom_blocks,
-            self.limits,
+            self.protocol_limits,
+            self.compiler_limits,
             self.engine_limits,
         ))
     }

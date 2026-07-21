@@ -46,8 +46,8 @@ void main() {
         await controller.whenProcessorsIdle();
 
         expect(processor.requests, hasLength(1));
-        expect(artifact.value?.state, 'ready');
-        expect(artifact.value?.artifact?.payload.text, 'derived output');
+        expect(artifact.value?.state, ArtifactState.ready);
+        expect(_artifactText(artifact.value), 'derived output');
         expect(notifications, 2);
         expect(unrelatedNotifications, 0);
         final snapshot = utf8.decode(
@@ -92,7 +92,7 @@ void main() {
           controller.processorErrors.value?.phase,
           ProcessorErrorPhase.process,
         );
-        expect(controller.artifacts.view(slot)?.state, 'failed');
+        expect(controller.artifacts.view(slot)?.state, ArtifactState.failed);
         expect(controller.artifacts.view(slot)?.failure?.code, 'panic');
       } finally {
         controller.dispose();
@@ -127,9 +127,9 @@ void main() {
         await controller.whenProcessorsIdle();
 
         expect(processor.requests, hasLength(1));
-        expect(controller.artifacts.view(slot)?.state, 'ready');
+        expect(controller.artifacts.view(slot)?.state, ArtifactState.ready);
         expect(
-          controller.artifacts.view(slot)?.artifact?.payload.text,
+          _artifactText(controller.artifacts.view(slot)),
           'derived output',
         );
       } finally {
@@ -172,7 +172,7 @@ void main() {
           nodeId: firstRequest.key.nodeId,
           processorId: firstRequest.key.processorId,
         );
-        expect(replica.artifacts.view(slot)?.state, 'ready');
+        expect(replica.artifacts.view(slot)?.state, ArtifactState.ready);
 
         source.applyChange(changes[1]);
         final recovery = source.createRecoverySnapshot()!;
@@ -190,7 +190,7 @@ void main() {
           processor.requests.last.key.generation,
           isNot(firstRequest.key.generation),
         );
-        expect(replica.artifacts.view(slot)?.state, 'ready');
+        expect(replica.artifacts.view(slot)?.state, ArtifactState.ready);
       } finally {
         replica.dispose();
         source.close();
@@ -230,6 +230,63 @@ void main() {
   );
 
   test(
+    'processor registration rejects invalid identities before scanning',
+    () async {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(runtime);
+      const invalidValues = <String>['', 'bad/id', 'non-ascii-é'];
+      final values = <String>[
+        ...invalidValues,
+        List<String>.filled(129, 'x').join(),
+      ];
+      try {
+        controller.append('identity validation input');
+        controller.finish();
+        for (final value in values) {
+          expect(
+            () => controller.registerProcessor(
+              _IdentityProcessor(
+                id: value,
+                version: 'v1',
+                configuration: 'default',
+              ),
+            ),
+            throwsArgumentError,
+          );
+          expect(
+            () => controller.registerProcessor(
+              _IdentityProcessor(
+                id: 'test.flutter.valid-id',
+                version: value,
+                configuration: 'default',
+              ),
+            ),
+            throwsArgumentError,
+          );
+          expect(
+            () => controller.registerProcessor(
+              _IdentityProcessor(
+                id: 'test.flutter.valid-id',
+                version: 'v1',
+                configuration: value,
+              ),
+            ),
+            throwsArgumentError,
+          );
+        }
+        await controller.whenProcessorsIdle();
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
     'unregistering from a pending notification prevents processor execution',
     () async {
       final runtime = MdstreamRuntime.openPath(libraryPath!);
@@ -247,7 +304,7 @@ void main() {
         final artifact = controller.artifacts.artifact(slot);
         late final ProcessorRegistration registration;
         artifact.addListener(() {
-          if (artifact.value?.state == 'pending') {
+          if (artifact.value?.state == ArtifactState.pending) {
             registration.dispose();
           }
         });
@@ -285,7 +342,7 @@ void main() {
         final artifact = controller.artifacts.artifact(slot);
         var reset = false;
         artifact.addListener(() {
-          if (!reset && artifact.value?.state == 'pending') {
+          if (!reset && artifact.value?.state == ArtifactState.pending) {
             reset = true;
             controller.reset();
           }
@@ -352,7 +409,7 @@ void main() {
           ),
         );
         await controller.whenProcessorsIdle();
-        expect(artifact.value?.artifact?.payload.text, 'current');
+        expect(_artifactText(artifact.value), 'current');
       } finally {
         controller.dispose();
       }
@@ -380,7 +437,7 @@ void main() {
           processorId: processor.descriptor.id,
         );
         final artifact = controller.artifacts.artifact(slot);
-        expect(artifact.value?.state, 'pending');
+        expect(artifact.value?.state, ArtifactState.pending);
 
         controller.reset();
         expect(invocation.context.isCancelled, isTrue);
@@ -449,6 +506,73 @@ void main() {
   );
 
   test(
+    'rematches a topology-only input change with a stable node version',
+    () async {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamReplicaController.fromRuntime(runtime);
+      final fixture = loadFixture(
+        'bindings/flutter/test/fixtures/processor-topology.json',
+      );
+      final changes = list(
+        fixture['changes'],
+        'changes',
+      ).map(encodeChange).toList(growable: false);
+      final matchedVersions = <NodeVersion>[];
+      final matchedChildrenVersions = <StructureVersion>[];
+      final matchedChildCounts = <int>[];
+      var reentered = false;
+      final processor = _CallbackProcessor(
+        id: 'test.flutter.topology-freshness',
+        acceptsProvisional: true,
+        allowProvisional: true,
+        matchesCallback: (node) {
+          if (node.content is! BlockQuoteContentView) {
+            return false;
+          }
+          matchedVersions.add(node.version);
+          matchedChildrenVersions.add(node.children.version);
+          matchedChildCounts.add(node.children.children.length);
+          if (!reentered) {
+            reentered = true;
+            controller.applyChange(changes[1]);
+          }
+          return true;
+        },
+      );
+      controller.registerProcessor(processor);
+
+      try {
+        controller.applyChange(changes[0]);
+        await controller.whenProcessorsIdle();
+
+        expect(reentered, isTrue);
+        expect(matchedChildCounts, <int>[1, 2]);
+        expect(matchedVersions, hasLength(2));
+        expect(matchedVersions[1], matchedVersions[0]);
+        expect(matchedChildrenVersions, hasLength(2));
+        expect(matchedChildrenVersions[1], isNot(matchedChildrenVersions[0]));
+        expect(processor.requests, hasLength(1));
+        final finalView = controller.nodeView(NodeId.parse('1'))!;
+        expect(
+          processor.requests.single.key.inputVersion,
+          finalView.processorInputVersion,
+        );
+        expect(
+          processor.requests.single.input.node.children.children,
+          hasLength(2),
+        );
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
     'rechecks an old-epoch candidate after matches resets the engine',
     () async {
       final runtime = MdstreamRuntime.openPath(libraryPath!);
@@ -498,7 +622,7 @@ void main() {
       final controller = MdstreamController.fromRuntime(
         runtime,
         options: MdstreamSessionOptions(
-          processor: const {'max_in_flight_jobs': '2'},
+          processor: MdstreamProcessorLimits(maxInFlightJobs: '2'),
         ),
       );
       final processor = _CapacityProcessor();
@@ -527,9 +651,721 @@ void main() {
                   ),
                 )
                 ?.state,
-            'ready',
+            ArtifactState.ready,
           );
         }
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'continues past a permanent resource limit while another job is active',
+    () async {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInputBytes: '1024',
+            maxInFlightJobs: '2',
+          ),
+        ),
+      );
+      final processor = _CapacityProcessor();
+
+      try {
+        final oversized = List<String>.filled(4000, 'x').join();
+        controller.append('first\n\n$oversized\n\nthird');
+        controller.finish();
+        controller.registerProcessor(processor);
+
+        await processor.waitForRequests(2).timeout(const Duration(seconds: 2));
+        expect(
+          processor.requests.map((request) => request.input.body),
+          <String>['first', 'third'],
+        );
+        expect(
+          controller.processorErrors.value?.phase,
+          ProcessorErrorPhase.begin,
+        );
+        expect(
+          (controller.processorErrors.value?.error as MdstreamException)
+              .detailCode,
+          'processor.resource_limit.input_bytes',
+        );
+
+        processor.releaseAll();
+        await controller.whenProcessorsIdle();
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'derives candidate capacity from the native processor slot limit',
+    () async {
+      const candidateCount = 4097;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          protocol: MdstreamProtocolLimits(maxOperations: '20000'),
+          processor: MdstreamProcessorLimits(
+            maxSlots: '4097',
+            maxRetainedArtifacts: '4097',
+            maxRetainedArtifactBytes: '10000000',
+            maxPendingChanges: '4097',
+            maxPendingChangeBytes: '4000000',
+          ),
+          wire: MdstreamWireLimits(maxArtifactEventBytes: '25000000'),
+        ),
+      );
+      final processor = _TextProcessor();
+
+      try {
+        final source = List<String>.generate(
+          candidateCount,
+          (index) => 'paragraph $index',
+        ).join('\n\n');
+        controller.append(source);
+        controller.finish();
+        controller.registerProcessor(processor);
+        await controller.whenProcessorsIdle();
+
+        expect(processor.requests, hasLength(candidateCount));
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'yields after one dispatch quantum before starting remaining jobs',
+    () async {
+      const candidateCount = 64;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInFlightJobs: '$candidateCount',
+            maxSlots: '$candidateCount',
+          ),
+        ),
+      );
+      final processor = _CapacityProcessor();
+
+      try {
+        final source = List<String>.generate(
+          candidateCount,
+          (index) => 'paragraph $index',
+        ).join('\n\n');
+        controller.append(source);
+        controller.finish();
+        controller.registerProcessor(processor);
+
+        await Future<void>.value();
+        expect(processor.requests, hasLength(32));
+
+        processor.releaseAll();
+        await controller.whenProcessorsIdle();
+        expect(processor.requests, hasLength(candidateCount));
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'lets event-queue work run between synchronous dispatch quanta',
+    () async {
+      const candidateCount = 96;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInFlightJobs: '$candidateCount',
+            maxSlots: '$candidateCount',
+          ),
+        ),
+      );
+      final processor = _TextProcessor();
+      final eventMarker = Completer<int>();
+
+      try {
+        final source = List<String>.generate(
+          candidateCount,
+          (index) => 'paragraph $index',
+        ).join('\n\n');
+        controller.append(source);
+        controller.finish();
+        controller.registerProcessor(processor);
+        Timer.run(() {
+          if (!eventMarker.isCompleted) {
+            eventMarker.complete(processor.requests.length);
+          }
+        });
+
+        expect(await eventMarker.future, 32);
+        expect(processor.requests, hasLength(32));
+
+        await controller.whenProcessorsIdle();
+        expect(processor.requests, hasLength(candidateCount));
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'lets timer work run before a large tree scan completes',
+    () async {
+      const candidateCount = 256;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInFlightJobs: '$candidateCount',
+            maxSlots: '$candidateCount',
+          ),
+        ),
+      );
+      var matchCalls = 0;
+      final processor = _CallbackProcessor(
+        id: 'test.flutter.scan-quantum',
+        matchesCallback: (node) {
+          matchCalls += 1;
+          return node.content is ParagraphContentView;
+        },
+      );
+      final matchesAtTimer = Completer<int>();
+
+      try {
+        final source = List<String>.generate(
+          candidateCount,
+          (index) => 'paragraph $index',
+        ).join('\n\n');
+        controller.append(source);
+        controller.finish();
+        controller.registerProcessor(processor);
+        Timer.run(() => matchesAtTimer.complete(matchCalls));
+
+        final observedMatchCalls = await matchesAtTimer.future;
+        await controller.whenProcessorsIdle();
+
+        expect(matchCalls, greaterThan(observedMatchCalls));
+        expect(processor.requests, hasLength(candidateCount));
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'counts each processor match against the scan quantum',
+    () async {
+      const processorCount = 256;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(runtime);
+      var matchCalls = 0;
+      final matchesAtTimer = Completer<int>();
+
+      try {
+        controller.append('one node');
+        controller.finish();
+        for (var index = 0; index < processorCount; index += 1) {
+          controller.registerProcessor(
+            _CallbackProcessor(
+              id: 'test.flutter.match-quantum.$index',
+              matchesCallback: (node) {
+                matchCalls += 1;
+                return false;
+              },
+            ),
+          );
+        }
+        Timer.run(() => matchesAtTimer.complete(matchCalls));
+
+        final observedMatchCalls = await matchesAtTimer.future;
+        await controller.whenProcessorsIdle();
+
+        expect(observedMatchCalls, greaterThan(0));
+        expect(observedMatchCalls, lessThan(processorCount));
+        expect(matchCalls, greaterThanOrEqualTo(processorCount));
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'stops a large tree scan after its last processor is unregistered',
+    () async {
+      const candidateCount = 256;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(maxSlots: '$candidateCount'),
+        ),
+      );
+      var matchCalls = 0;
+      final processor = _CallbackProcessor(
+        id: 'test.flutter.scan-dispose',
+        matchesCallback: (node) {
+          matchCalls += 1;
+          return false;
+        },
+      );
+      final disposed = Completer<int>();
+
+      try {
+        final source = List<String>.generate(
+          candidateCount,
+          (index) => 'paragraph $index',
+        ).join('\n\n');
+        controller.append(source);
+        controller.finish();
+        final registration = controller.registerProcessor(processor);
+        Timer.run(() {
+          final calls = matchCalls;
+          registration.dispose();
+          disposed.complete(calls);
+        });
+
+        final callsAtDispose = await disposed.future;
+        await controller.whenProcessorsIdle();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(callsAtDispose, greaterThan(0));
+        expect(callsAtDispose, lessThan(candidateCount));
+        expect(matchCalls, callsAtDispose);
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'removes one unregistered processor from an active shared scan',
+    () async {
+      const candidateCount = 128;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(maxSlots: '$candidateCount'),
+        ),
+      );
+      var firstMatchCalls = 0;
+      var secondMatchCalls = 0;
+      final first = _CallbackProcessor(
+        id: 'test.flutter.shared-dispose.first',
+        matchesCallback: (node) {
+          firstMatchCalls += 1;
+          return false;
+        },
+      );
+      final second = _CallbackProcessor(
+        id: 'test.flutter.shared-dispose.second',
+        matchesCallback: (node) {
+          secondMatchCalls += 1;
+          return false;
+        },
+      );
+      final disposed = Completer<int>();
+
+      try {
+        final source = List<String>.generate(
+          candidateCount,
+          (index) => 'paragraph $index',
+        ).join('\n\n');
+        controller.append(source);
+        controller.finish();
+        final firstRegistration = controller.registerProcessor(first);
+        controller.registerProcessor(second);
+        Timer.run(() {
+          final calls = firstMatchCalls;
+          firstRegistration.dispose();
+          disposed.complete(calls);
+        });
+
+        final callsAtDispose = await disposed.future;
+        await controller.whenProcessorsIdle();
+
+        expect(callsAtDispose, greaterThan(0));
+        expect(firstMatchCalls, callsAtDispose);
+        expect(secondMatchCalls, greaterThan(callsAtDispose));
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'resumes an input-budget block only after capacity changes',
+    () async {
+      const candidateCount = 130;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInputBytes: '2048',
+            maxInFlightJobs: '2',
+            maxInFlightInputBytes: '1536',
+            maxSlots: '$candidateCount',
+          ),
+        ),
+      );
+      final processor = _CapacityProcessor();
+
+      try {
+        final body = List<String>.filled(512, 'x').join();
+        controller.append(
+          List<String>.filled(candidateCount, body).join('\n\n'),
+        );
+        controller.finish();
+        controller.registerProcessor(processor);
+
+        await processor.waitForRequests(1);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(processor.requests, hasLength(1));
+
+        processor.releaseAll();
+        await controller.whenProcessorsIdle();
+
+        expect(processor.requests, hasLength(candidateCount));
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'lets event-queue work run between synchronous completion refills',
+    () async {
+      const candidateCount = 3;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInFlightJobs: '1',
+            maxSlots: '$candidateCount',
+          ),
+        ),
+      );
+      final processor = _TextProcessor();
+      final eventMarker = Completer<void>();
+
+      try {
+        final source = List<String>.generate(
+          candidateCount,
+          (index) => 'paragraph $index',
+        ).join('\n\n');
+        controller.append(source);
+        controller.finish();
+        controller.registerProcessor(processor);
+        Timer.run(() {
+          if (!eventMarker.isCompleted) {
+            eventMarker.complete();
+          }
+        });
+
+        await eventMarker.future;
+        expect(processor.requests, hasLength(1));
+        final firstRequest = processor.requests.single;
+        expect(
+          controller.artifacts
+              .view(
+                ArtifactSlot(
+                  epoch: firstRequest.key.epoch,
+                  nodeId: firstRequest.key.nodeId,
+                  processorId: firstRequest.key.processorId,
+                ),
+              )
+              ?.state,
+          ArtifactState.ready,
+        );
+
+        await controller.whenProcessorsIdle();
+        expect(processor.requests, hasLength(candidateCount));
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'reset invalidates a dispatch continuation from the previous tree',
+    () async {
+      const candidateCount = 64;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInFlightJobs: '$candidateCount',
+            maxSlots: '$candidateCount',
+          ),
+        ),
+      );
+      final processor = _CapacityProcessor();
+
+      try {
+        final source = List<String>.generate(
+          candidateCount,
+          (index) => 'paragraph $index',
+        ).join('\n\n');
+        controller.append(source);
+        controller.finish();
+        controller.registerProcessor(processor);
+
+        await Future<void>.value();
+        expect(processor.requests, hasLength(32));
+
+        controller.reset();
+        await Future<void>.value();
+        await Future<void>.value();
+        expect(processor.requests, hasLength(32));
+
+        processor.releaseAll();
+        await controller.whenProcessorsIdle();
+        expect(processor.requests, hasLength(32));
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'reset invalidates a tree scan continuation from the previous tree',
+    () async {
+      const candidateCount = 256;
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInFlightJobs: '$candidateCount',
+            maxSlots: '$candidateCount',
+          ),
+        ),
+      );
+      final replacement = 'old ${candidateCount - 1}';
+      NodeId? replacementNodeId;
+      var replacementMatchCalls = 0;
+      final processor = _CallbackProcessor(
+        id: 'test.flutter.reset-scan',
+        matchesCallback: (node) {
+          if (node.id == replacementNodeId) {
+            replacementMatchCalls += 1;
+          }
+          return node.content is ParagraphContentView;
+        },
+      );
+      final resetMarker = Completer<int>();
+
+      try {
+        final source = List<String>.generate(
+          candidateCount,
+          (index) => 'old $index',
+        ).join('\n\n');
+        controller.append(source);
+        controller.finish();
+        controller.registerProcessor(processor);
+        Timer.run(() {
+          final requestCount = processor.requests.length;
+          controller.reset();
+          controller.append(replacement);
+          controller.finish();
+          replacementNodeId = controller.value.document!.roots!.children.single;
+          resetMarker.complete(requestCount);
+        });
+
+        final oldRequestCount = await resetMarker.future;
+        await controller.whenProcessorsIdle();
+
+        expect(
+          processor.requests
+              .skip(oldRequestCount)
+              .map((request) => request.input.body),
+          <String>[replacement],
+        );
+        expect(replacementMatchCalls, 1);
+        expect(controller.processorErrors.value, isNull);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'reports candidate queue saturation once until capacity recovers',
+    () async {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInFlightJobs: '1',
+            maxSlots: '2',
+          ),
+        ),
+      );
+      final processor = _CapacityProcessor();
+      var queueLimitErrors = 0;
+      var slotLimitErrors = 0;
+      controller.processorErrors.addListener(() {
+        final error = controller.processorErrors.value?.error;
+        if (error is MdstreamException) {
+          if (error.detailCode == 'processor.candidate_queue_limit') {
+            queueLimitErrors += 1;
+          } else if (error.detailCode == 'processor.resource_limit.slots') {
+            slotLimitErrors += 1;
+          }
+        }
+      });
+
+      try {
+        controller.append('one\n\ntwo\n\nthree\n\nfour\n\nfive');
+        controller.finish();
+        controller.registerProcessor(processor);
+
+        await processor.waitForRequests(1);
+        expect(queueLimitErrors, 1);
+        processor.releaseAll();
+        await controller.whenProcessorsIdle();
+
+        expect(processor.requests, hasLength(2));
+        expect(slotLimitErrors, 3);
+        expect(queueLimitErrors, 1);
+
+        controller.reset();
+        controller.append('six\n\nseven\n\neight\n\nnine\n\nten');
+        controller.finish();
+        await controller.whenProcessorsIdle();
+
+        expect(processor.requests, hasLength(4));
+        expect(slotLimitErrors, 6);
+        expect(queueLimitErrors, 2);
+      } finally {
+        controller.dispose();
+      }
+      expect(runtime.nativeAllocations.isZero, isTrue);
+    },
+    skip: libraryPath == null
+        ? 'run dart run ../dart/tool/build_native.dart first'
+        : false,
+  );
+
+  test(
+    'reset from a saturation notification cancels the paused scan',
+    () async {
+      final runtime = MdstreamRuntime.openPath(libraryPath!);
+      final controller = MdstreamController.fromRuntime(
+        runtime,
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInFlightJobs: '1',
+            maxSlots: '2',
+          ),
+        ),
+      );
+      final processor = _CallbackProcessor(
+        id: 'test.flutter.saturation-reset',
+        matchesCallback: (node) => node.content is ParagraphContentView,
+      );
+      var reset = false;
+      controller.processorErrors.addListener(() {
+        final error = controller.processorErrors.value?.error;
+        if (!reset &&
+            error is MdstreamException &&
+            error.detailCode == 'processor.candidate_queue_limit') {
+          reset = true;
+          controller.reset();
+          controller.finish();
+        }
+      });
+
+      try {
+        controller.append('one\n\ntwo\n\nthree\n\nfour\n\nfive');
+        controller.finish();
+        controller.registerProcessor(processor);
+
+        await controller.whenProcessorsIdle().timeout(
+          const Duration(seconds: 2),
+        );
+
+        expect(reset, isTrue);
+        expect(processor.requests, isEmpty);
       } finally {
         controller.dispose();
       }
@@ -547,7 +1383,7 @@ void main() {
       final controller = MdstreamController.fromRuntime(
         runtime,
         options: MdstreamSessionOptions(
-          processor: const {'max_in_flight_jobs': '1'},
+          processor: MdstreamProcessorLimits(maxInFlightJobs: '1'),
         ),
       );
       final processor = _TimerProcessor();
@@ -577,7 +1413,7 @@ void main() {
       final controller = MdstreamController.fromRuntime(
         runtime,
         options: MdstreamSessionOptions(
-          processor: const {'max_in_flight_jobs': '1'},
+          processor: MdstreamProcessorLimits(maxInFlightJobs: '1'),
         ),
       );
       final processor = _ChurnProcessor();
@@ -614,13 +1450,13 @@ Future<void> _nextArtifactText(
   ValueListenable<ArtifactView?> artifact,
   String expected,
 ) {
-  if (artifact.value?.artifact?.payload.text == expected) {
+  if (_artifactText(artifact.value) == expected) {
     return Future<void>.value();
   }
   final completer = Completer<void>();
   late final VoidCallback listener;
   listener = () {
-    if (artifact.value?.artifact?.payload.text == expected) {
+    if (_artifactText(artifact.value) == expected) {
       artifact.removeListener(listener);
       completer.complete();
     }
@@ -628,6 +1464,11 @@ Future<void> _nextArtifactText(
   artifact.addListener(listener);
   return completer.future;
 }
+
+String? _artifactText(ArtifactView? view) => switch (view?.artifact?.payload) {
+  TextArtifactPayloadView(:final text) => text,
+  _ => null,
+};
 
 final class _TextProcessor implements ContentProcessor {
   final List<ProcessorRequestView> requests = <ProcessorRequestView>[];
@@ -735,6 +1576,37 @@ final class _MutableIdentityProcessor implements ContentProcessor {
     ProcessorRequestView request,
     ProcessorContext context,
   ) => throw StateError('mutable identity processor must not run');
+}
+
+final class _IdentityProcessor implements ContentProcessor {
+  const _IdentityProcessor({
+    required this.id,
+    required this.version,
+    required this.configuration,
+  });
+
+  final String id;
+  final String version;
+  final String configuration;
+
+  @override
+  ContentProcessorDescriptor get descriptor =>
+      ContentProcessorDescriptor(id: id, version: version);
+
+  @override
+  String get configurationVersion => configuration;
+
+  @override
+  bool get allowProvisional => false;
+
+  @override
+  bool matches(ContentNodeView node) => true;
+
+  @override
+  FutureOr<ProcessorOutput> process(
+    ProcessorRequestView request,
+    ProcessorContext context,
+  ) => throw StateError('invalid identity processor must not run');
 }
 
 final class _DeferredInvocation {

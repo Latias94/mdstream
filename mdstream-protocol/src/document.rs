@@ -2045,29 +2045,20 @@ fn stage_document(
         limits,
     };
     for owner in &affected_owners {
-        relationship_steps = relationship_steps.saturating_add(validate_child_list_view(
-            *owner,
-            &forest_view,
-            full_validation_owners.contains(owner),
-        )?);
+        relationship_steps = relationship_steps.saturating_add(
+            forest_view.validate_child_list(*owner, full_validation_owners.contains(owner))?,
+        );
     }
     for (node_id, replacement) in &nodes {
         let Some(node) = replacement else {
             continue;
         };
-        let owner = final_parent(*node_id, document, &parents).ok_or_else(|| {
+        let owner = forest_view.parent(*node_id).ok_or_else(|| {
             ProtocolError::InvalidChange(
                 "every live node must have exactly one root or parent owner".to_string(),
             )
         })?;
-        let owner_content = match owner {
-            ChildListOwner::Document => None,
-            ChildListOwner::Node { node_id: parent_id } => Some(
-                &view_node(parent_id, document, &nodes)
-                    .ok_or(ProtocolError::MissingNode(parent_id))?
-                    .content,
-            ),
-        };
+        let owner_content = forest_view.owner_content(owner)?;
         validate_child_kind(owner_content, &node.content)?;
         relationship_steps = relationship_steps.saturating_add(1);
     }
@@ -2622,181 +2613,208 @@ struct StagedForestView<'a> {
     limits: ProtocolLimits,
 }
 
-fn validate_child_list_view(
-    owner: ChildListOwner,
-    view: &StagedForestView<'_>,
-    force_full: bool,
-) -> Result<usize, StageFailure> {
-    let document = view.document;
-    let staged = view.nodes;
-    let structures = view.structures;
-    let parent_changes = view.parents;
-    let resulting_cursor = view.resulting_cursor;
-    let limits = view.limits;
-    let Some(current) = view_child_list(owner, document, staged) else {
-        return Ok(0);
-    };
-    let owner_range = match owner {
-        ChildListOwner::Document => crate::SourceRange::new(SourceCursor::new(0), resulting_cursor),
-        ChildListOwner::Node { node_id } => {
-            view_node(node_id, document, staged)
-                .ok_or(ProtocolError::MissingNode(node_id))?
-                .body
+impl<'a> StagedForestView<'a> {
+    fn node(&self, id: NodeId) -> Option<&'a ContentNode> {
+        view_node(id, self.document, self.nodes)
+    }
+
+    fn required_node(&self, id: NodeId) -> Result<&'a ContentNode, ProtocolError> {
+        self.node(id).ok_or(ProtocolError::MissingNode(id))
+    }
+
+    fn parent(&self, id: NodeId) -> Option<ChildListOwner> {
+        final_parent(id, self.document, self.parents)
+    }
+
+    fn retained_parent(&self, id: NodeId) -> Option<ChildListOwner> {
+        self.document.parents.get(&id).copied()
+    }
+
+    fn owner_content(
+        &self,
+        owner: ChildListOwner,
+    ) -> Result<Option<&'a ContentKind>, ProtocolError> {
+        Ok(self.child_list_context(owner)?.content)
+    }
+
+    fn child_list(&self, owner: ChildListOwner) -> Option<&'a ChildList> {
+        view_child_list(owner, self.document, self.nodes)
+    }
+
+    fn child_list_context(
+        &self,
+        owner: ChildListOwner,
+    ) -> Result<ChildListContext<'a>, ProtocolError> {
+        match owner {
+            ChildListOwner::Document => Ok(ChildListContext {
+                owner,
+                content: None,
+                range: crate::SourceRange::new(SourceCursor::new(0), self.resulting_cursor),
+                completeness: ChildSequenceCompleteness::Complete,
+            }),
+            ChildListOwner::Node { node_id } => {
+                let node = self.required_node(node_id)?;
+                Ok(ChildListContext {
+                    owner,
+                    content: Some(&node.content),
+                    range: node.body,
+                    completeness: sequence_completeness(node.stability),
+                })
+            }
         }
-    };
-    match structures.get(&owner) {
-        Some(StructureEdit::Append { insert, .. }) => {
-            let resulting_count = current.len().checked_add(insert.len()).ok_or_else(|| {
-                ProtocolError::InvalidChange("child-list size overflow".to_string())
-            })?;
-            if resulting_count > limits.max_children_per_list {
-                return Err(ProtocolError::ValueTooLarge {
-                    field: "child_list.children",
-                    limit: limits.max_children_per_list,
-                    actual: resulting_count,
-                }
+    }
+
+    fn validate_child_list(
+        &self,
+        owner: ChildListOwner,
+        force_full: bool,
+    ) -> Result<usize, StageFailure> {
+        let Some(current) = self.child_list(owner) else {
+            return Ok(0);
+        };
+        let context = self.child_list_context(owner)?;
+        match self.structures.get(&owner) {
+            Some(StructureEdit::Append { insert, .. }) => {
+                self.validate_append_shape(owner, current.len(), insert)?;
+                let validation = if force_full {
+                    ChildSliceValidation::Full {
+                        children: current.as_slice(),
+                        appended: insert,
+                    }
+                } else {
+                    let last = current.as_slice().last().and_then(|id| self.node(*id));
+                    ChildSliceValidation::Append {
+                        children: insert,
+                        prefix: ChildSequencePrefix {
+                            len: current.len(),
+                            previous_end: last.map(|node| node.source.end),
+                            last_kind: last.map(|node| &node.content),
+                        },
+                    }
+                };
+                self.validate_child_slice(context, validation)
+            }
+            Some(StructureEdit::Replace(replacement)) => {
+                replacement.validate_local(self.limits)?;
+                self.validate_child_slice(
+                    context,
+                    ChildSliceValidation::Full {
+                        children: replacement.as_slice(),
+                        appended: &[],
+                    },
+                )
+            }
+            None => {
+                current.validate_local(self.limits)?;
+                self.validate_child_slice(
+                    context,
+                    ChildSliceValidation::Full {
+                        children: current.as_slice(),
+                        appended: &[],
+                    },
+                )
+            }
+        }
+    }
+
+    fn validate_append_shape(
+        &self,
+        owner: ChildListOwner,
+        current_len: usize,
+        inserted: &[NodeId],
+    ) -> Result<(), StageFailure> {
+        let resulting_count = current_len
+            .checked_add(inserted.len())
+            .ok_or_else(|| ProtocolError::InvalidChange("child-list size overflow".to_string()))?;
+        if resulting_count > self.limits.max_children_per_list {
+            return Err(ProtocolError::ValueTooLarge {
+                field: "child_list.children",
+                limit: self.limits.max_children_per_list,
+                actual: resulting_count,
+            }
+            .into());
+        }
+        let mut unique = BTreeSet::new();
+        for child in inserted {
+            if !unique.insert(*child) || self.retained_parent(*child) == Some(owner) {
+                return Err(ProtocolError::DuplicateNode(*child).into());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_child_slice(
+        &self,
+        context: ChildListContext<'_>,
+        validation: ChildSliceValidation<'_>,
+    ) -> Result<usize, StageFailure> {
+        let (children, appended, mut previous, prefix_len, last_kind) = match validation {
+            ChildSliceValidation::Full { children, appended } => {
+                (children, appended, None, 0, None)
+            }
+            ChildSliceValidation::Append { children, prefix } => (
+                children,
+                &[][..],
+                prefix.previous_end,
+                prefix.len,
+                prefix.last_kind,
+            ),
+        };
+        let mut sequence = ChildSequenceValidator::resume(context.content, prefix_len, last_kind)?;
+        let mut steps = 1usize;
+        for child_id in children.iter().chain(appended) {
+            let child = self.required_node(*child_id)?;
+            validate_child_kind(context.content, &child.content)?;
+            sequence.push(&child.content)?;
+            if self.parent(*child_id) != Some(context.owner) {
+                return Err(ProtocolError::InvalidChange(
+                    "child ownership is not canonical".to_string(),
+                )
                 .into());
             }
-            let mut unique = BTreeSet::new();
-            for child in insert {
-                if !unique.insert(*child) || document.parents.get(child) == Some(&owner) {
-                    return Err(ProtocolError::DuplicateNode(*child).into());
-                }
-            }
-            if force_full {
-                validate_child_slice(
-                    owner,
-                    current.as_slice(),
-                    Some(insert),
-                    None,
-                    owner_range,
-                    document,
-                    staged,
-                    parent_changes,
-                    0,
-                    None,
+            if !context.range.contains(child.source) {
+                return Err(ProtocolError::InvalidChange(
+                    "child source range must be contained by its owner body".to_string(),
                 )
-            } else {
-                let previous = current
-                    .as_slice()
-                    .last()
-                    .and_then(|id| view_node(*id, document, staged))
-                    .map(|node| node.source.end);
-                let last_kind = current
-                    .as_slice()
-                    .last()
-                    .and_then(|id| view_node(*id, document, staged))
-                    .map(|node| &node.content);
-                validate_child_slice(
-                    owner,
-                    insert,
-                    None,
-                    previous,
-                    owner_range,
-                    document,
-                    staged,
-                    parent_changes,
-                    current.len(),
-                    last_kind,
-                )
+                .into());
             }
+            if previous.is_some_and(|end| end > child.source.start) {
+                return Err(ProtocolError::InvalidChange(
+                    "siblings must be ordered and non-overlapping".to_string(),
+                )
+                .into());
+            }
+            previous = Some(child.source.end);
+            steps = steps.saturating_add(1);
         }
-        Some(StructureEdit::Replace(replacement)) => {
-            replacement.validate_local(limits)?;
-            validate_child_slice(
-                owner,
-                replacement.as_slice(),
-                None,
-                None,
-                owner_range,
-                document,
-                staged,
-                parent_changes,
-                0,
-                None,
-            )
-        }
-        None => {
-            current.validate_local(limits)?;
-            validate_child_slice(
-                owner,
-                current.as_slice(),
-                None,
-                None,
-                owner_range,
-                document,
-                staged,
-                parent_changes,
-                0,
-                None,
-            )
-        }
+        sequence.finish(context.completeness)?;
+        Ok(steps)
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn validate_child_slice(
+#[derive(Clone, Copy)]
+struct ChildListContext<'a> {
     owner: ChildListOwner,
-    children: &[NodeId],
-    additional_children: Option<&[NodeId]>,
-    mut previous: Option<SourceCursor>,
-    owner_range: crate::SourceRange,
-    document: &Document,
-    staged: &BTreeMap<NodeId, Option<ContentNode>>,
-    parent_changes: &BTreeMap<NodeId, Option<ChildListOwner>>,
-    sequence_prefix_len: usize,
-    sequence_last_kind: Option<&ContentKind>,
-) -> Result<usize, StageFailure> {
-    let owner_content = match owner {
-        ChildListOwner::Document => None,
-        ChildListOwner::Node { node_id } => Some(
-            &view_node(node_id, document, staged)
-                .ok_or(ProtocolError::MissingNode(node_id))?
-                .content,
-        ),
-    };
-    let mut sequence =
-        ChildSequenceValidator::resume(owner_content, sequence_prefix_len, sequence_last_kind)?;
-    let mut steps = 1usize;
-    for child_id in children
-        .iter()
-        .chain(additional_children.unwrap_or_default())
-    {
-        let child =
-            view_node(*child_id, document, staged).ok_or(ProtocolError::MissingNode(*child_id))?;
-        validate_child_kind(owner_content, &child.content)?;
-        sequence.push(&child.content)?;
-        if final_parent(*child_id, document, parent_changes) != Some(owner) {
-            return Err(ProtocolError::InvalidChange(
-                "child ownership is not canonical".to_string(),
-            )
-            .into());
-        }
-        if !owner_range.contains(child.source) {
-            return Err(ProtocolError::InvalidChange(
-                "child source range must be contained by its owner body".to_string(),
-            )
-            .into());
-        }
-        if previous.is_some_and(|end| end > child.source.start) {
-            return Err(ProtocolError::InvalidChange(
-                "siblings must be ordered and non-overlapping".to_string(),
-            )
-            .into());
-        }
-        previous = Some(child.source.end);
-        steps = steps.saturating_add(1);
-    }
-    let completeness = match owner {
-        ChildListOwner::Document => ChildSequenceCompleteness::Complete,
-        ChildListOwner::Node { node_id } => {
-            let owner =
-                view_node(node_id, document, staged).ok_or(ProtocolError::MissingNode(node_id))?;
-            sequence_completeness(owner.stability)
-        }
-    };
-    sequence.finish(completeness)?;
-    Ok(steps)
+    content: Option<&'a ContentKind>,
+    range: crate::SourceRange,
+    completeness: ChildSequenceCompleteness,
+}
+
+enum ChildSliceValidation<'a> {
+    Full {
+        children: &'a [NodeId],
+        appended: &'a [NodeId],
+    },
+    Append {
+        children: &'a [NodeId],
+        prefix: ChildSequencePrefix<'a>,
+    },
+}
+
+struct ChildSequencePrefix<'a> {
+    len: usize,
+    previous_end: Option<SourceCursor>,
+    last_kind: Option<&'a ContentKind>,
 }
 
 fn validate_depths_incremental(

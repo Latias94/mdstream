@@ -5,6 +5,7 @@ mod draft;
 mod extensions;
 mod frontier;
 mod identity;
+mod limits;
 mod markdown;
 mod metrics;
 mod operations;
@@ -18,6 +19,7 @@ pub(crate) use draft::{
     DraftResourceRole, SyntheticRole,
 };
 pub(crate) use identity::{MaterializedForest, MaterializedNode};
+pub use limits::CompilerLimits;
 pub use markdown::MarkdownDiagnostic;
 use markdown::MarkdownError;
 pub(crate) use orchestration::ContentCompiler;

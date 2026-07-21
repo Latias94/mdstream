@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::compiler::CompilerLimits;
 use crate::compiler::draft::{DraftForest, DraftResourceIndex};
 use crate::compiler::identity::MaterializedForest;
 use crate::compiler::types::CompilerError;
@@ -98,7 +99,7 @@ impl SemanticState {
         &self,
         mut facts: Vec<DefinitionFact>,
         stable_before: SourceCursor,
-        limits: ProtocolLimits,
+        limits: CompilerLimits,
     ) -> Result<DefinitionStage, CompilerError> {
         facts.sort_by_key(|fact| (fact.source.start, fact.source.end));
         let mut stable_inserts = BTreeMap::new();
@@ -185,24 +186,25 @@ impl SemanticState {
         forest: &mut DraftForest,
         mut facts: Vec<DefinitionFact>,
         stable_before: SourceCursor,
-        limits: ProtocolLimits,
+        protocol_limits: ProtocolLimits,
+        compiler_limits: CompilerLimits,
     ) -> Result<SemanticPlan<'state>, CompilerError> {
         collect_footnote_definitions(&forest.roots, &mut facts);
         let definition_visits = u64::try_from(facts.len())
             .map_err(|_| CompilerError::MetricsOverflow("semantic definitions"))?;
-        validate_definition_facts(&facts, limits)?;
+        validate_definition_facts(&facts, protocol_limits)?;
         let DefinitionStage {
             commit,
             changed_keys: changed_definition_keys,
             mut state_key_visits,
             retained_definition_count,
             retained_definition_metadata_bytes,
-        } = self.stage_definitions(facts, stable_before, limits)?;
+        } = self.stage_definitions(facts, stable_before, compiler_limits)?;
         let view = DefinitionView {
             state: self,
             commit: &commit,
         };
-        let mut resource_indices = enrich_forest(forest, &view, limits)?;
+        let mut resource_indices = enrich_forest(forest, &view, protocol_limits)?;
         let required_resource_keys = changed_definition_keys
             .iter()
             .chain(commit.stable_definition_inserts.keys())
@@ -228,7 +230,7 @@ impl SemanticState {
                 &view,
                 &mut forest.resources,
                 &mut resource_indices,
-                limits,
+                protocol_limits,
             )?;
         }
         Ok(SemanticPlan {
@@ -334,7 +336,8 @@ impl SemanticPlan<'_> {
         mut self,
         document: Option<&Document>,
         candidate: &MaterializedForest,
-        limits: ProtocolLimits,
+        protocol_limits: ProtocolLimits,
+        compiler_limits: CompilerLimits,
     ) -> Result<SemanticOutcome, CompilerError> {
         let mut candidate_node_visits = 0_u64;
         let mut candidate_dependency_visits = 0_u64;
@@ -379,10 +382,10 @@ impl SemanticPlan<'_> {
             .stable_dependency_count
             .checked_add(self.commit.frontier_dependency_count)
             .ok_or(CompilerError::MetricsOverflow("definition dependencies"))?;
-        if dependency_count > limits.max_definition_edges {
+        if dependency_count > compiler_limits.max_definition_edges {
             return Err(CompilerError::LimitExceeded {
                 field: "definition.dependencies",
-                limit: limits.max_definition_edges,
+                limit: compiler_limits.max_definition_edges,
                 actual: dependency_count,
             });
         }
@@ -422,8 +425,12 @@ impl SemanticPlan<'_> {
                     else {
                         continue;
                     };
-                    let cost = ChangePayloadCost::for_projection(*node_id, &projection, limits)
-                        .map_err(|error| CompilerError::InvalidReconciliation(error.to_string()))?;
+                    let cost = ChangePayloadCost::for_projection(
+                        *node_id,
+                        &projection,
+                        protocol_limits,
+                    )
+                    .map_err(|error| CompilerError::InvalidReconciliation(error.to_string()))?;
                     corrections.push(SemanticCorrection {
                         cost,
                         operation: ProjectionOp::ReplaceNode {
@@ -528,7 +535,7 @@ fn validate_definition_facts(
 fn validate_definition_registry(
     definition_count: usize,
     metadata_bytes: usize,
-    limits: ProtocolLimits,
+    limits: CompilerLimits,
 ) -> Result<(), CompilerError> {
     if definition_count > limits.max_definitions {
         return Err(CompilerError::LimitExceeded {

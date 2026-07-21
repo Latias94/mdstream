@@ -1,5 +1,3 @@
-// ignore_for_file: public_member_api_docs
-
 import 'dart:convert';
 
 import 'errors.dart';
@@ -7,19 +5,26 @@ import 'protocol.dart';
 
 /// Base type for decoded, recursively immutable binding JSON views.
 sealed class DecodedBindingView {
+  /// Creates a decoded view for one binding [kind] and protocol [schema].
   const DecodedBindingView({
     required this.schema,
     required this.kind,
     required this.raw,
   });
 
+  /// Binding schema that governed decoding of this payload.
   final String schema;
+
+  /// Discriminator of the decoded binding payload.
   final String kind;
+
+  /// Recursively immutable JSON object received from the native binding.
   final Map<String, Object?> raw;
 }
 
 /// Position of a successfully applied protocol change.
 final class CoordinateView {
+  /// Creates an exact coordinate in the canonical change stream.
   const CoordinateView({
     required this.epoch,
     required this.sequence,
@@ -27,52 +32,129 @@ final class CoordinateView {
     required this.sourceCursor,
   });
 
+  /// Recovery epoch containing the change.
   final Epoch epoch;
+
+  /// Monotonic sequence within [epoch].
   final Sequence sequence;
+
+  /// Stable opaque identity of the canonical change.
   final ChangeId changeId;
+
+  /// Source byte cursor reached after applying the change.
   final SourceCursor sourceCursor;
 }
 
 /// Extensible reason for requiring an explicit recovery snapshot.
 final class RecoveryReasonView {
+  /// Creates an extensible recovery reason from its [kind] and raw fields.
   const RecoveryReasonView({required this.kind, required this.raw});
 
+  /// Stable protocol discriminator for the recovery reason.
   final String kind;
+
+  /// Recursively immutable reason object for forward-compatible inspection.
   final Map<String, Object?> raw;
 }
 
 /// Current reducer readiness state.
-final class ReducerStatusView {
-  const ReducerStatusView({required this.kind, this.lastGood, this.reason});
+sealed class ReducerStatusView {
+  const ReducerStatusView();
+}
 
-  final String kind;
-  final CoordinateView? lastGood;
-  final RecoveryReasonView? reason;
+/// Reducer state before the first canonical change is applied.
+final class UninitializedReducerStatusView extends ReducerStatusView {
+  /// Creates the uninitialized reducer status.
+  const UninitializedReducerStatusView();
+}
+
+/// Reducer state that can accept the next canonical change.
+final class ReadyReducerStatusView extends ReducerStatusView {
+  /// Creates the ready reducer status.
+  const ReadyReducerStatusView();
+}
+
+/// Reducer state that requires an explicit recovery snapshot.
+final class NeedsSnapshotReducerStatusView extends ReducerStatusView {
+  /// Creates a recovery-required reducer status.
+  const NeedsSnapshotReducerStatusView({
+    required this.lastGood,
+    required this.reason,
+  });
+
+  /// Last coordinate known to have been applied consistently.
+  final CoordinateView lastGood;
+
+  /// Reason continuity could not be preserved.
+  final RecoveryReasonView reason;
 }
 
 /// Result of applying one canonical change or snapshot.
-final class ApplyOutcomeView {
-  const ApplyOutcomeView({
-    required this.kind,
-    this.coordinate,
-    this.current,
-    this.receivedEpoch,
-    this.receivedSequence,
-    this.lastGood,
-    this.reason,
+sealed class ApplyOutcomeView {
+  const ApplyOutcomeView();
+}
+
+/// Outcome for a canonical change applied in normal continuity.
+final class AppliedOutcomeView extends ApplyOutcomeView {
+  /// Creates an applied outcome at [coordinate].
+  const AppliedOutcomeView(this.coordinate);
+
+  /// Coordinate assigned to the applied change.
+  final CoordinateView coordinate;
+}
+
+/// Outcome for a recovery snapshot that restored continuity.
+final class RecoveredOutcomeView extends ApplyOutcomeView {
+  /// Creates a recovered outcome at [coordinate].
+  const RecoveredOutcomeView(this.coordinate);
+
+  /// Coordinate restored by the snapshot.
+  final CoordinateView coordinate;
+}
+
+/// Outcome for a change that was already applied.
+final class IdempotentOutcomeView extends ApplyOutcomeView {
+  /// Creates an idempotent outcome.
+  const IdempotentOutcomeView();
+}
+
+/// Outcome for a change older than the reducer's current coordinate.
+final class StaleOutcomeView extends ApplyOutcomeView {
+  /// Creates a stale outcome.
+  const StaleOutcomeView({
+    required this.current,
+    required this.receivedEpoch,
+    required this.receivedSequence,
   });
 
-  final String kind;
-  final CoordinateView? coordinate;
-  final CoordinateView? current;
-  final Epoch? receivedEpoch;
-  final Sequence? receivedSequence;
-  final CoordinateView? lastGood;
-  final RecoveryReasonView? reason;
+  /// Coordinate currently retained by the reducer.
+  final CoordinateView current;
+
+  /// Epoch carried by the rejected change.
+  final Epoch receivedEpoch;
+
+  /// Sequence carried by the rejected change.
+  final Sequence receivedSequence;
+}
+
+/// Outcome for a change that cannot preserve reducer continuity.
+final class RecoveryRequiredOutcomeView extends ApplyOutcomeView {
+  /// Creates a recovery-required outcome.
+  const RecoveryRequiredOutcomeView({
+    required this.lastGood,
+    required this.reason,
+  });
+
+  /// Last coordinate known to have been applied consistently.
+  final CoordinateView lastGood;
+
+  /// Reason an explicit recovery snapshot is required.
+  final RecoveryReasonView reason;
 }
 
 /// Exact cache invalidations produced by one reducer operation.
 final class ChangeImpactView {
+  /// Creates the exact invalidation set for one reducer operation.
   const ChangeImpactView({
     required this.changedNodeIds,
     required this.removedNodeIds,
@@ -85,27 +167,49 @@ final class ChangeImpactView {
     required this.fullReplace,
   });
 
+  /// Node identities whose materialized views changed.
   final List<NodeId> changedNodeIds;
+
+  /// Node identities removed from the current document.
   final List<NodeId> removedNodeIds;
+
+  /// Semantic resource identities whose materialized views changed.
   final List<ResourceId> changedResourceIds;
+
+  /// Semantic resource identities removed from the current document.
   final List<ResourceId> removedResourceIds;
+
+  /// Whether the retained source changed.
   final bool sourceChanged;
+
+  /// Whether the projected source boundary changed.
   final bool projectionChanged;
+
+  /// Whether the document lifecycle changed.
   final bool lifecycleChanged;
+
+  /// Whether the document root child list changed.
   final bool rootsChanged;
+
+  /// Whether continuity was replaced and all derived state must be rescanned.
   final bool fullReplace;
 }
 
 /// Versioned ordered child identities.
 final class ChildListView {
+  /// Creates an ordered child list at [version].
   const ChildListView({required this.version, required this.children});
 
+  /// Structural version of this ordered child list.
   final StructureVersion version;
+
+  /// Ordered identities of the child nodes.
   final List<NodeId> children;
 }
 
 /// Document fields needed to update a framework state store.
 final class DocumentSummaryView {
+  /// Creates the document fields required by framework state adapters.
   const DocumentSummaryView({
     required this.coordinate,
     required this.lifecycle,
@@ -113,9 +217,16 @@ final class DocumentSummaryView {
     this.roots,
   });
 
+  /// Coordinate of the document state represented by this summary.
   final CoordinateView coordinate;
+
+  /// Current document lifecycle discriminator.
   final String lifecycle;
+
+  /// Source cursor through which nodes have been projected.
   final SourceCursor projectionCursor;
+
+  /// Root child list when included by the delta payload.
   final ChildListView? roots;
 }
 
@@ -127,8 +238,13 @@ final class TransitionNodeKeyView {
     required this.nodeId,
   });
 
+  /// Generation that prevents identity reuse across continuity replacement.
   final ContinuityGeneration continuityGeneration;
+
+  /// Recovery epoch containing the node.
   final Epoch epoch;
+
+  /// Stable node identity within the continuity generation.
   final NodeId nodeId;
 }
 
@@ -140,8 +256,13 @@ final class TransitionResourceKeyView {
     required this.resourceId,
   });
 
+  /// Generation that prevents identity reuse across continuity replacement.
   final ContinuityGeneration continuityGeneration;
+
+  /// Recovery epoch containing the resource.
   final Epoch epoch;
+
+  /// Stable semantic resource identity within the generation.
   final ResourceId resourceId;
 }
 
@@ -149,6 +270,7 @@ final class TransitionResourceKeyView {
 sealed class TransitionChildListOwnerView {
   const TransitionChildListOwnerView._(this.kind);
 
+  /// Owner discriminator used by the transition protocol.
   final String kind;
 }
 
@@ -161,6 +283,7 @@ final class DocumentTransitionOwnerView extends TransitionChildListOwnerView {
 final class NodeTransitionOwnerView extends TransitionChildListOwnerView {
   const NodeTransitionOwnerView._(this.key) : super._('node');
 
+  /// Continuity-qualified node that owns the child list.
   final TransitionNodeKeyView key;
 }
 
@@ -174,10 +297,19 @@ final class DocumentStateStampView {
     required this.rootsVersion,
   });
 
+  /// Continuity generation represented by this document stamp.
   final ContinuityGeneration continuityGeneration;
+
+  /// Canonical stream coordinate represented by this stamp.
   final CoordinateView coordinate;
+
+  /// Document lifecycle at this stamp.
   final String lifecycle;
+
+  /// Projected source cursor at this stamp.
   final SourceCursor projectionCursor;
+
+  /// Structural version of the document root list at this stamp.
   final StructureVersion rootsVersion;
 }
 
@@ -190,9 +322,16 @@ final class NodeStateStampView {
     required this.childrenVersion,
   });
 
+  /// Content version of the node at this stamp.
   final NodeVersion version;
+
+  /// Node stability discriminator at this stamp.
   final String stability;
+
+  /// Parent child-list owner, or `null` for a detached node.
   final TransitionChildListOwnerView? parent;
+
+  /// Structural version of the node's child list at this stamp.
   final StructureVersion childrenVersion;
 }
 
@@ -200,6 +339,7 @@ final class NodeStateStampView {
 sealed class TextTransitionView {
   const TextTransitionView._(this.kind);
 
+  /// Text transition discriminator used by the transition protocol.
   final String kind;
 }
 
@@ -210,7 +350,10 @@ final class ProjectionAppendTransitionView extends TextTransitionView {
     required this.text,
   }) : super._('projection_append');
 
+  /// Half-open source range covered by the appended projected text.
   final SourceRangeView range;
+
+  /// Owned projected source text appended in this transition.
   final String text;
 }
 
@@ -228,9 +371,16 @@ final class NodeTransitionView {
     required this.text,
   });
 
+  /// Continuity-qualified identity of the affected node.
   final TransitionNodeKeyView key;
+
+  /// Node state before the transition, or `null` for insertion.
   final NodeStateStampView? before;
+
+  /// Node state after the transition, or `null` for removal.
   final NodeStateStampView? after;
+
+  /// Owned text delta when node text changed.
   final TextTransitionView? text;
 }
 
@@ -245,11 +395,22 @@ final class StructureTransitionView {
     required this.inserted,
   });
 
+  /// Document or node that owns the affected child list.
   final TransitionChildListOwnerView owner;
+
+  /// Structural version before applying the splice.
   final StructureVersion beforeVersion;
+
+  /// Structural version after applying the splice.
   final StructureVersion afterVersion;
+
+  /// Zero-based child index at which the splice begins.
   final int start;
+
+  /// Ordered node keys removed by the splice.
   final List<TransitionNodeKeyView> removed;
+
+  /// Ordered node keys inserted by the splice.
   final List<TransitionNodeKeyView> inserted;
 }
 
@@ -262,9 +423,16 @@ final class ResourceTransitionView {
     required this.affectedNodes,
   });
 
+  /// Continuity-qualified identity of the affected resource.
   final TransitionResourceKeyView key;
+
+  /// Resource version before the transition, or `null` for insertion.
   final ResourceVersion? beforeVersion;
+
+  /// Resource version after the transition, or `null` for removal.
   final ResourceVersion? afterVersion;
+
+  /// Nodes whose content refers to this resource.
   final List<TransitionNodeKeyView> affectedNodes;
 }
 
@@ -276,8 +444,13 @@ sealed class TransitionFactsView {
     required this.after,
   });
 
+  /// Transition scope discriminator: continuous or full replacement.
   final String scope;
+
+  /// Document state before the update, or `null` before initialization.
   final DocumentStateStampView? before;
+
+  /// Document state after the update.
   final DocumentStateStampView after;
 }
 
@@ -291,8 +464,13 @@ final class ContinuousTransitionFactsView extends TransitionFactsView {
     required this.resources,
   }) : super._(scope: 'continuous');
 
+  /// Ordered node transitions in this reducer update.
   final List<NodeTransitionView> nodes;
+
+  /// Ordered child-list splices in this reducer update.
   final List<StructureTransitionView> structures;
+
+  /// Ordered semantic resource transitions in this reducer update.
   final List<ResourceTransitionView> resources;
 }
 
@@ -308,7 +486,10 @@ final class FullReplaceTransitionFactsView extends TransitionFactsView {
 final class TransitionEnvelopeView {
   const TransitionEnvelopeView._({required this.schema, required this.facts});
 
+  /// Schema governing the nested transition facts.
   final String schema;
+
+  /// Typed transition facts carried by the envelope.
   final TransitionFactsView facts;
 }
 
@@ -324,18 +505,31 @@ final class ReducerUpdateView extends DecodedBindingView {
     required this.transition,
   }) : super(kind: 'reducer_update');
 
+  /// Result of applying the command that produced this update.
   final ApplyOutcomeView outcome;
+
+  /// Reducer readiness after the command.
   final ReducerStatusView status;
+
+  /// Exact invalidation set produced by the command.
   final ChangeImpactView impact;
+
+  /// Document summary after the command, when initialized.
   final DocumentSummaryView? document;
+
+  /// Versioned transition facts, when requested by the binding schema.
   final TransitionEnvelopeView? transition;
 }
 
 /// Half-open source range represented with exact decimal cursors.
 final class SourceRangeView {
+  /// Creates a half-open source range from [start] to [end].
   const SourceRangeView({required this.start, required this.end});
 
+  /// Inclusive source byte cursor where the range begins.
   final SourceCursor start;
+
+  /// Exclusive source byte cursor where the range ends.
   final SourceCursor end;
 }
 
@@ -348,290 +542,540 @@ final class PendingSourceView extends DecodedBindingView {
     required this.text,
   }) : super(kind: 'pending_source_view');
 
+  /// Source range covered by the bounded pending suffix.
   final SourceRangeView range;
+
+  /// Exact pending source text within [range].
   final String text;
 }
 
-enum TableAlignment { none, left, center, right }
+/// Column alignment encoded by the table Content IR.
+enum TableAlignment {
+  /// No explicit alignment was declared.
+  none,
 
+  /// Aligns cell content to the left edge.
+  left,
+
+  /// Centers cell content.
+  center,
+
+  /// Aligns cell content to the right edge.
+  right,
+}
+
+/// Markdown link syntax retained by the Content IR.
 enum LinkStyle {
+  /// Inline destination syntax.
   inline,
+
+  /// Full reference syntax with a resolved definition.
   reference,
+
+  /// Full reference syntax without a resolved definition.
   referenceUnknown,
+
+  /// Collapsed reference syntax with a resolved definition.
   collapsed,
+
+  /// Collapsed reference syntax without a resolved definition.
   collapsedUnknown,
+
+  /// Shortcut reference syntax with a resolved definition.
   shortcut,
+
+  /// Shortcut reference syntax without a resolved definition.
   shortcutUnknown,
+
+  /// URI autolink syntax.
   autolink,
+
+  /// Email autolink syntax.
   email,
 }
 
-enum BlockQuoteKind { plain, note, tip, important, warning, caution }
+/// Semantic variant of a block quote in the Content IR.
+enum BlockQuoteKind {
+  /// Ordinary Markdown block quote.
+  plain,
 
-enum CodeFenceMarker { backtick, tilde }
+  /// Note-style alert block quote.
+  note,
 
+  /// Tip-style alert block quote.
+  tip,
+
+  /// Important-style alert block quote.
+  important,
+
+  /// Warning-style alert block quote.
+  warning,
+
+  /// Caution-style alert block quote.
+  caution,
+}
+
+/// Delimiter character used by a fenced code block.
+enum CodeFenceMarker {
+  /// Backtick fence.
+  backtick,
+
+  /// Tilde fence.
+  tilde,
+}
+
+/// Supported citation resource protocol.
 enum CitationProtocol {
+  /// Version 1 of the mdstream citation protocol.
   mdstreamCitation1('mdstream.citation/1');
 
+  /// Creates a citation protocol with its stable [wireName].
   const CitationProtocol(this.wireName);
+
+  /// Stable protocol name encoded in Content IR payloads.
   final String wireName;
 }
 
+/// Source or normalized text representation in the Content IR.
 sealed class SemanticTextView {
+  /// Creates a semantic text representation identified by [kind].
   const SemanticTextView(this.kind);
+
+  /// Text representation discriminator encoded by the Content IR.
   final String kind;
 }
 
+/// Semantic text read directly from the node's source range.
 final class SourceSemanticTextView extends SemanticTextView {
+  /// Creates a source-backed semantic text marker.
   const SourceSemanticTextView() : super('source');
 }
 
+/// Semantic text normalized independently of the source bytes.
 final class NormalizedSemanticTextView extends SemanticTextView {
+  /// Creates normalized semantic text containing [value].
   const NormalizedSemanticTextView(this.value) : super('normalized');
+
+  /// Normalized text stored directly in the Content IR.
   final String value;
 }
 
+/// Source syntax retained for a code block Content IR node.
 sealed class CodeBlockSyntaxView {
+  /// Creates a code-block syntax representation identified by [kind].
   const CodeBlockSyntaxView(this.kind);
+
+  /// Code-block syntax discriminator encoded by the Content IR.
   final String kind;
 }
 
+/// Indentation-delimited code block syntax.
 final class IndentedCodeBlockSyntaxView extends CodeBlockSyntaxView {
+  /// Creates an indented code-block syntax marker.
   const IndentedCodeBlockSyntaxView() : super('indented');
 }
 
+/// Explicitly fenced code block syntax.
 final class FencedCodeBlockSyntaxView extends CodeBlockSyntaxView {
+  /// Creates fenced syntax using [marker] repeated [length] times.
   const FencedCodeBlockSyntaxView({required this.marker, required this.length})
     : super('fenced');
+
+  /// Delimiter character used by the source fence.
   final CodeFenceMarker marker;
+
+  /// Number of delimiter characters in the opening fence.
   final int length;
 }
 
+/// Version-qualified reference to a semantic resource.
 final class ResourceRefView {
+  /// Creates a reference to resource [id] at [version].
   const ResourceRefView({required this.id, required this.version});
+
+  /// Stable identity of the referenced semantic resource.
   final ResourceId id;
+
+  /// Resource version required by this Content IR node.
   final ResourceVersion version;
 }
 
+/// Base type for exhaustive semantic node content in the Content IR.
 sealed class ContentKindView {
+  /// Creates node content identified by the stable [kind] discriminator.
   const ContentKindView(this.kind);
+
+  /// Semantic content discriminator encoded by the Content IR.
   final String kind;
 }
 
+/// Paragraph container content.
 final class ParagraphContentView extends ContentKindView {
+  /// Creates paragraph content.
   const ParagraphContentView() : super('paragraph');
 }
 
+/// Heading container content.
 final class HeadingContentView extends ContentKindView {
+  /// Creates heading content at Markdown [level].
   const HeadingContentView(this.level) : super('heading');
+
+  /// Markdown heading level represented by this node.
   final int level;
 }
 
+/// Inline text content.
 final class TextContentView extends ContentKindView {
+  /// Creates inline content backed by semantic [text].
   const TextContentView(this.text) : super('text');
+
+  /// Source-backed or normalized text represented by the node.
   final SemanticTextView text;
 }
 
+/// Emphasized inline container content.
 final class EmphasisContentView extends ContentKindView {
+  /// Creates emphasis content.
   const EmphasisContentView() : super('emphasis');
 }
 
+/// Strongly emphasized inline container content.
 final class StrongContentView extends ContentKindView {
+  /// Creates strong-emphasis content.
   const StrongContentView() : super('strong');
 }
 
+/// Struck-through inline container content.
 final class StrikethroughContentView extends ContentKindView {
+  /// Creates strikethrough content.
   const StrikethroughContentView() : super('strikethrough');
 }
 
+/// Link container content with retained Markdown syntax.
 final class LinkContentView extends ContentKindView {
+  /// Creates link content with its resolved [target] and source [style].
   const LinkContentView({
     required this.target,
     required this.referenceLabel,
     required this.style,
   }) : super('link');
+
+  /// Versioned resource target, or `null` when unresolved.
   final ResourceRefView? target;
+
+  /// Reference label retained from source syntax, when present.
   final String? referenceLabel;
+
+  /// Markdown link syntax retained by this node.
   final LinkStyle style;
 }
 
+/// Image content with semantic alternative text.
 final class ImageContentView extends ContentKindView {
+  /// Creates image content with its target, syntax, and alternative text.
   const ImageContentView({
     required this.target,
     required this.referenceLabel,
     required this.style,
     required this.alt,
   }) : super('image');
+
+  /// Versioned image resource target, or `null` when unresolved.
   final ResourceRefView? target;
+
+  /// Reference label retained from source syntax, when present.
   final String? referenceLabel;
+
+  /// Markdown image-link syntax retained by this node.
   final LinkStyle style;
+
+  /// Semantic alternative text represented by the image node.
   final SemanticTextView alt;
 }
 
+/// Inline code span content.
 final class InlineCodeContentView extends ContentKindView {
+  /// Creates inline code content backed by semantic [text].
   const InlineCodeContentView(this.text) : super('inline_code');
+
+  /// Source-backed or normalized code text.
   final SemanticTextView text;
 }
 
+/// Block code content with retained source syntax and info string.
 final class CodeBlockContentView extends ContentKindView {
+  /// Creates code-block content with [syntax], optional [info], and [text].
   const CodeBlockContentView({
     required this.syntax,
     required this.info,
     required this.text,
   }) : super('code_block');
+
+  /// Source syntax used to delimit the code block.
   final CodeBlockSyntaxView syntax;
+
+  /// Optional code-fence info string.
   final String? info;
+
+  /// Source-backed or normalized code body.
   final SemanticTextView text;
 }
 
+/// Ordered or unordered list container content.
 final class ListContentView extends ContentKindView {
+  /// Creates list content with ordering and tightness metadata.
   const ListContentView({
     required this.ordered,
     required this.start,
     required this.tight,
   }) : super('list');
+
+  /// Whether this is an ordered rather than unordered list.
   final bool ordered;
+
+  /// Explicit starting ordinal for an ordered list, when present.
   final int? start;
+
+  /// Whether the Markdown list is tight.
   final bool tight;
 }
 
+/// One list item, optionally carrying task-list state.
 final class ListItemContentView extends ContentKindView {
+  /// Creates a list item with optional task-list [checked] state.
   const ListItemContentView(this.checked) : super('list_item');
+
+  /// Task-list state, or `null` for a regular list item.
   final bool? checked;
 }
 
+/// Block quote or alert container content.
 final class BlockQuoteContentView extends ContentKindView {
+  /// Creates block-quote content with semantic [style].
   const BlockQuoteContentView(this.style) : super('block_quote');
+
+  /// Plain quote or alert variant retained by the Content IR.
   final BlockQuoteKind style;
 }
 
+/// Thematic break content.
 final class ThematicBreakContentView extends ContentKindView {
+  /// Creates thematic-break content.
   const ThematicBreakContentView() : super('thematic_break');
 }
 
+/// Table container content with per-column alignment.
 final class TableContentView extends ContentKindView {
+  /// Creates table content with ordered column [alignments].
   const TableContentView(this.alignments) : super('table');
+
+  /// Alignment metadata indexed by table column.
   final List<TableAlignment> alignments;
 }
 
+/// Table header-section container content.
 final class TableHeadContentView extends ContentKindView {
+  /// Creates table-head content.
   const TableHeadContentView() : super('table_head');
 }
 
+/// Table body-section container content.
 final class TableBodyContentView extends ContentKindView {
+  /// Creates table-body content.
   const TableBodyContentView() : super('table_body');
 }
 
+/// Table row container content.
 final class TableRowContentView extends ContentKindView {
+  /// Creates table-row content.
   const TableRowContentView() : super('table_row');
 }
 
+/// Table cell container content.
 final class TableCellContentView extends ContentKindView {
+  /// Creates table-cell content at zero-based [column].
   const TableCellContentView(this.column) : super('table_cell');
+
+  /// Zero-based column occupied by this cell.
   final int column;
 }
 
+/// Raw HTML content retained by the Content IR.
 final class HtmlContentView extends ContentKindView {
+  /// Creates block or inline HTML content backed by semantic [text].
   const HtmlContentView({required this.block, required this.text})
     : super('html');
+
+  /// Whether the HTML is block-level rather than inline.
   final bool block;
+
+  /// Source-backed or normalized HTML text.
   final SemanticTextView text;
 }
 
+/// Mathematical notation content retained by the Content IR.
 final class MathContentView extends ContentKindView {
+  /// Creates display or inline math content backed by semantic [text].
   const MathContentView({required this.display, required this.text})
     : super('math');
+
+  /// Whether the expression uses display rather than inline layout.
   final bool display;
+
+  /// Source-backed or normalized mathematical notation.
   final SemanticTextView text;
 }
 
+/// Footnote definition content linked to a semantic resource.
 final class FootnoteDefinitionContentView extends ContentKindView {
+  /// Creates a footnote definition for [label] targeting [target].
   const FootnoteDefinitionContentView({
     required this.label,
     required this.target,
   }) : super('footnote_definition');
+
+  /// Source label identifying the footnote definition.
   final String label;
+
+  /// Versioned semantic resource defined by this node.
   final ResourceRefView target;
 }
 
+/// Footnote reference content.
 final class FootnoteReferenceContentView extends ContentKindView {
+  /// Creates a footnote reference for [label] and optional resolved [target].
   const FootnoteReferenceContentView({
     required this.label,
     required this.target,
   }) : super('footnote_reference');
+
+  /// Source label used by the footnote reference.
   final String label;
+
+  /// Versioned semantic resource, or `null` when unresolved.
   final ResourceRefView? target;
 }
 
+/// Citation definition content linked to a semantic resource.
 final class CitationDefinitionContentView extends ContentKindView {
+  /// Creates a citation definition for [key] targeting [target].
   const CitationDefinitionContentView({required this.key, required this.target})
     : super('citation_definition');
+
+  /// Citation key defined by this node.
   final String key;
+
+  /// Versioned semantic resource defined by this node.
   final ResourceRefView target;
 }
 
+/// Citation reference content.
 final class CitationReferenceContentView extends ContentKindView {
+  /// Creates a citation reference for [key] and optional resolved [target].
   const CitationReferenceContentView({required this.key, required this.target})
     : super('citation_reference');
+
+  /// Citation key used by the reference.
   final String key;
+
+  /// Versioned semantic resource, or `null` when unresolved.
   final ResourceRefView? target;
 }
 
+/// Soft line-break content.
 final class SoftBreakContentView extends ContentKindView {
+  /// Creates soft-break content.
   const SoftBreakContentView() : super('soft_break');
 }
 
+/// Hard line-break content.
 final class HardBreakContentView extends ContentKindView {
+  /// Creates hard-break content.
   const HardBreakContentView() : super('hard_break');
 }
 
+/// Namespaced extension content carried by the generic Content IR protocol.
 final class CustomContentView extends ContentKindView {
+  /// Creates custom content with a namespaced name and immutable attributes.
   const CustomContentView({
     required this.namespace,
     required this.name,
     required this.opaque,
     required this.attributes,
   }) : super('custom');
+
+  /// Extension namespace that owns the custom content protocol.
   final String namespace;
+
+  /// Extension-defined content name within [namespace].
   final String name;
+
+  /// Whether consumers must treat child interpretation as extension-owned.
   final bool opaque;
+
+  /// Extension-defined immutable string attributes.
   final Map<String, String> attributes;
 }
 
+/// Base type for semantic resources referenced by Content IR nodes.
 sealed class SemanticResourceKindView {
+  /// Creates resource content identified by stable [kind].
   const SemanticResourceKindView(this.kind);
+
+  /// Semantic resource discriminator encoded by the Content IR.
   final String kind;
 }
 
+/// Resolved link or image destination resource.
 final class LinkResourceContentView extends SemanticResourceKindView {
+  /// Creates a link resource with [destination] and optional [title].
   const LinkResourceContentView({
     required this.destination,
     required this.title,
   }) : super('link');
+
+  /// Resolved destination string from the Markdown resource.
   final String destination;
+
+  /// Optional resource title.
   final String? title;
 }
 
+/// Footnote definition resource.
 final class FootnoteResourceContentView extends SemanticResourceKindView {
+  /// Creates a footnote resource identified by [label].
   const FootnoteResourceContentView(this.label) : super('footnote');
+
+  /// Canonical footnote label.
   final String label;
 }
 
+/// Citation resource resolved under an explicit protocol.
 final class CitationResourceContentView extends SemanticResourceKindView {
+  /// Creates a citation resource with its protocol and resolved metadata.
   const CitationResourceContentView({
     required this.protocol,
     required this.key,
     required this.destination,
     required this.title,
   }) : super('citation');
+
+  /// Citation protocol used to interpret the resource.
   final CitationProtocol protocol;
+
+  /// Citation key within [protocol].
   final String key;
+
+  /// Resolved citation destination.
   final String destination;
+
+  /// Optional citation title.
   final String? title;
 }
 
 /// Typed stable node envelope with exhaustive content metadata.
 final class ContentNodeView {
+  /// Creates a versioned Content IR node and its structural metadata.
   const ContentNodeView({
     required this.id,
     required this.version,
@@ -642,12 +1086,25 @@ final class ContentNodeView {
     required this.content,
   });
 
+  /// Stable identity preserved across compatible incremental updates.
   final NodeId id;
+
+  /// Content version used to detect semantic node changes.
   final NodeVersion version;
+
+  /// Streaming stability state of this node.
   final String stability;
+
+  /// Half-open source range covering the complete node syntax.
   final SourceRangeView source;
+
+  /// Half-open source range covering the node's semantic body.
   final SourceRangeView body;
+
+  /// Versioned ordered child identities owned by this node.
   final ChildListView children;
+
+  /// Exhaustive semantic content represented by this node.
   final ContentKindView content;
 }
 
@@ -658,22 +1115,35 @@ final class NodeView extends DecodedBindingView {
     required super.raw,
     required this.node,
     required this.bodyText,
+    required this.processorInputVersion,
   }) : super(kind: 'node_view');
 
+  /// Versioned Content IR node metadata.
   final ContentNodeView node;
+
+  /// Exact source text selected by the node's body range.
   final String bodyText;
+
+  /// Canonical version of the complete node-local processor input.
+  final ProcessorInputVersion processorInputVersion;
 }
 
 /// Typed stable semantic resource with exhaustive content metadata.
 final class SemanticResourceView {
+  /// Creates a versioned semantic resource and its typed [content].
   const SemanticResourceView({
     required this.id,
     required this.version,
     required this.content,
   });
 
+  /// Stable identity of the semantic resource.
   final ResourceId id;
+
+  /// Version used to detect semantic resource changes.
   final ResourceVersion version;
+
+  /// Exhaustive semantic content represented by the resource.
   final SemanticResourceKindView content;
 }
 
@@ -685,11 +1155,13 @@ final class ResourceView extends DecodedBindingView {
     required this.resource,
   }) : super(kind: 'resource_view');
 
+  /// Versioned semantic resource materialized by this payload.
   final SemanticResourceView resource;
 }
 
 /// Complete key that prevents stale processor results from being applied.
 final class ProcessorKeyView {
+  /// Creates the complete concurrency key for one processor invocation.
   const ProcessorKeyView({
     required this.epoch,
     required this.nodeId,
@@ -701,26 +1173,47 @@ final class ProcessorKeyView {
     required this.generation,
   });
 
+  /// Document epoch containing the processed node.
   final Epoch epoch;
+
+  /// Stable identity of the processed Content IR node.
   final NodeId nodeId;
+
+  /// Application-defined processor identifier.
   final String processorId;
+
+  /// Content version of the processed node.
   final NodeVersion nodeVersion;
+
+  /// Version of the fully materialized processor input.
   final ProcessorInputVersion inputVersion;
+
+  /// Application-defined processor implementation version.
   final String processorVersion;
+
+  /// Application-defined processor configuration version.
   final String configurationVersion;
+
+  /// Request generation that rejects stale completions.
   final RequestGeneration generation;
 }
 
 /// Fully materialized input for one external content processor.
 final class ProcessorInputView {
+  /// Creates fully materialized processor input for a Content IR node.
   const ProcessorInputView({
     required this.node,
     required this.body,
     required this.resource,
   });
 
+  /// Versioned node metadata supplied to the processor.
   final ContentNodeView node;
+
+  /// Exact source text selected by the node's body range.
   final String body;
+
+  /// Referenced semantic resource when the node has one.
   final SemanticResourceView? resource;
 }
 
@@ -734,9 +1227,29 @@ final class ProcessorRequestView extends DecodedBindingView {
     required this.input,
   }) : super(kind: 'processor_request');
 
+  /// Native request identity used for completion or cancellation.
   final RequestGeneration requestId;
+
+  /// Complete concurrency key for rejecting stale processor results.
   final ProcessorKeyView key;
+
+  /// Fully materialized immutable processor input.
   final ProcessorInputView input;
+}
+
+/// Closed set of native decisions for one processor completion.
+enum ProcessorCompletionOutcome {
+  /// The current processor request accepted the submitted completion.
+  applied('applied'),
+
+  /// The submitted completion no longer matched the current request.
+  stale('stale');
+
+  /// Creates a completion outcome with its stable [wireName].
+  const ProcessorCompletionOutcome(this.wireName);
+
+  /// Stable wire spelling emitted by the native processor host.
+  final String wireName;
 }
 
 /// Native decision for one processor completion.
@@ -748,25 +1261,55 @@ final class ProcessorCompletionView extends DecodedBindingView {
     required this.outcome,
   }) : super(kind: 'processor_completion');
 
+  /// Native request identity whose completion was evaluated.
   final RequestGeneration requestId;
-  final String outcome;
+
+  /// Native acceptance outcome for the submitted completion.
+  final ProcessorCompletionOutcome outcome;
 }
 
 /// State transition for one processor artifact slot.
-final class ArtifactChangeKindView {
-  const ArtifactChangeKindView({
-    required this.kind,
-    this.artifactBytes,
-    this.code,
-    this.reason,
-    this.releasedArtifactBytes,
+sealed class ArtifactChangeKindView {
+  const ArtifactChangeKindView();
+}
+
+/// Transition that reserves an artifact slot for active processor work.
+final class PendingArtifactChangeView extends ArtifactChangeKindView {
+  /// Creates a pending artifact transition.
+  const PendingArtifactChangeView();
+}
+
+/// Transition that installs a completed artifact.
+final class ReadyArtifactChangeView extends ArtifactChangeKindView {
+  /// Creates a ready artifact transition retaining [artifactBytes].
+  const ReadyArtifactChangeView(this.artifactBytes);
+
+  /// Retained artifact byte size for a ready transition.
+  final DecimalCounter artifactBytes;
+}
+
+/// Transition that retains a structured processor failure.
+final class FailedArtifactChangeView extends ArtifactChangeKindView {
+  /// Creates a failed artifact transition with [code].
+  const FailedArtifactChangeView(this.code);
+
+  /// Structured processor error code for a failed transition.
+  final String code;
+}
+
+/// Transition that removes an artifact slot and releases retained bytes.
+final class RemovedArtifactChangeView extends ArtifactChangeKindView {
+  /// Creates a removed artifact transition.
+  const RemovedArtifactChangeView({
+    required this.reason,
+    required this.releasedArtifactBytes,
   });
 
-  final String kind;
-  final DecimalCounter? artifactBytes;
-  final String? code;
-  final String? reason;
-  final DecimalCounter? releasedArtifactBytes;
+  /// Removal reason for a removed transition.
+  final String reason;
+
+  /// Retained bytes released by a removed transition.
+  final DecimalCounter releasedArtifactBytes;
 }
 
 /// Artifact slot invalidation emitted by the native processor host.
@@ -778,48 +1321,103 @@ final class ArtifactChangeView extends DecodedBindingView {
     required this.change,
   }) : super(kind: 'artifact_change');
 
+  /// Complete processor key identifying the affected artifact slot.
   final ProcessorKeyView key;
+
+  /// State transition applied to the artifact slot.
   final ArtifactChangeKindView change;
 }
 
 /// Text, binary, or citation payload owned by a processor artifact.
-final class ArtifactPayloadView {
-  const ArtifactPayloadView({
-    required this.kind,
-    this.text,
-    this.bytes,
-    this.key,
-    this.destination,
-    this.title,
+sealed class ArtifactPayloadView {
+  const ArtifactPayloadView();
+}
+
+/// UTF-8 text retained by a processor artifact.
+final class TextArtifactPayloadView extends ArtifactPayloadView {
+  /// Creates a text artifact payload.
+  const TextArtifactPayloadView(this.text);
+
+  /// Retained text value.
+  final String text;
+}
+
+/// Opaque binary octets retained by a processor artifact.
+final class BinaryArtifactPayloadView extends ArtifactPayloadView {
+  /// Creates a binary artifact payload with an owned immutable copy.
+  BinaryArtifactPayloadView(List<int> bytes)
+    : bytes = List<int>.unmodifiable(bytes);
+
+  /// Immutable retained octets.
+  final List<int> bytes;
+}
+
+/// Resolved citation retained by a processor artifact.
+final class CitationArtifactPayloadView extends ArtifactPayloadView {
+  /// Creates a resolved citation artifact payload.
+  const CitationArtifactPayloadView({
+    required this.key,
+    required this.destination,
+    required this.title,
   });
 
-  final String kind;
-  final String? text;
-  final List<int>? bytes;
-  final String? key;
-  final String? destination;
+  /// Citation key.
+  final String key;
+
+  /// Resolved citation destination.
+  final String destination;
+
+  /// Optional citation title supplied by the processor.
   final String? title;
 }
 
 /// Protocol-labelled output produced by a content processor.
 final class ProcessorArtifactView {
+  /// Creates a protocol-labelled artifact with its [payload].
   const ProcessorArtifactView({
     required this.protocol,
     required this.mediaType,
     required this.payload,
   });
 
+  /// Content protocol understood by the artifact consumer.
   final String protocol;
+
+  /// Media type of the processor output.
   final String mediaType;
+
+  /// Typed value produced by the processor.
   final ArtifactPayloadView payload;
 }
 
 /// Structured processor failure retained for an artifact slot.
 final class ArtifactFailureView {
+  /// Creates a retained processor failure with [code] and [message].
   const ArtifactFailureView({required this.code, required this.message});
 
+  /// Stable structured processor failure code.
   final String code;
+
+  /// Human-readable processor failure description.
   final String message;
+}
+
+/// Closed set of states for one processor artifact slot.
+enum ArtifactState {
+  /// Processor work is active and no retained result is available yet.
+  pending('pending'),
+
+  /// A processor artifact is retained for the current request key.
+  ready('ready'),
+
+  /// A structured processor failure is retained for the current request key.
+  failed('failed');
+
+  /// Creates an artifact state with its stable [wireName].
+  const ArtifactState(this.wireName);
+
+  /// Stable wire spelling emitted by the native processor host.
+  final String wireName;
 }
 
 /// Current state and optional retained value of one processor artifact slot.
@@ -833,9 +1431,16 @@ final class ArtifactView extends DecodedBindingView {
     required this.failure,
   }) : super(kind: 'artifact_view');
 
+  /// Complete processor key identifying this artifact slot.
   final ProcessorKeyView key;
-  final String state;
+
+  /// Current artifact slot state discriminator.
+  final ArtifactState state;
+
+  /// Retained artifact when the slot is ready.
   final ProcessorArtifactView? artifact;
+
+  /// Retained structured failure when the slot failed.
   final ArtifactFailureView? failure;
 }
 
@@ -849,7 +1454,6 @@ const _processorFailureCodes = <String>{
   'invalid_context',
   'resource_limit',
 };
-final _opaqueIdentifierPattern = RegExp(r'^[A-Za-z0-9._:-]{1,128}$');
 
 /// Decodes one JSON view emitted by the binding facade.
 ///
@@ -1016,7 +1620,7 @@ DocumentStateStampView _decodeDocumentStateStamp(Map<String, Object?> value) {
     );
   }
   return DocumentStateStampView._(
-    continuityGeneration: decodeDecimalU64(
+    continuityGeneration: decodeContinuityGeneration(
       value['continuity_generation'],
       'continuity_generation',
     ),
@@ -1027,11 +1631,14 @@ DocumentStateStampView _decodeDocumentStateStamp(Map<String, Object?> value) {
       ),
     ),
     lifecycle: lifecycle,
-    projectionCursor: decodeDecimalU64(
+    projectionCursor: decodeSourceCursor(
       value['projection_cursor'],
       'projection_cursor',
     ),
-    rootsVersion: _opaqueIdentifier(value['roots_version'], 'roots_version'),
+    rootsVersion: decodeStructureVersion(
+      value['roots_version'],
+      'roots_version',
+    ),
   );
 }
 
@@ -1043,10 +1650,10 @@ CoordinateView _decodeTransitionCoordinate(Map<String, Object?> value) {
     'source_cursor',
   }, 'transition document stamp coordinate');
   return CoordinateView(
-    epoch: decodeDecimalU64(value['epoch'], 'coordinate.epoch'),
-    sequence: decodeDecimalU64(value['sequence'], 'coordinate.sequence'),
-    changeId: _opaqueIdentifier(value['change_id'], 'coordinate.change_id'),
-    sourceCursor: decodeDecimalU64(
+    epoch: decodeEpoch(value['epoch'], 'coordinate.epoch'),
+    sequence: decodeSequence(value['sequence'], 'coordinate.sequence'),
+    changeId: decodeChangeId(value['change_id'], 'coordinate.change_id'),
+    sourceCursor: decodeSourceCursor(
       value['source_cursor'],
       'coordinate.source_cursor',
     ),
@@ -1060,12 +1667,12 @@ TransitionNodeKeyView _decodeTransitionNodeKey(Map<String, Object?> value) {
     'node_id',
   }, 'transition node key');
   return TransitionNodeKeyView._(
-    continuityGeneration: decodeDecimalU64(
+    continuityGeneration: decodeContinuityGeneration(
       value['continuity_generation'],
       'continuity_generation',
     ),
-    epoch: decodeDecimalU64(value['epoch'], 'transition node epoch'),
-    nodeId: decodeDecimalU128(value['node_id'], 'transition node id'),
+    epoch: decodeEpoch(value['epoch'], 'transition node epoch'),
+    nodeId: decodeNodeId(value['node_id'], 'transition node id'),
   );
 }
 
@@ -1078,12 +1685,12 @@ TransitionResourceKeyView _decodeTransitionResourceKey(
     'resource_id',
   }, 'transition resource key');
   return TransitionResourceKeyView._(
-    continuityGeneration: decodeDecimalU64(
+    continuityGeneration: decodeContinuityGeneration(
       value['continuity_generation'],
       'continuity_generation',
     ),
-    epoch: decodeDecimalU64(value['epoch'], 'transition resource epoch'),
-    resourceId: decodeDecimalU128(
+    epoch: decodeEpoch(value['epoch'], 'transition resource epoch'),
+    resourceId: decodeResourceId(
       value['resource_id'],
       'transition resource id',
     ),
@@ -1130,10 +1737,10 @@ NodeStateStampView _decodeNodeStateStamp(Map<String, Object?> value) {
     'transition node parent',
   );
   return NodeStateStampView._(
-    version: _opaqueIdentifier(value['version'], 'transition node version'),
+    version: decodeNodeVersion(value['version'], 'transition node version'),
     stability: stability,
     parent: parent == null ? null : _decodeTransitionOwner(parent),
-    childrenVersion: _opaqueIdentifier(
+    childrenVersion: decodeStructureVersion(
       value['children_version'],
       'transition children version',
     ),
@@ -1199,11 +1806,11 @@ StructureTransitionView _decodeStructureTransition(Map<String, Object?> value) {
     owner: _decodeTransitionOwner(
       _requiredRecord(value['owner'], 'structure transition owner'),
     ),
-    beforeVersion: _opaqueIdentifier(
+    beforeVersion: decodeStructureVersion(
       value['before_version'],
       'structure before version',
     ),
-    afterVersion: _opaqueIdentifier(
+    afterVersion: decodeStructureVersion(
       value['after_version'],
       'structure after version',
     ),
@@ -1261,37 +1868,55 @@ List<TransitionNodeKeyView> _decodeTransitionNodeKeyArray(
   ).map((entry) => _decodeTransitionNodeKey(_requiredRecord(entry, field))),
 );
 
+const _appliedOutcomeKeys = <String>{'kind', 'coordinate'};
+const _recoveredOutcomeKeys = <String>{'kind', 'coordinate'};
+const _idempotentOutcomeKeys = <String>{'kind'};
+const _staleOutcomeKeys = <String>{
+  'kind',
+  'current',
+  'received_epoch',
+  'received_sequence',
+};
+const _recoveryRequiredOutcomeKeys = <String>{'kind', 'last_good', 'reason'};
+const _uninitializedStatusKeys = <String>{'kind'};
+const _readyStatusKeys = <String>{'kind'};
+const _needsSnapshotStatusKeys = <String>{'kind', 'last_good', 'reason'};
+
 ApplyOutcomeView _decodeOutcome(Map<String, Object?> value) {
   final kind = _requiredString(value['kind'], 'outcome.kind');
   switch (kind) {
     case 'applied':
+      _exactKeys(value, _appliedOutcomeKeys, 'applied outcome');
+      return AppliedOutcomeView(
+        _decodeCoordinate(_requiredRecord(value['coordinate'], 'coordinate')),
+      );
     case 'recovered':
-      return ApplyOutcomeView(
-        kind: kind,
-        coordinate: _decodeCoordinate(
-          _requiredRecord(value['coordinate'], 'coordinate'),
-        ),
+      _exactKeys(value, _recoveredOutcomeKeys, 'recovered outcome');
+      return RecoveredOutcomeView(
+        _decodeCoordinate(_requiredRecord(value['coordinate'], 'coordinate')),
       );
     case 'idempotent':
-      return ApplyOutcomeView(kind: kind);
+      _exactKeys(value, _idempotentOutcomeKeys, 'idempotent outcome');
+      return const IdempotentOutcomeView();
     case 'stale':
-      return ApplyOutcomeView(
-        kind: kind,
+      _exactKeys(value, _staleOutcomeKeys, 'stale outcome');
+      return StaleOutcomeView(
         current: _decodeCoordinate(
           _requiredRecord(value['current'], 'current'),
         ),
-        receivedEpoch: decodeDecimalU64(
-          value['received_epoch'],
-          'received_epoch',
-        ),
-        receivedSequence: decodeDecimalU64(
+        receivedEpoch: decodeEpoch(value['received_epoch'], 'received_epoch'),
+        receivedSequence: decodeSequence(
           value['received_sequence'],
           'received_sequence',
         ),
       );
     case 'recovery_required':
-      return ApplyOutcomeView(
-        kind: kind,
+      _exactKeys(
+        value,
+        _recoveryRequiredOutcomeKeys,
+        'recovery-required outcome',
+      );
+      return RecoveryRequiredOutcomeView(
         lastGood: _decodeCoordinate(
           _requiredRecord(value['last_good'], 'last_good'),
         ),
@@ -1308,11 +1933,14 @@ ReducerStatusView _decodeStatus(Map<String, Object?> value) {
   final kind = _requiredString(value['kind'], 'status.kind');
   switch (kind) {
     case 'uninitialized':
+      _exactKeys(value, _uninitializedStatusKeys, 'uninitialized status');
+      return const UninitializedReducerStatusView();
     case 'ready':
-      return ReducerStatusView(kind: kind);
+      _exactKeys(value, _readyStatusKeys, 'ready status');
+      return const ReadyReducerStatusView();
     case 'needs_snapshot':
-      return ReducerStatusView(
-        kind: kind,
+      _exactKeys(value, _needsSnapshotStatusKeys, 'needs-snapshot status');
+      return NeedsSnapshotReducerStatusView(
         lastGood: _decodeCoordinate(
           _requiredRecord(value['last_good'], 'last_good'),
         ),
@@ -1332,19 +1960,13 @@ RecoveryReasonView _decodeRecoveryReason(Map<String, Object?> value) =>
     );
 
 ChangeImpactView _decodeImpact(Map<String, Object?> value) => ChangeImpactView(
-  changedNodeIds: _decimalU128Array(
-    value['changed_node_ids'],
-    'changed_node_ids',
-  ),
-  removedNodeIds: _decimalU128Array(
-    value['removed_node_ids'],
-    'removed_node_ids',
-  ),
-  changedResourceIds: _decimalU128Array(
+  changedNodeIds: _nodeIdArray(value['changed_node_ids'], 'changed_node_ids'),
+  removedNodeIds: _nodeIdArray(value['removed_node_ids'], 'removed_node_ids'),
+  changedResourceIds: _resourceIdArray(
     value['changed_resource_ids'],
     'changed_resource_ids',
   ),
-  removedResourceIds: _decimalU128Array(
+  removedResourceIds: _resourceIdArray(
     value['removed_resource_ids'],
     'removed_resource_ids',
   ),
@@ -1371,7 +1993,7 @@ DocumentSummaryView _decodeDocument(Map<String, Object?> value) {
       _requiredRecord(value['coordinate'], 'document.coordinate'),
     ),
     lifecycle: lifecycle,
-    projectionCursor: decodeDecimalU64(
+    projectionCursor: decodeSourceCursor(
       value['projection_cursor'],
       'projection_cursor',
     ),
@@ -1382,10 +2004,10 @@ DocumentSummaryView _decodeDocument(Map<String, Object?> value) {
 }
 
 CoordinateView _decodeCoordinate(Map<String, Object?> value) => CoordinateView(
-  epoch: decodeDecimalU64(value['epoch'], 'coordinate.epoch'),
-  sequence: decodeDecimalU64(value['sequence'], 'coordinate.sequence'),
-  changeId: _requiredString(value['change_id'], 'coordinate.change_id'),
-  sourceCursor: decodeDecimalU64(
+  epoch: decodeEpoch(value['epoch'], 'coordinate.epoch'),
+  sequence: decodeSequence(value['sequence'], 'coordinate.sequence'),
+  changeId: decodeChangeId(value['change_id'], 'coordinate.change_id'),
+  sourceCursor: decodeSourceCursor(
     value['source_cursor'],
     'coordinate.source_cursor',
   ),
@@ -1397,6 +2019,10 @@ NodeView _decodeNodeView(Map<String, Object?> value, String schema) =>
       raw: value,
       node: _decodeNode(_requiredRecord(value['node'], 'node')),
       bodyText: _requiredString(value['body_text'], 'body_text'),
+      processorInputVersion: decodeProcessorInputVersion(
+        value['processor_input_version'],
+        'processor_input_version',
+      ),
     );
 
 ContentNodeView _decodeNode(Map<String, Object?> value) {
@@ -1405,8 +2031,8 @@ ContentNodeView _decodeNode(Map<String, Object?> value) {
     throw invalidBindingPayload('unknown node stability $stability');
   }
   return ContentNodeView(
-    id: decodeDecimalU128(value['id'], 'node.id'),
-    version: _requiredString(value['version'], 'node.version'),
+    id: decodeNodeId(value['id'], 'node.id'),
+    version: decodeNodeVersion(value['version'], 'node.version'),
     stability: stability,
     source: _decodeRange(_requiredRecord(value['source'], 'node.source')),
     body: _decodeRange(_requiredRecord(value['body'], 'node.body')),
@@ -1685,14 +2311,17 @@ CodeBlockSyntaxView _decodeCodeBlockSyntax(Map<String, Object?> value) {
 ResourceRefView _decodeResourceRef(Map<String, Object?> value) {
   _exactKeys(value, {'id', 'version'}, 'resource reference');
   return ResourceRefView(
-    id: decodeDecimalU128(value['id'], 'resource reference id'),
-    version: _requiredString(value['version'], 'resource reference version'),
+    id: decodeResourceId(value['id'], 'resource reference id'),
+    version: decodeResourceVersion(
+      value['version'],
+      'resource reference version',
+    ),
   );
 }
 
 SourceRangeView _decodeRange(Map<String, Object?> value) => SourceRangeView(
-  start: decodeDecimalU64(value['start'], 'range.start'),
-  end: decodeDecimalU64(value['end'], 'range.end'),
+  start: decodeSourceCursor(value['start'], 'range.start'),
+  end: decodeSourceCursor(value['end'], 'range.end'),
 );
 
 PendingSourceView _decodePendingSourceView(
@@ -1706,8 +2335,8 @@ PendingSourceView _decodePendingSourceView(
 );
 
 ChildListView _decodeChildList(Map<String, Object?> value) => ChildListView(
-  version: _requiredString(value['version'], 'child_list.version'),
-  children: _decimalU128Array(value['children'], 'child_list.children'),
+  version: decodeStructureVersion(value['version'], 'child_list.version'),
+  children: _nodeIdArray(value['children'], 'child_list.children'),
 );
 
 ResourceView _decodeResourceView(Map<String, Object?> value, String schema) =>
@@ -1719,8 +2348,8 @@ ResourceView _decodeResourceView(Map<String, Object?> value, String schema) =>
 
 SemanticResourceView _decodeResource(Map<String, Object?> value) {
   return SemanticResourceView(
-    id: decodeDecimalU128(value['id'], 'resource.id'),
-    version: _requiredString(value['version'], 'resource.version'),
+    id: decodeResourceId(value['id'], 'resource.id'),
+    version: decodeResourceVersion(value['version'], 'resource.version'),
     content: _decodeSemanticResourceKind(
       _requiredRecord(value['content'], 'resource.content'),
     ),
@@ -1785,7 +2414,7 @@ ProcessorRequestView _decodeProcessorRequest(
   return ProcessorRequestView._(
     schema: schema,
     raw: value,
-    requestId: decodeDecimalU64(value['request_id'], 'request_id'),
+    requestId: decodeRequestGeneration(value['request_id'], 'request_id'),
     key: _decodeProcessorKey(_requiredRecord(value['key'], 'processor key')),
     input: ProcessorInputView(
       node: _decodeNode(_requiredRecord(input['node'], 'processor input node')),
@@ -1803,36 +2432,38 @@ ProcessorCompletionView _decodeProcessorCompletion(
   Map<String, Object?> value,
   String schema,
 ) {
-  final outcome = _requiredString(
+  final wireOutcome = _requiredString(
     value['outcome'],
     'processor completion outcome',
   );
-  if (outcome != 'applied' && outcome != 'stale') {
-    throw invalidBindingPayload(
-      'unknown processor completion outcome $outcome',
-    );
-  }
+  final outcome = switch (wireOutcome) {
+    'applied' => ProcessorCompletionOutcome.applied,
+    'stale' => ProcessorCompletionOutcome.stale,
+    _ => throw invalidBindingPayload(
+      'unknown processor completion outcome $wireOutcome',
+    ),
+  };
   return ProcessorCompletionView._(
     schema: schema,
     raw: value,
-    requestId: decodeDecimalU64(value['request_id'], 'request_id'),
+    requestId: decodeRequestGeneration(value['request_id'], 'request_id'),
     outcome: outcome,
   );
 }
 
 ProcessorKeyView _decodeProcessorKey(Map<String, Object?> value) =>
     ProcessorKeyView(
-      epoch: decodeDecimalU64(value['epoch'], 'processor key epoch'),
-      nodeId: decodeDecimalU128(value['node_id'], 'processor key node_id'),
+      epoch: decodeEpoch(value['epoch'], 'processor key epoch'),
+      nodeId: decodeNodeId(value['node_id'], 'processor key node_id'),
       processorId: _requiredString(
         value['processor_id'],
         'processor key processor_id',
       ),
-      nodeVersion: _requiredString(
+      nodeVersion: decodeNodeVersion(
         value['node_version'],
         'processor key node_version',
       ),
-      inputVersion: _requiredString(
+      inputVersion: decodeProcessorInputVersion(
         value['input_version'],
         'processor key input_version',
       ),
@@ -1844,7 +2475,7 @@ ProcessorKeyView _decodeProcessorKey(Map<String, Object?> value) =>
         value['configuration_version'],
         'processor key configuration_version',
       ),
-      generation: decodeDecimalU64(
+      generation: decodeRequestGeneration(
         value['generation'],
         'processor key generation',
       ),
@@ -1859,25 +2490,31 @@ ArtifactChangeView _decodeArtifactChange(
   final ArtifactChangeKindView decoded;
   switch (kind) {
     case 'pending':
-      decoded = ArtifactChangeKindView(kind: kind);
+      _exactKeys(change, const <String>{'kind'}, 'pending artifact change');
+      decoded = const PendingArtifactChangeView();
     case 'ready':
-      decoded = ArtifactChangeKindView(
-        kind: kind,
-        artifactBytes: decodeDecimalU64(
-          change['artifact_bytes'],
-          'artifact_bytes',
-        ),
+      _exactKeys(change, const <String>{
+        'kind',
+        'artifact_bytes',
+      }, 'ready artifact change');
+      decoded = ReadyArtifactChangeView(
+        decodeDecimalCounter(change['artifact_bytes'], 'artifact_bytes'),
       );
     case 'failed':
-      decoded = ArtifactChangeKindView(
-        kind: kind,
-        code: _failureCode(change['code']),
-      );
+      _exactKeys(change, const <String>{
+        'kind',
+        'code',
+      }, 'failed artifact change');
+      decoded = FailedArtifactChangeView(_failureCode(change['code']));
     case 'removed':
-      decoded = ArtifactChangeKindView(
-        kind: kind,
+      _exactKeys(change, const <String>{
+        'kind',
+        'reason',
+        'released_artifact_bytes',
+      }, 'removed artifact change');
+      decoded = RemovedArtifactChangeView(
         reason: _requiredString(change['reason'], 'artifact removal reason'),
-        releasedArtifactBytes: decodeDecimalU64(
+        releasedArtifactBytes: decodeDecimalCounter(
           change['released_artifact_bytes'],
           'released_artifact_bytes',
         ),
@@ -1894,21 +2531,42 @@ ArtifactChangeView _decodeArtifactChange(
 }
 
 ArtifactView _decodeArtifactView(Map<String, Object?> value, String schema) {
-  final state = _requiredString(value['state'], 'artifact state');
-  if (state != 'pending' && state != 'ready' && state != 'failed') {
-    throw invalidBindingPayload('unknown artifact state $state');
+  final wireState = _requiredString(value['state'], 'artifact state');
+  final state = switch (wireState) {
+    'pending' => ArtifactState.pending,
+    'ready' => ArtifactState.ready,
+    'failed' => ArtifactState.failed,
+    _ => throw invalidBindingPayload('unknown artifact state $wireState'),
+  };
+  final artifact = _requiredNullableRecord(value, 'artifact', 'artifact');
+  final failure = _requiredNullableRecord(value, 'failure', 'artifact failure');
+  switch (state) {
+    case ArtifactState.pending:
+      if (artifact != null || failure != null) {
+        throw invalidBindingPayload(
+          'pending artifact state cannot retain an artifact or failure',
+        );
+      }
+    case ArtifactState.ready:
+      if (artifact == null || failure != null) {
+        throw invalidBindingPayload(
+          'ready artifact state must retain only an artifact',
+        );
+      }
+    case ArtifactState.failed:
+      if (artifact != null || failure == null) {
+        throw invalidBindingPayload(
+          'failed artifact state must retain only a failure',
+        );
+      }
   }
   return ArtifactView._(
     schema: schema,
     raw: value,
     key: _decodeProcessorKey(_requiredRecord(value['key'], 'artifact key')),
     state: state,
-    artifact: value['artifact'] == null
-        ? null
-        : _decodeArtifact(_requiredRecord(value['artifact'], 'artifact')),
-    failure: value['failure'] == null
-        ? null
-        : _decodeFailure(_requiredRecord(value['failure'], 'artifact failure')),
+    artifact: artifact == null ? null : _decodeArtifact(artifact),
+    failure: failure == null ? null : _decodeFailure(failure),
   );
 }
 
@@ -1918,11 +2576,18 @@ ProcessorArtifactView _decodeArtifact(Map<String, Object?> value) {
   final ArtifactPayloadView decoded;
   switch (kind) {
     case 'text':
-      decoded = ArtifactPayloadView(
-        kind: kind,
-        text: _requiredString(payload['text'], 'artifact text'),
+      _exactKeys(payload, const <String>{
+        'kind',
+        'text',
+      }, 'text artifact payload');
+      decoded = TextArtifactPayloadView(
+        _requiredString(payload['text'], 'artifact text'),
       );
     case 'binary':
+      _exactKeys(payload, const <String>{
+        'kind',
+        'bytes',
+      }, 'binary artifact payload');
       final octets = _requiredList(payload['bytes'], 'artifact bytes')
           .map((value) {
             if (value is! int || value < 0 || value > 255) {
@@ -1931,21 +2596,21 @@ ProcessorArtifactView _decodeArtifact(Map<String, Object?> value) {
             return value;
           })
           .toList(growable: false);
-      decoded = ArtifactPayloadView(
-        kind: kind,
-        bytes: List<int>.unmodifiable(octets),
-      );
+      decoded = BinaryArtifactPayloadView(octets);
     case 'citation':
-      decoded = ArtifactPayloadView(
-        kind: kind,
+      _exactKeys(payload, const <String>{
+        'kind',
+        'key',
+        'destination',
+        'title',
+      }, 'citation artifact payload');
+      decoded = CitationArtifactPayloadView(
         key: _requiredString(payload['key'], 'citation key'),
         destination: _requiredString(
           payload['destination'],
           'citation destination',
         ),
-        title: payload['title'] == null
-            ? null
-            : _requiredString(payload['title'], 'citation title'),
+        title: _requiredNullableString(payload, 'title', 'citation title'),
       );
     default:
       throw invalidBindingPayload('unknown artifact payload $kind');
@@ -1997,7 +2662,7 @@ ResourceVersion? _requiredNullableVersion(
   String field,
 ) {
   _requireOwnKey(value, key, field);
-  return value[key] == null ? null : _opaqueIdentifier(value[key], field);
+  return value[key] == null ? null : decodeResourceVersion(value[key], field);
 }
 
 String? _requiredNullableString(
@@ -2169,16 +2834,6 @@ String _requiredString(Object? value, String field) {
   return value;
 }
 
-String _opaqueIdentifier(Object? value, String field) {
-  final identifier = _requiredString(value, field);
-  if (!_opaqueIdentifierPattern.hasMatch(identifier)) {
-    throw invalidBindingPayload(
-      '$field must be a 1-128 byte ASCII opaque identifier',
-    );
-  }
-  return identifier;
-}
-
 bool _requiredBoolean(Object? value, String field) {
   if (value is! bool) {
     throw invalidBindingPayload('$field must be a boolean');
@@ -2192,10 +2847,15 @@ void _requireLiteral(Object? value, String expected, String field) {
   }
 }
 
-List<String> _decimalU128Array(Object? value, String field) =>
-    List<String>.unmodifiable(
+List<NodeId> _nodeIdArray(Object? value, String field) =>
+    List<NodeId>.unmodifiable(
+      _requiredList(value, field).map((entry) => decodeNodeId(entry, field)),
+    );
+
+List<ResourceId> _resourceIdArray(Object? value, String field) =>
+    List<ResourceId>.unmodifiable(
       _requiredList(
         value,
         field,
-      ).map((entry) => decodeDecimalU128(entry, field)),
+      ).map((entry) => decodeResourceId(entry, field)),
     );

@@ -6,7 +6,7 @@ These examples are a learning ladder, not UI adapters. mdstream owns canonical c
 
 - Role: tutorial and recommended first run.
 - Prerequisite: Rust 1.85 or newer; no credentials or network service.
-- Run: `cargo +1.85.0 run -p mdstream --example minimal -- --assert`
+- Run: `cargo run -p mdstream --example minimal -- --assert`
 - Expected result: named Golden AI Stream checkpoints followed by `ASSERTIONS_OK scenario=golden-ai-stream`.
 - Concepts: `StreamEngine`, `Reducer`, pending source, stabilization, semantic correction, and the mdstream/host ownership boundary.
 - Next: run `headless_state` to turn change impacts into keyed host updates.
@@ -15,7 +15,7 @@ These examples are a learning ladder, not UI adapters. mdstream owns canonical c
 
 - Role: focused identity and invalidation recipe.
 - Prerequisite: Rust 1.85 or newer.
-- Run: `cargo +1.85.0 run -p mdstream --example headless_state`
+- Run: `cargo run -p mdstream --example headless_state`
 - Expected result: one retained paragraph identity across append and stabilization, followed by prior-epoch key removals on reset.
 - Concepts: continuity-qualified host keys, `changed_nodes`, `removed_nodes`, and minimal cache invalidation.
 - Next: run `processor_lifecycle` to keep derived rich content outside canonical state.
@@ -24,7 +24,7 @@ These examples are a learning ladder, not UI adapters. mdstream owns canonical c
 
 - Role: focused derived-artifact recipe.
 - Prerequisite: Rust 1.85 or newer.
-- Run: `cargo +1.85.0 run -p mdstream --example processor_lifecycle`
+- Run: `cargo run -p mdstream --example processor_lifecycle`
 - Expected result: an applied host-owned artifact with unchanged canonical state, then a stale late result after reset.
 - Concepts: processor request identity, `ArtifactHost`, canonical-versus-derived ownership, and stale-result rejection.
 - Next: run `custom_blocks` when application-specific syntax must become typed Content IR.
@@ -33,7 +33,7 @@ These examples are a learning ladder, not UI adapters. mdstream owns canonical c
 
 - Role: focused typed-extension recipe.
 - Prerequisite: Rust 1.85 or newer.
-- Run: `cargo +1.85.0 run -p mdstream --example custom_blocks`
+- Run: `cargo run -p mdstream --example custom_blocks`
 - Expected result: a stable `app.thinking/1` node and a dispatched text artifact while canonical state remains unchanged.
 - Concepts: `CustomBlockSpec`, typed attributes, versioned artifact protocols, and host dispatch.
 - Next: run `replica_recovery` before transporting change sets across a fallible boundary.
@@ -42,7 +42,7 @@ These examples are a learning ladder, not UI adapters. mdstream owns canonical c
 
 - Role: focused continuity recipe driven by the Golden AI Stream.
 - Prerequisite: Rust 1.85 or newer.
-- Run: `cargo +1.85.0 run -p mdstream --example replica_recovery`
+- Run: `cargo run -p mdstream --example replica_recovery`
 - Expected result: `retained_same_floor`, `replaced_advanced`, and `new_epoch` decisions with the corresponding host key policy.
 - Concepts: sequence gaps, named snapshots, continuity generations, same-floor retention, and advanced full replacement.
 - Next: run `transition_trace` to inspect deterministic schedule-local host work.
@@ -51,7 +51,7 @@ These examples are a learning ladder, not UI adapters. mdstream owns canonical c
 
 - Role: machine-readable contract probe, not a first tutorial.
 - Prerequisite: Rust 1.85 or newer.
-- Run: `cargo +1.85.0 run -p mdstream --example transition_trace`
+- Run: `cargo run -p mdstream --example transition_trace`
 - Expected result: deterministic JSON containing two schedule-local reconstruction traces and one shared final snapshot.
 - Concepts: transition facts, reconstruction work, fixed-schedule determinism, and final chunking invariance. Raw fact sequences are intentionally not compared across schedules.
 - Next: use the advanced Tokio host only when your producer needs bounded asynchronous transport.

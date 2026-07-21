@@ -8,9 +8,9 @@ import {
   type ContentNodeView,
   type Epoch,
   type NodeId,
-  type NodeVersion,
   type NodeView,
   type ProcessorFailureCode,
+  type ProcessorInputVersion,
   type ProcessorRequestView,
   type RequestGeneration,
 } from "./views.js";
@@ -100,13 +100,51 @@ interface ProcessorCandidate {
   readonly registration: RegisteredProcessor;
   readonly nodeId: NodeId;
   expectedEpoch: Epoch;
-  expectedNodeVersion: NodeVersion;
+  expectedInputVersion: ProcessorInputVersion;
   queued: boolean;
 }
 
 interface CandidateExpectation {
   readonly epoch: Epoch;
-  readonly nodeVersion: NodeVersion;
+  readonly inputVersion: ProcessorInputVersion;
+}
+
+type ProcessorScanPhase = "changed" | "tree" | "fallback" | "done";
+
+interface ProcessorScanWork {
+  readonly nodeIds: readonly NodeId[];
+  registrations: RegisteredProcessor[];
+  pendingRegistrations: RegisteredProcessor[];
+  readonly treeQueue: Array<NodeId | undefined>;
+  readonly visited: Set<NodeId>;
+  nodeScan: ProcessorNodeScan | undefined;
+  phase: ProcessorScanPhase;
+  nodeIndex: number;
+  treeIndex: number;
+  treeClearedIndex: number;
+  fallbackIndex: number;
+  treeInitialized: boolean;
+}
+
+interface ProcessorNodeScan {
+  readonly nodeId: NodeId;
+  registrations: RegisteredProcessor[];
+  readonly expectedEpoch: Epoch | undefined;
+  readonly view:
+    | { readonly kind: "ready"; readonly node: NodeView | undefined }
+    | { readonly kind: "failed"; readonly error: unknown };
+  registrationIndex: number;
+}
+
+interface ProcessorNodeScanStep {
+  readonly complete: boolean;
+  readonly nodeView: NodeView | undefined;
+  readonly blocked: boolean;
+}
+
+interface ScanUnblocked {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
 }
 
 export interface ProcessorSchedulerLimits {
@@ -118,6 +156,15 @@ type BeginDisposition = "started" | "stale" | "blocked" | "terminal";
 
 const candidateQueueCompactionFloor = 64;
 const candidateQueueCompactionRatio = 4;
+const scanQueueCompactionFloor = 64;
+const scanQueueCompactionRatio = 4;
+const dispatchQuantum = 32;
+const scanQuantum = 64;
+const retryableResourceLimitDetailCodes = new Set([
+  "processor.resource_limit.in_flight_jobs",
+  "processor.resource_limit.in_flight_input_bytes",
+]);
+const processorIdentifierPattern = /^[A-Za-z0-9._:+-]{1,128}$/;
 
 /** @internal */
 export class ProcessorScheduler {
@@ -141,15 +188,24 @@ export class ProcessorScheduler {
   readonly #maxCandidates: number;
   #candidateHead = 0;
   #candidateCount = 0;
+  #candidateQueueSaturated = false;
   #removedDuringBegin: Map<RequestGeneration, unknown> | undefined;
   #dispatching = false;
-  #scanScheduled = false;
+  #dispatchBlocked = false;
+  #scheduledDispatchRevision: number | undefined;
+  #dispatchRevision = 0;
+  #scheduledScanRevision: number | undefined;
+  #scheduledScanContinuationRevision: number | undefined;
+  #scanRevision = 0;
+  #scanWork: ProcessorScanWork | undefined;
+  #scanBlocked = false;
+  #scanUnblocked: ScanUnblocked | undefined;
   #closed = false;
 
   constructor(store: RustBackedStore, limits: ProcessorSchedulerLimits) {
     this.#store = store;
-    this.#maxInFlightJobs = Math.max(1, limits.maxInFlightJobs);
-    this.#maxCandidates = Math.max(1, limits.maxCandidates);
+    this.#maxInFlightJobs = limits.maxInFlightJobs;
+    this.#maxCandidates = limits.maxCandidates;
   }
 
   register(processor: ContentProcessor): ProcessorRegistration {
@@ -161,25 +217,17 @@ export class ProcessorScheduler {
       version: suppliedDescriptor.version,
       acceptsProvisional: suppliedDescriptor.acceptsProvisional === true,
     });
-    if (
-      typeof descriptor.id !== "string" ||
-      descriptor.id.length === 0 ||
-      typeof descriptor.version !== "string" ||
-      descriptor.version.length === 0
-    ) {
-      throw new TypeError("processor id and version must not be empty");
-    }
+    validateProcessorIdentifier(descriptor.id, "processor id");
+    validateProcessorIdentifier(descriptor.version, "processor version");
     if (this.#processors.has(descriptor.id)) {
       throw new TypeError(`processor ${descriptor.id} is already registered`);
     }
     const configurationVersion = processor.configurationVersion;
     const allowProvisional = processor.allowProvisional === true;
-    if (
-      typeof configurationVersion !== "string" ||
-      configurationVersion.length === 0
-    ) {
-      throw new TypeError("processor configuration version must not be empty");
-    }
+    validateProcessorIdentifier(
+      configurationVersion,
+      "processor configuration version",
+    );
     const registration: RegisteredProcessor = {
       processor,
       descriptor,
@@ -212,6 +260,7 @@ export class ProcessorScheduler {
     if (this.#closed) {
       return;
     }
+    let capacityChanged = false;
     for (const change of events.artifactChanges) {
       if (change.change.kind === "removed") {
         const entry = this.#inFlight.get(change.key.generation);
@@ -219,6 +268,8 @@ export class ProcessorScheduler {
           entry.controller.abort(change.change.reason);
           if (this.#inFlight.get(change.key.generation) === entry) {
             this.#inFlight.delete(change.key.generation);
+            this.#dispatchBlocked = false;
+            capacityChanged = true;
           }
         } else {
           this.#removedDuringBegin?.set(
@@ -236,6 +287,8 @@ export class ProcessorScheduler {
         continue;
       }
       if (update.impact.fullReplace) {
+        this.#invalidateDispatch();
+        this.#invalidateScan();
         this.#clearCandidates();
         this.#clearRejectedCandidates();
         this.#pendingNodes.clear();
@@ -257,15 +310,33 @@ export class ProcessorScheduler {
       }
     }
     this.#scheduleScan();
-    this.#drainCandidates();
+    if (capacityChanged) {
+      this.#scheduleDispatch();
+    } else {
+      this.#drainCandidates();
+    }
   }
 
   async whenIdle(): Promise<void> {
     for (;;) {
       await Promise.resolve();
+      const scanUnblocked = this.#scanUnblocked;
+      if (this.#scanBlocked && scanUnblocked !== undefined) {
+        await scanUnblocked.promise;
+        continue;
+      }
+      if (
+        this.#scheduledDispatchRevision !== undefined ||
+        this.#scheduledScanRevision !== undefined
+      ) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 0);
+        });
+        continue;
+      }
       this.#drainCandidates();
       if (
-        this.#scanScheduled ||
+        this.#scheduledScanRevision !== undefined ||
         this.#pendingNodes.size > 0 ||
         this.#pendingRegistrations.size > 0
       ) {
@@ -287,7 +358,8 @@ export class ProcessorScheduler {
       return;
     }
     this.#closed = true;
-    this.#scanScheduled = false;
+    this.#invalidateDispatch();
+    this.#invalidateScan();
     this.#pendingNodes.clear();
     this.#pendingRegistrations.clear();
     this.#clearCandidates();
@@ -306,193 +378,443 @@ export class ProcessorScheduler {
 
   #scheduleScan(): void {
     if (
-      this.#scanScheduled ||
+      this.#scheduledScanRevision !== undefined ||
       (this.#pendingNodes.size === 0 && this.#pendingRegistrations.size === 0) ||
       this.#closed
     ) {
       return;
     }
-    this.#scanScheduled = true;
-    queueMicrotask(() => {
-      this.#scanScheduled = false;
-      this.#scanChangedNodes();
-    });
+    const revision = this.#scanRevision;
+    this.#scheduledScanRevision = revision;
+    queueMicrotask(() => this.#runScan(revision));
   }
 
-  #scanChangedNodes(): void {
-    if (this.#closed) {
-      this.#pendingNodes.clear();
-      return;
-    }
+  #createScanWork(): ProcessorScanWork {
+    this.#candidateQueueSaturated = false;
     const nodeIds = [...this.#pendingNodes];
     this.#pendingNodes.clear();
     const pendingRegistrations = [...this.#pendingRegistrations]
       .filter((registration) => registration.active);
     this.#pendingRegistrations.clear();
     const pendingSet = new Set(pendingRegistrations);
-    // New registrations traverse the tree below, so only existing processors
-    // consume the changed-node queue during this pass.
     const registrations = [...this.#processors.values()]
       .filter(
         (registration) => registration.active && !pendingSet.has(registration),
       );
+    return {
+      nodeIds,
+      registrations,
+      pendingRegistrations,
+      treeQueue: [],
+      visited: new Set<NodeId>(),
+      nodeScan: undefined,
+      phase: "changed",
+      nodeIndex: 0,
+      treeIndex: 0,
+      treeClearedIndex: 0,
+      fallbackIndex: 0,
+      treeInitialized: false,
+    };
+  }
 
-    for (const nodeId of nodeIds) {
-      this.#scanNode(nodeId, registrations);
+  #runScan(revision: number): void {
+    if (!this.#isCurrentScan(revision)) {
+      return;
     }
-    if (pendingRegistrations.length > 0) {
-      const visited = this.#scanCurrentTree(pendingRegistrations);
-      for (const nodeId of nodeIds) {
-        if (!visited.has(nodeId)) {
-          this.#scanNode(nodeId, pendingRegistrations);
+    const work = this.#scanWork ?? this.#createScanWork();
+    this.#scanWork = work;
+    let remaining = scanQuantum;
+    while (remaining > 0 && work.phase !== "done") {
+      if (!this.#isCurrentScan(revision)) {
+        return;
+      }
+      switch (work.phase) {
+        case "changed": {
+          if (
+            !this.#hasActiveRegistrations(work.registrations) ||
+            (work.nodeScan === undefined &&
+              work.nodeIndex >= work.nodeIds.length)
+          ) {
+            work.nodeScan = undefined;
+            work.phase = this.#hasActiveRegistrations(work.pendingRegistrations)
+              ? "tree"
+              : "done";
+            continue;
+          }
+          if (work.nodeScan === undefined) {
+            const nodeId = work.nodeIds[work.nodeIndex]!;
+            work.nodeIndex += 1;
+            work.nodeScan = this.#createNodeScan(nodeId, work.registrations);
+          } else {
+            const step = this.#stepNodeScan(work.nodeScan);
+            if (step.blocked) {
+              if (!this.#isCurrentScan(revision)) {
+                return;
+              }
+              this.#blockScan();
+              remaining = 0;
+              break;
+            }
+            if (step.complete) {
+              work.nodeScan = undefined;
+            }
+          }
+          remaining -= 1;
+          break;
+        }
+        case "tree": {
+          if (!this.#hasActiveRegistrations(work.pendingRegistrations)) {
+            work.nodeScan = undefined;
+            work.treeQueue.length = 0;
+            work.visited.clear();
+            work.phase = "done";
+            continue;
+          }
+          if (!work.treeInitialized) {
+            const roots = this.#store.getSnapshot().document?.roots?.children;
+            if (roots !== undefined) {
+              work.treeQueue.push(...roots);
+            }
+            work.treeInitialized = true;
+          }
+          if (work.nodeScan !== undefined) {
+            const step = this.#stepNodeScan(work.nodeScan);
+            if (step.blocked) {
+              if (!this.#isCurrentScan(revision)) {
+                return;
+              }
+              this.#blockScan();
+              remaining = 0;
+              break;
+            }
+            if (step.complete) {
+              if (step.nodeView !== undefined) {
+                work.treeQueue.push(...step.nodeView.node.children.children);
+              }
+              work.nodeScan = undefined;
+            }
+            remaining -= 1;
+            break;
+          }
+          if (work.treeIndex >= work.treeQueue.length) {
+            work.treeQueue.length = 0;
+            work.treeIndex = 0;
+            work.treeClearedIndex = 0;
+            work.phase = "fallback";
+            continue;
+          }
+          const nodeId = work.treeQueue[work.treeIndex]!;
+          work.treeIndex += 1;
+          remaining -= 1;
+          if (!work.visited.has(nodeId)) {
+            work.visited.add(nodeId);
+            work.nodeScan = this.#createNodeScan(
+              nodeId,
+              work.pendingRegistrations,
+            );
+          }
+          break;
+        }
+        case "fallback": {
+          if (
+            !this.#hasActiveRegistrations(work.pendingRegistrations) ||
+            (work.nodeScan === undefined &&
+              work.fallbackIndex >= work.nodeIds.length)
+          ) {
+            work.nodeScan = undefined;
+            work.phase = "done";
+            continue;
+          }
+          if (work.nodeScan !== undefined) {
+            const step = this.#stepNodeScan(work.nodeScan);
+            if (step.blocked) {
+              if (!this.#isCurrentScan(revision)) {
+                return;
+              }
+              this.#blockScan();
+              remaining = 0;
+              break;
+            }
+            if (step.complete) {
+              work.nodeScan = undefined;
+            }
+            remaining -= 1;
+            break;
+          }
+          const nodeId = work.nodeIds[work.fallbackIndex]!;
+          work.fallbackIndex += 1;
+          remaining -= 1;
+          if (!work.visited.has(nodeId)) {
+            work.nodeScan = this.#createNodeScan(
+              nodeId,
+              work.pendingRegistrations,
+            );
+          }
+          break;
         }
       }
     }
-    this.#scheduleScan();
+    if (!this.#isCurrentScan(revision)) {
+      return;
+    }
+    this.#compactScanTreeQueue(work);
+    if (work.phase === "done") {
+      this.#scanWork = undefined;
+      this.#scheduledScanRevision = undefined;
+      this.#scheduleScan();
+      this.#drainCandidates();
+      return;
+    }
     this.#drainCandidates();
+    if (!this.#isCurrentScan(revision)) {
+      return;
+    }
+    if (!this.#scanBlocked) {
+      this.#scheduleScanContinuation(revision);
+    }
   }
 
-  #scanCurrentTree(registrations: readonly RegisteredProcessor[]): Set<NodeId> {
-    const roots = this.#store.getSnapshot().document?.roots?.children;
-    const visited = new Set<NodeId>();
-    if (roots === undefined || roots.length === 0) {
-      return visited;
-    }
-    const queue = [...roots];
-    for (let index = 0; index < queue.length && !this.#closed; index += 1) {
-      const nodeId = queue[index]!;
-      if (visited.has(nodeId)) {
-        continue;
-      }
-      visited.add(nodeId);
-      const nodeView = this.#scanNode(nodeId, registrations);
-      if (nodeView !== undefined) {
-        for (const childId of nodeView.node.children.children) {
-          queue.push(childId);
-        }
-      }
-    }
-    return visited;
+  #isCurrentScan(revision: number): boolean {
+    return !this.#closed &&
+      revision === this.#scanRevision &&
+      this.#scheduledScanRevision === revision;
   }
 
-  #scanNode(
-    nodeId: NodeId,
+  #hasActiveRegistrations(
     registrations: readonly RegisteredProcessor[],
-  ): NodeView | undefined {
-    if (registrations.length === 0) {
-      return undefined;
+  ): boolean {
+    return registrations.some((registration) => registration.active);
+  }
+
+  #compactScanTreeQueue(work: ProcessorScanWork): void {
+    if (work.treeIndex === 0) {
+      return;
     }
-    const expectedEpoch = this.#store.getSnapshot().document?.coordinate.epoch;
-    if (expectedEpoch === undefined) {
-      for (const registration of registrations) {
-        this.#removeCandidate(registration, nodeId);
+    for (
+      let index = work.treeClearedIndex;
+      index < work.treeIndex;
+      index += 1
+    ) {
+      work.treeQueue[index] = undefined;
+    }
+    work.treeClearedIndex = work.treeIndex;
+    const remaining = work.treeQueue.length - work.treeIndex;
+    if (remaining === 0) {
+      work.treeQueue.length = 0;
+      work.treeIndex = 0;
+      work.treeClearedIndex = 0;
+      return;
+    }
+    if (
+      work.treeIndex < scanQueueCompactionFloor ||
+      work.treeQueue.length <= remaining * scanQueueCompactionRatio
+    ) {
+      return;
+    }
+    work.treeQueue.splice(0, work.treeIndex);
+    work.treeIndex = 0;
+    work.treeClearedIndex = 0;
+  }
+
+  #invalidateScan(): void {
+    this.#scanRevision += 1;
+    this.#scheduledScanRevision = undefined;
+    this.#scheduledScanContinuationRevision = undefined;
+    this.#scanWork = undefined;
+    this.#unblockScan();
+  }
+
+  #blockScan(): void {
+    this.#scanBlocked = true;
+    if (this.#scanUnblocked !== undefined) {
+      return;
+    }
+    let resolve!: () => void;
+    const promise = new Promise<void>((complete) => {
+      resolve = complete;
+    });
+    this.#scanUnblocked = { promise, resolve };
+  }
+
+  #unblockScan(): void {
+    this.#scanBlocked = false;
+    const scanUnblocked = this.#scanUnblocked;
+    this.#scanUnblocked = undefined;
+    scanUnblocked?.resolve();
+  }
+
+  #scheduleScanContinuation(revision: number): void {
+    if (this.#scheduledScanContinuationRevision !== undefined) {
+      return;
+    }
+    this.#scheduledScanContinuationRevision = revision;
+    setTimeout(() => {
+      if (this.#scheduledScanContinuationRevision !== revision) {
+        return;
       }
-      return undefined;
-    }
-    let nodeView: NodeView | undefined;
+      this.#scheduledScanContinuationRevision = undefined;
+      this.#runScan(revision);
+    }, 0);
+  }
+
+  #createNodeScan(
+    nodeId: NodeId,
+    registrations: RegisteredProcessor[],
+  ): ProcessorNodeScan {
+    const expectedEpoch = this.#store.getSnapshot().document?.coordinate.epoch;
+    let view: ProcessorNodeScan["view"];
     try {
-      nodeView = this.#store.getNodeSnapshot(nodeId);
+      view = {
+        kind: "ready",
+        node: expectedEpoch === undefined
+          ? undefined
+          : this.#store.getNodeSnapshot(nodeId),
+      };
     } catch (error) {
-      for (const registration of registrations) {
-        this.#removeCandidate(registration, nodeId);
-        if (registration.active) {
-          this.#emitError({
-            phase: "view",
-            processorId: registration.descriptor.id,
-            nodeId,
-            requestId: undefined,
-            error: MdstreamError.from(error),
-          });
+      view = { kind: "failed", error: MdstreamError.from(error) };
+    }
+    return {
+      nodeId,
+      registrations,
+      expectedEpoch,
+      view,
+      registrationIndex: 0,
+    };
+  }
+
+  #stepNodeScan(scan: ProcessorNodeScan): ProcessorNodeScanStep {
+    const registration = scan.registrations[scan.registrationIndex];
+    if (registration === undefined) {
+      return {
+        complete: true,
+        nodeView: scan.view.kind === "ready" ? scan.view.node : undefined,
+        blocked: false,
+      };
+    }
+    if (registration.active) {
+      if (scan.expectedEpoch === undefined) {
+        this.#removeCandidate(registration, scan.nodeId);
+      } else if (scan.view.kind === "failed") {
+        this.#removeCandidate(registration, scan.nodeId);
+        this.#emitError({
+          phase: "view",
+          processorId: registration.descriptor.id,
+          nodeId: scan.nodeId,
+          requestId: undefined,
+          error: scan.view.error,
+        });
+      } else {
+        const nodeView = scan.view.node;
+        if (nodeView === undefined) {
+          this.#removeCandidate(registration, scan.nodeId);
+          this.#advanceNodeScan(scan, registration);
+          return this.#nodeScanStep(scan);
+        }
+        const processor = registration.processor;
+        if (
+          nodeView.node.stability === "provisional" &&
+          !(registration.descriptor.acceptsProvisional &&
+            registration.allowProvisional)
+        ) {
+          this.#removeCandidate(registration, scan.nodeId);
+        } else {
+          let matches: boolean;
+          try {
+            matches = processor.matches(nodeView.node);
+          } catch (error) {
+            this.#removeCandidate(registration, scan.nodeId);
+            this.#emitError({
+              phase: "matches",
+              processorId: registration.descriptor.id,
+              nodeId: scan.nodeId,
+              requestId: undefined,
+              error,
+            });
+            this.#advanceNodeScan(scan, registration);
+            return this.#nodeScanStep(scan);
+          }
+          if (matches && registration.active) {
+            if (!this.#enqueueCandidate(
+              registration,
+              scan.expectedEpoch,
+              scan.nodeId,
+              nodeView.processorInputVersion,
+            )) {
+              return {
+                complete: false,
+                nodeView,
+                blocked: true,
+              };
+            }
+          } else {
+            this.#removeCandidate(registration, scan.nodeId);
+          }
         }
       }
-      return undefined;
     }
-    if (nodeView === undefined) {
-      for (const registration of registrations) {
-        this.#removeCandidate(registration, nodeId);
-      }
-      return undefined;
+    this.#advanceNodeScan(scan, registration);
+    return this.#nodeScanStep(scan);
+  }
+
+  #advanceNodeScan(
+    scan: ProcessorNodeScan,
+    registration: RegisteredProcessor,
+  ): void {
+    if (scan.registrations[scan.registrationIndex] === registration) {
+      scan.registrationIndex += 1;
     }
-    for (const registration of registrations) {
-      if (!registration.active) {
-        continue;
-      }
-      const processor = registration.processor;
-      if (
-        nodeView.node.stability === "provisional" &&
-        !(registration.descriptor.acceptsProvisional &&
-          registration.allowProvisional)
-      ) {
-        this.#removeCandidate(registration, nodeId);
-        continue;
-      }
-      let matches: boolean;
-      try {
-        matches = processor.matches(nodeView.node);
-      } catch (error) {
-        this.#removeCandidate(registration, nodeId);
-        this.#emitError({
-          phase: "matches",
-          processorId: registration.descriptor.id,
-          nodeId,
-          requestId: undefined,
-          error,
-        });
-        continue;
-      }
-      if (matches && registration.active) {
-        this.#enqueueCandidate(
-          registration,
-          expectedEpoch,
-          nodeId,
-          nodeView.node.version,
-        );
-      } else {
-        this.#removeCandidate(registration, nodeId);
-      }
-    }
-    return nodeView;
+  }
+
+  #nodeScanStep(scan: ProcessorNodeScan): ProcessorNodeScanStep {
+    return {
+      complete: scan.registrationIndex >= scan.registrations.length,
+      nodeView: scan.view.kind === "ready" ? scan.view.node : undefined,
+      blocked: false,
+    };
   }
 
   #enqueueCandidate(
     registration: RegisteredProcessor,
     expectedEpoch: Epoch,
     nodeId: NodeId,
-    expectedNodeVersion: NodeVersion,
+    expectedInputVersion: ProcessorInputVersion,
     front = false,
-  ): void {
+  ): boolean {
     if (!registration.active || this.#closed) {
-      return;
+      return true;
     }
     const rejected = this.#rejectedCandidates.get(registration)?.get(nodeId);
     if (
       rejected?.epoch === expectedEpoch &&
-      rejected.nodeVersion === expectedNodeVersion
+      rejected.inputVersion === expectedInputVersion
     ) {
-      return;
+      return true;
     }
     let registrationCandidates = this.#candidates.get(registration);
     const existing = registrationCandidates?.get(nodeId);
     if (existing !== undefined) {
       existing.expectedEpoch = expectedEpoch;
-      existing.expectedNodeVersion = expectedNodeVersion;
-      return;
+      existing.expectedInputVersion = expectedInputVersion;
+      return true;
     }
     if (this.#candidateCount >= this.#maxCandidates) {
-      this.#emitError({
-        phase: "begin",
-        processorId: registration.descriptor.id,
-        nodeId,
-        requestId: undefined,
-        error: new MdstreamError(
-          `processor candidate queue limit ${this.#maxCandidates} exceeded`,
-          {
-            ...RESOURCE_LIMIT_STATUS,
-            detailCode: "processor.candidate_queue_limit",
-          },
-        ),
-      });
-      return;
+      if (!this.#candidateQueueSaturated) {
+        this.#candidateQueueSaturated = true;
+        this.#emitError({
+          phase: "begin",
+          processorId: registration.descriptor.id,
+          nodeId,
+          requestId: undefined,
+          error: new MdstreamError(
+            `processor candidate queue limit ${this.#maxCandidates} exceeded`,
+            {
+              ...RESOURCE_LIMIT_STATUS,
+              detailCode: "processor.candidate_queue_limit",
+            },
+          ),
+        });
+      }
+      return !registration.active || this.#closed;
     }
     if (registrationCandidates === undefined) {
       registrationCandidates = new Map<NodeId, ProcessorCandidate>();
@@ -502,7 +824,7 @@ export class ProcessorScheduler {
       registration,
       nodeId,
       expectedEpoch,
-      expectedNodeVersion,
+      expectedInputVersion,
       queued: true,
     };
     registrationCandidates.set(nodeId, candidate);
@@ -512,6 +834,7 @@ export class ProcessorScheduler {
       this.#candidateQueue.push(candidate);
     }
     this.#candidateCount += 1;
+    return true;
   }
 
   #removeCandidate(registration: RegisteredProcessor, nodeId: NodeId): void {
@@ -523,6 +846,7 @@ export class ProcessorScheduler {
     candidate.queued = false;
     registrationCandidates!.delete(nodeId);
     this.#candidateCount -= 1;
+    this.#markCandidateCapacityAvailable();
     if (registrationCandidates!.size === 0) {
       this.#candidates.delete(registration);
     }
@@ -544,6 +868,7 @@ export class ProcessorScheduler {
       candidate.queued = false;
       this.#candidateCount -= 1;
     }
+    this.#markCandidateCapacityAvailable();
     this.#candidates.delete(registration);
     this.#compactCandidateQueue();
   }
@@ -556,7 +881,7 @@ export class ProcessorScheduler {
     }
     rejected.set(candidate.nodeId, {
       epoch: candidate.expectedEpoch,
-      nodeVersion: candidate.expectedNodeVersion,
+      inputVersion: candidate.expectedInputVersion,
     });
   }
 
@@ -591,26 +916,30 @@ export class ProcessorScheduler {
     this.#candidateQueue.length = 0;
     this.#candidateHead = 0;
     this.#candidateCount = 0;
+    this.#candidateQueueSaturated = false;
+    this.#dispatchBlocked = false;
   }
 
-  #takeCandidate(): ProcessorCandidate | undefined {
-    while (this.#candidateHead < this.#candidateQueue.length) {
-      const candidate = this.#candidateQueue[this.#candidateHead++]!;
-      if (!candidate.queued) {
-        continue;
-      }
-      candidate.queued = false;
-      const registrationCandidates = this.#candidates.get(candidate.registration);
-      registrationCandidates?.delete(candidate.nodeId);
-      if (registrationCandidates?.size === 0) {
-        this.#candidates.delete(candidate.registration);
-      }
-      this.#candidateCount -= 1;
+  #takeCandidate(): ProcessorCandidate | null | undefined {
+    if (this.#candidateHead >= this.#candidateQueue.length) {
       this.#compactCandidateQueue();
-      return candidate;
+      return undefined;
     }
+    const candidate = this.#candidateQueue[this.#candidateHead++]!;
+    if (!candidate.queued) {
+      this.#compactCandidateQueue();
+      return null;
+    }
+    candidate.queued = false;
+    const registrationCandidates = this.#candidates.get(candidate.registration);
+    registrationCandidates?.delete(candidate.nodeId);
+    if (registrationCandidates?.size === 0) {
+      this.#candidates.delete(candidate.registration);
+    }
+    this.#candidateCount -= 1;
+    this.#markCandidateCapacityAvailable();
     this.#compactCandidateQueue();
-    return undefined;
+    return candidate;
   }
 
   #compactCandidateQueue(): void {
@@ -643,12 +972,19 @@ export class ProcessorScheduler {
   }
 
   #drainCandidates(): void {
-    if (this.#dispatching || this.#closed) {
+    if (
+      this.#dispatching ||
+      this.#dispatchBlocked ||
+      this.#scheduledDispatchRevision !== undefined ||
+      this.#closed
+    ) {
       return;
     }
     this.#dispatching = true;
+    let dequeued = 0;
     try {
       while (
+        dequeued < dispatchQuantum &&
         this.#candidateCount > 0 &&
         this.#inFlight.size < this.#maxInFlightJobs
       ) {
@@ -656,15 +992,70 @@ export class ProcessorScheduler {
         if (candidate === undefined) {
           break;
         }
+        dequeued += 1;
+        if (candidate === null) {
+          continue;
+        }
         if (!candidate.registration.active) {
           continue;
         }
         if (this.#begin(candidate) === "blocked") {
+          this.#dispatchBlocked = true;
           break;
         }
       }
     } finally {
       this.#dispatching = false;
+    }
+    if (
+      !this.#dispatchBlocked &&
+      dequeued === dispatchQuantum &&
+      this.#candidateCount > 0 &&
+      this.#inFlight.size < this.#maxInFlightJobs
+    ) {
+      this.#scheduleDispatch();
+    }
+  }
+
+  #scheduleDispatch(): void {
+    if (
+      this.#dispatchBlocked ||
+      this.#scheduledDispatchRevision !== undefined ||
+      this.#candidateCount === 0 ||
+      this.#inFlight.size >= this.#maxInFlightJobs ||
+      this.#closed
+    ) {
+      return;
+    }
+    const revision = this.#dispatchRevision;
+    this.#scheduledDispatchRevision = revision;
+    setTimeout(() => {
+      if (this.#scheduledDispatchRevision !== revision) {
+        return;
+      }
+      this.#scheduledDispatchRevision = undefined;
+      if (this.#closed || revision !== this.#dispatchRevision) {
+        return;
+      }
+      this.#drainCandidates();
+    }, 0);
+  }
+
+  #invalidateDispatch(): void {
+    this.#dispatchRevision += 1;
+    this.#scheduledDispatchRevision = undefined;
+    this.#dispatchBlocked = false;
+  }
+
+  #markCandidateCapacityAvailable(): void {
+    if (this.#candidateCount < this.#maxCandidates) {
+      if (this.#scanBlocked) {
+        this.#unblockScan();
+        const revision = this.#scheduledScanRevision;
+        if (revision !== undefined) {
+          this.#scheduleScanContinuation(revision);
+        }
+      }
     }
   }
 
@@ -673,7 +1064,7 @@ export class ProcessorScheduler {
       registration,
       expectedEpoch,
       nodeId,
-      expectedNodeVersion,
+      expectedInputVersion,
     } = candidate;
     let request: ProcessorRequestView | undefined;
     const parentRemovals = this.#removedDuringBegin;
@@ -683,7 +1074,7 @@ export class ProcessorScheduler {
       const requests = this.#store.beginProcessor({
         expectedEpoch,
         nodeId,
-        expectedNodeVersion,
+        expectedInputVersion,
         processorId: registration.descriptor.id,
         processorVersion: registration.descriptor.version,
         configurationVersion: registration.configurationVersion,
@@ -707,13 +1098,14 @@ export class ProcessorScheduler {
       const normalized = MdstreamError.from(error);
       if (
         normalized.status === RESOURCE_LIMIT_STATUS.status &&
+        retryableResourceLimitDetailCodes.has(normalized.detailCode) &&
         this.#inFlight.size > 0
       ) {
         this.#enqueueCandidate(
           registration,
           expectedEpoch,
           nodeId,
-          expectedNodeVersion,
+          expectedInputVersion,
           true,
         );
         return "blocked";
@@ -760,9 +1152,10 @@ export class ProcessorScheduler {
       .finally(() => {
         if (this.#inFlight.get(request.requestId) === entry) {
           this.#inFlight.delete(request.requestId);
+          this.#dispatchBlocked = false;
         }
         this.#jobs.delete(job);
-        this.#drainCandidates();
+        this.#scheduleDispatch();
         this.#scheduleScan();
       });
     this.#jobs.add(job);
@@ -864,16 +1257,69 @@ export class ProcessorScheduler {
       this.#processors.delete(registration.descriptor.id);
     }
     this.#pendingRegistrations.delete(registration);
+    this.#removeRegistrationFromScan(registration);
     this.#removeRegistrationCandidates(registration);
     this.#rejectedCandidates.delete(registration);
+    let capacityChanged = false;
     for (const entry of [...this.#inFlight.values()]) {
       if (entry.registration === registration) {
         entry.controller.abort("processor_unregistered");
         this.#inFlight.delete(entry.request.requestId);
+        capacityChanged = true;
         this.#cancel(entry, "cancel");
       }
     }
+    if (capacityChanged) {
+      this.#dispatchBlocked = false;
+    }
+    if (this.#processors.size === 0) {
+      this.#invalidateScan();
+      this.#pendingNodes.clear();
+      this.#pendingRegistrations.clear();
+    }
     this.#drainCandidates();
+  }
+
+  #removeRegistrationFromScan(registration: RegisteredProcessor): void {
+    const work = this.#scanWork;
+    if (work === undefined) {
+      return;
+    }
+    work.registrations = work.registrations.filter(
+      (candidate) => candidate !== registration,
+    );
+    work.pendingRegistrations = work.pendingRegistrations.filter(
+      (candidate) => candidate !== registration,
+    );
+    const scan = work.nodeScan;
+    if (scan !== undefined) {
+      const index = scan.registrations.indexOf(registration);
+      if (index >= 0) {
+        scan.registrations = scan.registrations.filter(
+          (candidate) => candidate !== registration,
+        );
+        if (index < scan.registrationIndex) {
+          scan.registrationIndex -= 1;
+        }
+      }
+    }
+    if (
+      work.phase === "changed" &&
+      !this.#hasActiveRegistrations(work.registrations)
+    ) {
+      work.nodeScan = undefined;
+      work.phase = this.#hasActiveRegistrations(work.pendingRegistrations)
+        ? "tree"
+        : "done";
+    } else if (
+      (work.phase === "tree" || work.phase === "fallback") &&
+      !this.#hasActiveRegistrations(work.pendingRegistrations)
+    ) {
+      work.nodeScan = undefined;
+      work.treeQueue.length = 0;
+      work.visited.clear();
+      work.phase = "done";
+    }
   }
 
   #cancel(entry: InFlightProcessor, phase: ProcessorErrorPhase): void {
@@ -914,6 +1360,14 @@ export class ProcessorScheduler {
       !this.#closed &&
       entry.registration.active &&
       this.#inFlight.get(entry.request.requestId) === entry
+    );
+  }
+}
+
+function validateProcessorIdentifier(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string" || !processorIdentifierPattern.test(value)) {
+    throw new TypeError(
+      `${field} must be 1-128 ASCII bytes using letters, digits, '.', '_', ':', '+', or '-'`,
     );
   }
 }

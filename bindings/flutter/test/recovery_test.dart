@@ -6,14 +6,14 @@ import 'support/native_library.dart';
 
 final _capturedOptions = MdstreamSessionOptions(
   captureTransitions: true,
-  protocol: const {
-    'max_source_bytes': '1048576',
-    'max_nodes': '4096',
-    'max_resources': '256',
-    'max_operations': '4096',
-    'max_change_structural_items': '4096',
-    'max_children_per_list': '4096',
-  },
+  protocol: MdstreamProtocolLimits(
+    maxSourceBytes: '1048576',
+    maxNodes: '4096',
+    maxResources: '256',
+    maxOperations: '4096',
+    maxChangeStructuralItems: '4096',
+    maxChildrenPerList: '4096',
+  ),
 );
 
 void main() {
@@ -99,7 +99,7 @@ void main() {
         expect(pendingNotifications, 0);
         expect(pending.value, same(lastGoodPending));
 
-        final missingResource = replica.resource('999');
+        final missingResource = replica.resource(ResourceId.parse('999'));
         var resourceNotifications = 0;
         missingResource.addListener(() => resourceNotifications += 1);
         replica.recoverSnapshot(recovery);

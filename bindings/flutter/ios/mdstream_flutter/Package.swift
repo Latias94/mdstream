@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "mdstream_flutter",
     platforms: [
-        .iOS(.v13),
+        .iOS(.v14),
     ],
     products: [
         .library(name: "mdstream-flutter", targets: ["mdstream_flutter"]),

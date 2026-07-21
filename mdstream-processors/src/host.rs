@@ -1,4 +1,7 @@
-use mdstream_protocol::{ChangeImpact, Document, Epoch, NodeId, NodeVersion, RequestGeneration};
+use mdstream_protocol::{
+    ChangeImpact, Document, Epoch, NodeId, ProcessorInputVersion, RequestGeneration,
+};
+use std::collections::BTreeSet;
 
 use crate::{
     ArtifactChange, ArtifactChangeKind, ArtifactReleaseReason, CompletionError, CompletionOutcome,
@@ -30,15 +33,15 @@ pub struct ArtifactHost {
 pub struct ProcessorExpectation {
     epoch: Epoch,
     node_id: NodeId,
-    node_version: NodeVersion,
+    input_version: ProcessorInputVersion,
 }
 
 impl ProcessorExpectation {
-    pub fn new(epoch: Epoch, node_id: NodeId, node_version: NodeVersion) -> Self {
+    pub fn new(epoch: Epoch, node_id: NodeId, input_version: ProcessorInputVersion) -> Self {
         Self {
             epoch,
             node_id,
-            node_version,
+            input_version,
         }
     }
 }
@@ -58,6 +61,11 @@ impl ArtifactHost {
             next_generation: 1,
             store: ArtifactStore::new(limits),
         })
+    }
+
+    /// Returns the effective limits owned by this host.
+    pub const fn limits(&self) -> ProcessorLimits {
+        self.limits
     }
 
     pub fn begin_epoch(&mut self, epoch: Epoch) -> Result<(), HostError> {
@@ -141,8 +149,9 @@ impl ArtifactHost {
     /// Begins a processor lease only when the matched node is still current.
     ///
     /// The expectation check and lease creation share one synchronous host
-    /// transaction. A stale epoch, removed node, or changed node version returns
-    /// `Ok(None)` without consuming request generation or artifact capacity.
+    /// transaction. A stale epoch, removed node, or changed processor input
+    /// returns `Ok(None)` without consuming request generation or artifact
+    /// capacity.
     pub fn begin_if_current(
         &mut self,
         document: &Document,
@@ -158,11 +167,11 @@ impl ArtifactHost {
         let Some(node) = document.node(expectation.node_id) else {
             return Ok(None);
         };
-        if node.version != expectation.node_version {
-            return Ok(None);
-        }
         self.validate_document_epoch(document_epoch)?;
         let input = ProcessorInput::view_document_node(document, node)?;
+        if input.version() != &expectation.input_version {
+            return Ok(None);
+        }
         self.begin_view(document_epoch, input, descriptor, configuration, policy)
             .map(Some)
     }
@@ -431,9 +440,30 @@ impl ArtifactHost {
             self.store.clear(ArtifactReleaseReason::NodeChanged)?;
             return Ok(());
         }
+        let removed = impact
+            .removed_nodes
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let changed_inputs = impact
+            .changed_nodes
+            .iter()
+            .copied()
+            .filter(|node_id| !removed.contains(node_id))
+            .filter(|node_id| self.store.contains_node(document_epoch, *node_id))
+            .map(|node_id| {
+                ProcessorInput::version_from_document(document, node_id)
+                    .map(|version| (node_id, version))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         self.store
-            .remove_nodes(document_epoch, &impact.removed_nodes, &impact.changed_nodes)?;
+            .reconcile_nodes(document_epoch, &impact.removed_nodes, &changed_inputs)?;
         Ok(())
+    }
+
+    /// Returns whether the exact request generation still owns a host lease.
+    pub fn has_request_lease(&self, key: &ProcessorRequestKey) -> bool {
+        self.store.has_lease(key)
     }
 
     pub fn cancel(&mut self, key: &ProcessorRequestKey) -> Result<bool, HostError> {

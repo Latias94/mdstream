@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
   s.license               = { :type => 'MIT', :file => '../LICENSE' }
   s.author                = { 'mdstream contributors' => 'https://github.com/Latias94/mdstream' }
   s.source                = { :path => '.' }
-  s.platform              = :ios, '13.0'
+  s.platform              = :ios, '14.0'
   s.dependency            'Flutter'
   s.vendored_frameworks   = 'MdstreamFFI.xcframework'
   s.swift_version         = '5.9'

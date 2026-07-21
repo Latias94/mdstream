@@ -21,47 +21,45 @@ Map<String, Object?> _normalizeCoordinate(CoordinateView coordinate) => {
 };
 
 Map<String, Object?> _normalizeOutcome(ApplyOutcomeView outcome) {
-  switch (outcome.kind) {
-    case 'applied':
-    case 'recovered':
-      return {
-        'kind': outcome.kind,
-        'coordinate': _normalizeCoordinate(outcome.coordinate!),
-      };
-    case 'idempotent':
-      return {'kind': outcome.kind};
-    case 'stale':
-      return {
-        'kind': outcome.kind,
-        'current': _normalizeCoordinate(outcome.current!),
-        'receivedEpoch': outcome.receivedEpoch!,
-        'receivedSequence': outcome.receivedSequence!,
-      };
-    case 'recovery_required':
-      return {
-        'kind': outcome.kind,
-        'lastGood': _normalizeCoordinate(outcome.lastGood!),
-        'reason': _camelizeJson(outcome.reason!.raw),
-      };
-    default:
-      throw StateError('unsupported reducer outcome ${outcome.kind}');
-  }
+  return switch (outcome) {
+    AppliedOutcomeView(:final coordinate) => {
+      'kind': 'applied',
+      'coordinate': _normalizeCoordinate(coordinate),
+    },
+    RecoveredOutcomeView(:final coordinate) => {
+      'kind': 'recovered',
+      'coordinate': _normalizeCoordinate(coordinate),
+    },
+    IdempotentOutcomeView() => {'kind': 'idempotent'},
+    StaleOutcomeView(
+      :final current,
+      :final receivedEpoch,
+      :final receivedSequence,
+    ) =>
+      {
+        'kind': 'stale',
+        'current': _normalizeCoordinate(current),
+        'receivedEpoch': receivedEpoch,
+        'receivedSequence': receivedSequence,
+      },
+    RecoveryRequiredOutcomeView(:final lastGood, :final reason) => {
+      'kind': 'recovery_required',
+      'lastGood': _normalizeCoordinate(lastGood),
+      'reason': _camelizeJson(reason.raw),
+    },
+  };
 }
 
 Map<String, Object?> _normalizeStatus(ReducerStatusView status) {
-  switch (status.kind) {
-    case 'uninitialized':
-    case 'ready':
-      return {'kind': status.kind};
-    case 'needs_snapshot':
-      return {
-        'kind': status.kind,
-        'lastGood': _normalizeCoordinate(status.lastGood!),
-        'reason': _camelizeJson(status.reason!.raw),
-      };
-    default:
-      throw StateError('unsupported reducer status ${status.kind}');
-  }
+  return switch (status) {
+    UninitializedReducerStatusView() => {'kind': 'uninitialized'},
+    ReadyReducerStatusView() => {'kind': 'ready'},
+    NeedsSnapshotReducerStatusView(:final lastGood, :final reason) => {
+      'kind': 'needs_snapshot',
+      'lastGood': _normalizeCoordinate(lastGood),
+      'reason': _camelizeJson(reason.raw),
+    },
+  };
 }
 
 Map<String, Object?> _normalizeImpact(ChangeImpactView impact) => {

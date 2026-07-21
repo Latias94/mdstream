@@ -24,6 +24,7 @@ EXPECTED_APK_LIBRARIES = {
     "lib/armeabi-v7a/libmdstream_ffi.so",
     "lib/x86_64/libmdstream_ffi.so",
 }
+ANDROID_BUILD_TOOLS_VERSION = "35.0.0"
 APPLICATION_ID = "io.mdstream.smoke.mdstream_flutter_android_smoke"
 SMOKE_OK = "MDSTREAM_FLUTTER_SMOKE_OK"
 SMOKE_ERROR = "MDSTREAM_FLUTTER_SMOKE_ERROR"
@@ -55,6 +56,19 @@ def _clean_environment() -> dict[str, str]:
     environment.pop("MDSTREAM_NATIVE_LIBRARY", None)
     environment.pop("MDSTREAM_FFI_LIBRARY", None)
     return environment
+
+
+def _zipalign_tool() -> Path:
+    sdk = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
+    if not sdk:
+        raise PackageSmokeError("ANDROID_SDK_ROOT or ANDROID_HOME must be set")
+    executable = "zipalign.exe" if os.name == "nt" else "zipalign"
+    tool = Path(sdk) / "build-tools" / ANDROID_BUILD_TOOLS_VERSION / executable
+    if not tool.is_file():
+        raise PackageSmokeError(
+            f"Android build-tools {ANDROID_BUILD_TOOLS_VERSION} is missing: {tool}"
+        )
+    return tool
 
 
 def _write_smoke_main(path: Path) -> None:
@@ -100,9 +114,48 @@ Future<void> main() async {
     )
 
 
+def _configure_uncompressed_native_libraries(project: Path) -> None:
+    gradle = project / "android" / "app" / "build.gradle.kts"
+    try:
+        text = gradle.read_text(encoding="utf-8")
+    except OSError as error:
+        raise PackageSmokeError(f"failed to read generated Android app: {error}") from error
+    android_marker = "android {\n"
+    min_sdk_marker = "minSdk = flutter.minSdkVersion"
+    if text.count(android_marker) != 1 or text.count(min_sdk_marker) != 1:
+        raise PackageSmokeError(
+            "generated Flutter Android app has an unexpected Gradle layout"
+        )
+    text = text.replace(
+        android_marker,
+        android_marker
+        + "    packaging {\n"
+        + "        jniLibs {\n"
+        + "            useLegacyPackaging = false\n"
+        + "        }\n"
+        + "    }\n\n",
+        1,
+    ).replace(min_sdk_marker, "minSdk = 23", 1)
+    try:
+        gradle.write_text(text, encoding="utf-8")
+    except OSError as error:
+        raise PackageSmokeError(
+            f"failed to configure generated Android app: {error}"
+        ) from error
+
+
 def _run_on_device(apk: Path, device: str) -> None:
     adb = ["adb", "-s", device]
     _run([*adb, "wait-for-device"], cwd=apk.parent)
+    page_size = _run(
+        [*adb, "shell", "getconf", "PAGE_SIZE"],
+        cwd=apk.parent,
+        capture=True,
+    ).stdout.strip()
+    if page_size != "16384":
+        raise PackageSmokeError(
+            f"Android runtime smoke requires a 16 KiB device, got {page_size!r}"
+        )
     _run([*adb, "install", "-r", str(apk)], cwd=apk.parent)
     try:
         _run([*adb, "logcat", "-c"], cwd=apk.parent)
@@ -157,6 +210,7 @@ def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
             ],
             cwd=PLUGIN_ROOT,
         )
+        _configure_uncompressed_native_libraries(temporary)
         _run(
             [
                 "flutter",
@@ -173,22 +227,37 @@ def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
                 "flutter",
                 "build",
                 "apk",
-                "--debug",
+                "--release",
                 "--target-platform",
                 "android-arm,android-arm64,android-x64",
             ],
             cwd=temporary,
         )
-        apk = temporary / "build" / "app" / "outputs" / "flutter-apk" / "app-debug.apk"
+        apk = temporary / "build" / "app" / "outputs" / "flutter-apk" / "app-release.apk"
         if not apk.is_file():
             raise PackageSmokeError(f"Flutter did not produce the expected APK: {apk}")
         with zipfile.ZipFile(apk) as archive:
-            names = set(archive.namelist())
+            entries = {entry.filename: entry for entry in archive.infolist()}
+        names = set(entries)
         missing = sorted(EXPECTED_APK_LIBRARIES - names)
         if missing:
             raise PackageSmokeError(
                 f"Android APK is missing bundled slice(s): {', '.join(missing)}"
             )
+        compressed = sorted(
+            name
+            for name in EXPECTED_APK_LIBRARIES
+            if entries[name].compress_type != zipfile.ZIP_STORED
+        )
+        if compressed:
+            raise PackageSmokeError(
+                "Android release APK compressed native slice(s): "
+                f"{', '.join(compressed)}"
+            )
+        _run(
+            [str(_zipalign_tool()), "-c", "-P", "16", "-v", "4", str(apk)],
+            cwd=temporary,
+        )
         if device is not None:
             _run_on_device(apk, device)
     finally:

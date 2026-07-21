@@ -9,7 +9,7 @@ use mdstream_bindings_core::{
     BindingPayload, BindingPayloadKind, BindingStatus, EngineSession, ProcessorExpectation,
     ProcessorFailureCode, ReducerSession, TRANSITION_SCHEMA, error_payload_json_bytes,
 };
-use mdstream_protocol::{DecimalIdError, NodeVersion, RequestGeneration};
+use mdstream_protocol::{DecimalIdError, ProcessorInputVersion, RequestGeneration};
 use wasm_bindgen::prelude::*;
 
 const WASM_ABI_VERSION: u32 = 1;
@@ -232,7 +232,7 @@ impl MdstreamReducerSession {
         &mut self,
         expected_epoch: &str,
         node_id: &str,
-        expected_node_version: &str,
+        expected_input_version: &str,
         processor_id: &str,
         processor_version: &str,
         configuration_version: &str,
@@ -243,10 +243,10 @@ impl MdstreamReducerSession {
             ProcessorExpectation::new(
                 parse_decimal_id(expected_epoch, "expected_epoch")?,
                 parse_decimal_id(node_id, "node_id")?,
-                NodeVersion::new(expected_node_version).map_err(|error| {
+                ProcessorInputVersion::new(expected_input_version).map_err(|error| {
                     binding_error_to_js(BindingError::new(
                         BindingStatus::InvalidArgument,
-                        "processor.invalid_node_version",
+                        "processor.invalid_input_version",
                         error.to_string(),
                     ))
                 })?,
@@ -334,6 +334,18 @@ impl MdstreamReducerSession {
             mdstream_protocol::ReducerStatus::NeedsSnapshot { .. } => "needs_snapshot",
         }
         .to_string()
+    }
+
+    #[wasm_bindgen(js_name = processorMaxInFlightJobs)]
+    pub fn processor_max_in_flight_jobs(&self) -> usize {
+        self.inner.processor_scheduler_limits().max_in_flight_jobs
+    }
+
+    #[wasm_bindgen(js_name = processorMaxQueuedCandidates)]
+    pub fn processor_max_queued_candidates(&self) -> usize {
+        self.inner
+            .processor_scheduler_limits()
+            .max_queued_candidates
     }
 
     pub fn metrics(&self) -> Vec<u8> {

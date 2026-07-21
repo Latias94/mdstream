@@ -195,12 +195,18 @@ pub(crate) fn encode_node_view(
     max_bytes: usize,
 ) -> Result<Vec<u8>, BindingError> {
     let body_text = slice_range(document.source(), node.body)?;
+    let resource = node
+        .content
+        .referenced_resource()
+        .and_then(|resource_id| document.resource(resource_id));
+    let processor_input_version = node.processor_input_version_with_context(body_text, resource);
     encode_json_bounded(
         &NodeView {
             schema: BINDING_SCHEMA,
             kind: "node_view",
             node,
             body_text,
+            processor_input_version: &processor_input_version,
         },
         max_bytes,
         "bindings.node_view_bytes",
@@ -511,6 +517,7 @@ struct NodeView<'a> {
     kind: &'static str,
     node: &'a ContentNode,
     body_text: &'a str,
+    processor_input_version: &'a mdstream_protocol::ProcessorInputVersion,
 }
 
 #[derive(Serialize)]

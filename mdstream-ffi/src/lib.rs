@@ -20,9 +20,10 @@ pub use buffers::{
 };
 pub use errors::{MdstreamCallResult, MdstreamEngineResult, MdstreamReducerResult};
 pub use handles::{
-    MdstreamEngine, MdstreamReducer, mdstream_engine_append, mdstream_engine_execute,
-    mdstream_engine_free, mdstream_engine_new, mdstream_reducer_apply_change,
-    mdstream_reducer_execute, mdstream_reducer_free, mdstream_reducer_new,
+    MdstreamEngine, MdstreamProcessorSchedulerLimits, MdstreamReducer, mdstream_engine_append,
+    mdstream_engine_execute, mdstream_engine_free, mdstream_engine_new,
+    mdstream_reducer_apply_change, mdstream_reducer_execute, mdstream_reducer_free,
+    mdstream_reducer_new, mdstream_reducer_processor_scheduler_limits,
     mdstream_reducer_recover_snapshot,
 };
 
@@ -90,6 +91,11 @@ pub extern "C" fn mdstream_payload_result_struct_size() -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn mdstream_allocation_metrics_struct_size() -> usize {
     size_of::<MdstreamAllocationMetrics>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mdstream_processor_scheduler_limits_struct_size() -> usize {
+    size_of::<MdstreamProcessorSchedulerLimits>()
 }
 
 /// Returns process-wide live allocations owned by this FFI crate.

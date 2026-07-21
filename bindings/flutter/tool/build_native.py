@@ -9,6 +9,7 @@ import json
 import os
 import platform as host_platform_module
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -24,13 +25,22 @@ from package_metadata import (
     PackageMetadataError,
     package_version,
 )
+from native_artifact import (
+    FRAMEWORK_MODULE_MAP,
+    LINUX_GLIBC_BASELINE,
+    NATIVE_CONTRACTS,
+    NativeArtifactError,
+    NativeContract,
+    inspect_xcframework,
+    validate_native_image,
+)
 
 
 BUDGET_PATH = REPOSITORY_ROOT / "bindings" / "budgets.json"
 HEADER_PATH = REPOSITORY_ROOT / "mdstream-ffi" / "include" / "mdstream.h"
 FRAMEWORK_NAME = "MdstreamFFI"
 ANDROID_NDK_VERSION = "26.3.11579264"
-IOS_DEPLOYMENT_TARGET = "13.0"
+IOS_DEPLOYMENT_TARGET = "14.0"
 MACOS_DEPLOYMENT_TARGET = "11.0"
 REQUIRED_EXPORTS = (
     "mdstream_abi_version",
@@ -96,45 +106,20 @@ def load_budget_ceiling(artifact: str) -> int:
     raise PackagingError(f"binding budget does not define {artifact}")
 
 
-def detect_native_format(path: Path) -> str:
-    try:
-        prefix = path.read_bytes()[:4]
-    except OSError as error:
-        raise PackagingError(f"failed to read native artifact {path}: {error}") from error
-    if prefix == b"\x7fELF":
-        return "elf"
-    if prefix[:2] == b"MZ":
-        return "pe"
-    if prefix in {
-        b"\xfe\xed\xfa\xce",
-        b"\xce\xfa\xed\xfe",
-        b"\xfe\xed\xfa\xcf",
-        b"\xcf\xfa\xed\xfe",
-        b"\xca\xfe\xba\xbe",
-        b"\xbe\xba\xfe\xca",
-        b"\xca\xfe\xba\xbf",
-        b"\xbf\xba\xfe\xca",
-    }:
-        return "macho"
-    return "unknown"
-
-
 def validate_native_artifact(
     path: Path,
     *,
-    expected_format: str,
+    contract: NativeContract,
     ceiling_bytes: int,
     check_exports: bool = True,
     symbol_tool: Path | None = None,
 ) -> int:
     if not path.is_file():
         raise PackagingError(f"native artifact does not exist: {path}")
-    actual_format = detect_native_format(path)
-    if actual_format != expected_format:
-        raise PackagingError(
-            f"native artifact format mismatch for {path}: "
-            f"expected {expected_format}, got {actual_format}"
-        )
+    try:
+        validate_native_image(path.read_bytes(), contract)
+    except (OSError, NativeArtifactError) as error:
+        raise PackagingError(f"native artifact contract mismatch for {path}: {error}") from error
     size = path.stat().st_size
     if size > ceiling_bytes:
         raise PackagingError(
@@ -142,7 +127,7 @@ def validate_native_artifact(
         )
     if check_exports:
         exported = _exported_symbols(
-            path, native_format=expected_format, symbol_tool=symbol_tool
+            path, native_format=contract.format, symbol_tool=symbol_tool
         )
         missing = [symbol for symbol in REQUIRED_EXPORTS if symbol not in exported]
         if missing:
@@ -182,11 +167,13 @@ def _exported_symbols(
         command = [tool, "--defined-only", "--extern-only", str(path)]
 
     result = _run(command, capture=True)
-    normalized = result.stdout.replace("_mdstream_", "mdstream_")
+    tokens = re.findall(
+        r"(?<![A-Za-z0-9_])_?mdstream_[A-Za-z0-9_]+(?![A-Za-z0-9_])",
+        result.stdout,
+    )
     return {
-        symbol
-        for symbol in REQUIRED_EXPORTS
-        if symbol in normalized
+        token[1:] if token.startswith("_mdstream_") else token
+        for token in tokens
     }
 
 
@@ -197,7 +184,7 @@ def atomic_stage(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     incoming = destination.parent / f".{destination.name}.incoming-{uuid.uuid4().hex}"
     backup = destination.parent / f".{destination.name}.backup-{uuid.uuid4().hex}"
-    shutil.copytree(source, incoming)
+    shutil.copytree(source, incoming, symlinks=True)
     moved_existing = False
     try:
         if destination.exists():
@@ -281,18 +268,20 @@ def _cargo_artifact(
     options: BuildOptions,
     *,
     env: dict[str, str] | None = None,
+    cargo_subcommand: str = "build",
+    cargo_target: str | None = None,
 ) -> Path:
     command = [
         "cargo",
         f"+{options.toolchain}",
-        "build",
+        cargo_subcommand,
         "--locked",
         "--manifest-path",
         str(REPOSITORY_ROOT / "Cargo.toml"),
         "-p",
         "mdstream-ffi",
         "--target",
-        target,
+        cargo_target or target,
         "--message-format=json-render-diagnostics",
     ]
     if options.profile == "release":
@@ -434,6 +423,29 @@ def _android_clang_name(target: str) -> str:
     return f"{name}.cmd" if host_platform_module.system() == "Windows" else name
 
 
+def _android_build_environment(target: str, linker: Path) -> dict[str, str]:
+    key = target.upper().replace("-", "_")
+    env = os.environ.copy()
+    env[f"CARGO_TARGET_{key}_LINKER"] = str(linker)
+    env[f"CARGO_TARGET_{key}_RUSTFLAGS"] = (
+        "-C link-arg=-Wl,-z,max-page-size=16384 "
+        "-C link-arg=-Wl,-z,common-page-size=16384"
+    )
+    return env
+
+
+def maximum_glibc_requirement(path: Path) -> tuple[int, int] | None:
+    tool = shutil.which("readelf") or shutil.which("llvm-readelf")
+    if tool is None:
+        raise PackagingError("readelf is required to validate the Linux glibc baseline")
+    result = _run([tool, "--version-info", str(path)], capture=True)
+    versions = {
+        tuple(int(part) for part in match.groups())
+        for match in re.finditer(r"GLIBC_(\d+)\.(\d+)", result.stdout)
+    }
+    return max(versions, default=None)
+
+
 def build_android(
     targets: list[str], options: BuildOptions
 ) -> list[StagedArtifact]:
@@ -452,8 +464,7 @@ def build_android(
             linker = toolchain / _android_clang_name(target)
             if not linker.is_file():
                 raise PackagingError(f"Android NDK linker does not exist: {linker}")
-            env = os.environ.copy()
-            env[f"CARGO_TARGET_{target.upper().replace('-', '_')}_LINKER"] = str(linker)
+            env = _android_build_environment(target, linker)
             artifact = _cargo_artifact(target, options, env=env)
             destination = staged / ANDROID_TARGETS[target] / "libmdstream_ffi.so"
             _copy_and_strip(
@@ -465,7 +476,7 @@ def build_android(
             )
             validate_native_artifact(
                 destination,
-                expected_format="elf",
+                contract=NATIVE_CONTRACTS[f"android/{ANDROID_TARGETS[target]}"],
                 ceiling_bytes=ceiling,
                 symbol_tool=toolchain / (
                     "llvm-nm.exe"
@@ -493,15 +504,12 @@ def _write_framework_metadata(
 ) -> None:
     headers = framework / "Headers"
     modules = framework / "Modules"
+    resources = framework
     headers.mkdir(parents=True, exist_ok=True)
     modules.mkdir(parents=True, exist_ok=True)
     shutil.copy2(HEADER_PATH, headers / "mdstream.h")
     (modules / "module.modulemap").write_text(
-        "framework module MdstreamFFI {\n"
-        '  umbrella header "mdstream.h"\n'
-        "  export *\n"
-        "  module * { export * }\n"
-        "}\n",
+        FRAMEWORK_MODULE_MAP,
         encoding="utf-8",
     )
     try:
@@ -520,10 +528,8 @@ def _write_framework_metadata(
         "MinimumOSVersion": minimum_version,
         "CFBundleSupportedPlatforms": [platform_name],
     }
-    with (framework / "Info.plist").open("wb") as handle:
+    with (resources / "Info.plist").open("wb") as handle:
         plistlib.dump(plist, handle, sort_keys=True)
-
-
 def _make_framework(
     source: Path,
     destination: Path,
@@ -562,27 +568,34 @@ def _create_xcframework(frameworks: list[Path], output: Path) -> None:
     _run(command)
 
 
-def _validate_xcframework(path: Path, ceiling: int) -> list[Path]:
+def _validate_xcframework(
+    path: Path, ceiling: int, platform_name: str
+) -> list[Path]:
     info_path = path / "Info.plist"
     if not info_path.is_file():
         raise PackagingError(f"XCFramework Info.plist is missing: {path}")
-    with info_path.open("rb") as handle:
-        info = plistlib.load(handle)
+    try:
+        slices = inspect_xcframework(info_path.read_bytes(), platform_name)
+    except (OSError, NativeArtifactError) as error:
+        raise PackagingError(f"invalid XCFramework metadata for {path}: {error}") from error
     binaries: list[Path] = []
-    for library in info.get("AvailableLibraries", []):
-        identifier = library.get("LibraryIdentifier")
-        library_path = library.get("LibraryPath")
-        if not isinstance(identifier, str) or not isinstance(library_path, str):
-            raise PackagingError(f"invalid XCFramework library metadata: {path}")
-        framework = path / identifier / library_path
-        binary = framework / Path(library_path).stem
+    for slice_ in slices:
+        binary = path / slice_.binary_path
         validate_native_artifact(
-            binary, expected_format="macho", ceiling_bytes=ceiling
+            binary,
+            contract=NATIVE_CONTRACTS[slice_.group],
+            ceiling_bytes=ceiling,
         )
         binaries.append(binary)
-    if not binaries:
-        raise PackagingError(f"XCFramework contains no libraries: {path}")
     return binaries
+
+
+def _xcframework_identifier(binary: Path) -> str:
+    framework_marker = f"{FRAMEWORK_NAME}.framework"
+    for parent in binary.parents:
+        if parent.name == framework_marker:
+            return parent.parent.name
+    raise PackagingError(f"binary is not inside a {framework_marker}: {binary}")
 
 
 def build_ios(options: BuildOptions) -> list[StagedArtifact]:
@@ -628,20 +641,22 @@ def build_ios(options: BuildOptions) -> list[StagedArtifact]:
             options=options,
         )
         validate_native_artifact(
-            device_binary, expected_format="macho", ceiling_bytes=ceiling
+            device_binary,
+            contract=NATIVE_CONTRACTS["ios/ios-arm64"],
+            ceiling_bytes=ceiling,
         )
         validate_native_artifact(
             simulator_framework_binary,
-            expected_format="macho",
+            contract=NATIVE_CONTRACTS["ios/ios-arm64_x86_64-simulator"],
             ceiling_bytes=ceiling,
         )
         xcframework = root / f"{FRAMEWORK_NAME}.xcframework"
         _create_xcframework([device_framework, simulator_framework], xcframework)
-        _validate_xcframework(xcframework, ceiling)
+        _validate_xcframework(xcframework, ceiling, "ios")
         atomic_stage(xcframework, PLUGIN_ROOT / "ios" / xcframework.name)
     output = PLUGIN_ROOT / "ios" / f"{FRAMEWORK_NAME}.xcframework"
-    binaries = _validate_xcframework(output, ceiling)
-    return [_report("ios", binary.parent.parent.name, binary) for binary in binaries]
+    binaries = _validate_xcframework(output, ceiling, "ios")
+    return [_report("ios", _xcframework_identifier(binary), binary) for binary in binaries]
 
 
 def build_macos(
@@ -652,6 +667,10 @@ def build_macos(
     unknown = sorted(set(targets) - set(MACOS_TARGETS))
     if unknown:
         raise PackagingError(f"unsupported macOS Rust target(s): {' '.join(unknown)}")
+    if set(targets) != set(MACOS_TARGETS):
+        raise PackagingError(
+            "macOS staging requires both arm64 and x86_64 slices"
+        )
     _ensure_targets(targets, options)
     ceiling = load_budget_ceiling("flutter_native_library")
     env = os.environ.copy()
@@ -681,15 +700,17 @@ def build_macos(
             options=options,
         )
         validate_native_artifact(
-            framework_binary, expected_format="macho", ceiling_bytes=ceiling
+            framework_binary,
+            contract=NATIVE_CONTRACTS["macos/macos-arm64_x86_64"],
+            ceiling_bytes=ceiling,
         )
         xcframework = root / f"{FRAMEWORK_NAME}.xcframework"
         _create_xcframework([framework], xcframework)
-        _validate_xcframework(xcframework, ceiling)
+        _validate_xcframework(xcframework, ceiling, "macos")
         atomic_stage(xcframework, PLUGIN_ROOT / "macos" / xcframework.name)
     output = PLUGIN_ROOT / "macos" / f"{FRAMEWORK_NAME}.xcframework"
-    binaries = _validate_xcframework(output, ceiling)
-    return [_report("macos", "+".join(targets), binary) for binary in binaries]
+    binaries = _validate_xcframework(output, ceiling, "macos")
+    return [_report("macos", _xcframework_identifier(binary), binary) for binary in binaries]
 
 
 def build_linux(
@@ -705,14 +726,31 @@ def build_linux(
     with tempfile.TemporaryDirectory(prefix="mdstream-linux-") as temporary:
         staged = Path(temporary) / "lib"
         for target in targets:
-            artifact = _cargo_artifact(target, options)
+            artifact = _cargo_artifact(
+                target,
+                options,
+                cargo_subcommand="zigbuild",
+                cargo_target=(
+                    f"{target}.{LINUX_GLIBC_BASELINE[0]}."
+                    f"{LINUX_GLIBC_BASELINE[1]}"
+                ),
+            )
             destination = staged / LINUX_TARGETS[target] / "libmdstream_ffi.so"
             _copy_and_strip(
                 artifact, destination, platform="linux", options=options
             )
             validate_native_artifact(
-                destination, expected_format="elf", ceiling_bytes=ceiling
+                destination,
+                contract=NATIVE_CONTRACTS[f"linux/{LINUX_TARGETS[target]}"],
+                ceiling_bytes=ceiling,
             )
+            required_glibc = maximum_glibc_requirement(destination)
+            if required_glibc is not None and required_glibc > LINUX_GLIBC_BASELINE:
+                raise PackagingError(
+                    "Linux artifact exceeds the declared glibc baseline "
+                    f"{LINUX_GLIBC_BASELINE[0]}.{LINUX_GLIBC_BASELINE[1]}: "
+                    f"requires {required_glibc[0]}.{required_glibc[1]}"
+                )
         atomic_stage(staged, PLUGIN_ROOT / "linux" / "lib")
     return [
         _report(
@@ -747,7 +785,9 @@ def build_windows(
                 artifact, destination, platform="windows", options=options
             )
             validate_native_artifact(
-                destination, expected_format="pe", ceiling_bytes=ceiling
+                destination,
+                contract=NATIVE_CONTRACTS[f"windows/{WINDOWS_TARGETS[target]}"],
+                ceiling_bytes=ceiling,
             )
         atomic_stage(staged, PLUGIN_ROOT / "windows" / "lib")
     return [
@@ -818,12 +858,7 @@ def main() -> int:
                 raise PackagingError("iOS target slices are fixed by the XCFramework contract")
             reports = build_ios(options)
         elif selected == "macos":
-            default = (
-                [_default_desktop_target("macos")]
-                if args.platform == "host"
-                else list(MACOS_TARGETS)
-            )
-            reports = build_macos(args.targets or default, options)
+            reports = build_macos(args.targets or list(MACOS_TARGETS), options)
         elif selected == "linux":
             reports = build_linux(
                 args.targets or [_default_desktop_target("linux")], options

@@ -147,7 +147,7 @@ final class MdstreamControllerState {
   DocumentSummaryView? get document => snapshot.document;
 
   /// Whether the replica requires an explicit recovery snapshot.
-  bool get needsSnapshot => status.kind == 'needs_snapshot';
+  bool get needsSnapshot => status is NeedsSnapshotReducerStatusView;
 
   /// Whether the current document has been finalized.
   bool get isFinalized => document?.lifecycle == 'finalized';

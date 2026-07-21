@@ -303,15 +303,15 @@ List<NodeView> _readFinalNodes(
 
 MdstreamSessionOptions _transitionOptions() => MdstreamSessionOptions(
   captureTransitions: true,
-  protocol: const <String, String>{
-    'max_source_bytes': '4096',
-    'max_nodes': '128',
-    'max_resources': '32',
-    'max_operations': '1024',
-    'max_change_structural_items': '1024',
-    'max_children_per_list': '128',
-  },
-  wire: const <String, String>{'max_reducer_update_bytes': '4194304'},
+  protocol: MdstreamProtocolLimits(
+    maxSourceBytes: '4096',
+    maxNodes: '128',
+    maxResources: '32',
+    maxOperations: '1024',
+    maxChangeStructuralItems: '1024',
+    maxChildrenPerList: '128',
+  ),
+  wire: MdstreamWireLimits(maxReducerUpdateBytes: '4194304'),
 );
 
 int _compareDecimalIds(String left, String right) =>

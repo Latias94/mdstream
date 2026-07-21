@@ -152,6 +152,12 @@ fn configured_view_bound_covers_a_maximum_escaped_node_body() {
         .unwrap();
     let view: serde_json::Value = serde_json::from_slice(view.bytes()).unwrap();
     assert_eq!(view["body_text"], source);
+    assert!(
+        view["processor_input_version"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
     assert!(view.get("source_text").is_none());
 }
 

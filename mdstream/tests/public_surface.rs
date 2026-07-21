@@ -83,6 +83,31 @@ fn intentional_zero_four_surface_is_available() {
     cases.pass("tests/ui/intentional_zero_four_surface.rs");
 }
 
+#[test]
+fn compiler_budgets_are_not_available_on_protocol_limits() {
+    let project = ProbeProject::new();
+    project.assert_rejected(
+        "compiler budgets on ProtocolLimits",
+        r#"
+use mdstream_protocol::ProtocolLimits;
+
+fn main() {
+    let _ = ProtocolLimits {
+        max_definitions: 1,
+        max_definition_edges: 1,
+        max_definition_metadata_bytes: 1,
+        ..ProtocolLimits::default()
+    };
+}
+"#,
+        &[
+            "max_definitions",
+            "max_definition_edges",
+            "max_definition_metadata_bytes",
+        ],
+    );
+}
+
 struct ProbeProject {
     root: PathBuf,
 }
@@ -99,10 +124,14 @@ impl ProbeProject {
         ));
         fs::create_dir_all(root.join("src")).expect("create probe crate");
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let protocol_dir = PathBuf::from(manifest_dir)
+            .parent()
+            .expect("mdstream crate must live in the workspace root")
+            .join("mdstream-protocol");
         fs::write(
             root.join("Cargo.toml"),
             format!(
-                "[package]\nname = \"mdstream-public-surface-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nmdstream = {{ path = {manifest_dir:?} }}\n"
+                "[package]\nname = \"mdstream-public-surface-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nmdstream = {{ path = {manifest_dir:?} }}\nmdstream-protocol = {{ path = {protocol_dir:?} }}\n"
             ),
         )
         .expect("write probe manifest");

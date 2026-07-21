@@ -342,6 +342,7 @@ export interface NodeView {
   readonly kind: "node_view";
   readonly node: ContentNodeView;
   readonly bodyText: string;
+  readonly processorInputVersion: ProcessorInputVersion;
 }
 
 export interface SemanticResourceView {
@@ -424,9 +425,35 @@ export interface ArtifactChangeView {
   readonly change: ArtifactChangeKindView;
 }
 
+/** Immutable retained binary artifact bytes. */
+export interface ImmutableBytesView {
+  /** Byte length available without materializing a mutable copy. */
+  readonly byteLength: number;
+
+  /** Returns a new owned `Uint8Array` that callers may mutate. */
+  copyBytes(): Uint8Array;
+}
+
+class OwnedBytesView implements ImmutableBytesView {
+  readonly #bytes: Uint8Array;
+
+  constructor(bytes: Uint8Array) {
+    this.#bytes = bytes;
+    Object.freeze(this);
+  }
+
+  get byteLength(): number {
+    return this.#bytes.byteLength;
+  }
+
+  copyBytes(): Uint8Array {
+    return this.#bytes.slice();
+  }
+}
+
 export type ArtifactPayloadView =
   | { readonly kind: "text"; readonly text: string }
-  | { readonly kind: "binary"; readonly bytes: Uint8Array }
+  | { readonly kind: "binary"; readonly bytes: ImmutableBytesView }
   | {
       readonly kind: "citation";
       readonly key: string;
@@ -1041,6 +1068,10 @@ function decodeNodeView(value: Record<string, unknown>, schema: string): NodeVie
     kind: "node_view",
     node: decodeNode(requiredRecord(value.node, "node")),
     bodyText: requiredString(value.body_text, "body_text"),
+    processorInputVersion: opaqueIdentifier(
+      value.processor_input_version,
+      "processor_input_version",
+    ) as ProcessorInputVersion,
   };
 }
 
@@ -1454,16 +1485,18 @@ function decodeArtifact(value: Record<string, unknown>): ProcessorArtifactView {
       const values = requiredArray(payload.bytes, "artifact bytes");
       decoded = {
         kind,
-        bytes: Uint8Array.from(values, (entry) => {
-          if (
-            !Number.isInteger(entry) ||
-            (entry as number) < 0 ||
-            (entry as number) > 255
-          ) {
-            throw invalidPayload("artifact bytes must contain octets");
-          }
-          return entry as number;
-        }),
+        bytes: new OwnedBytesView(
+          Uint8Array.from(values, (entry) => {
+            if (
+              !Number.isInteger(entry) ||
+              (entry as number) < 0 ||
+              (entry as number) > 255
+            ) {
+              throw invalidPayload("artifact bytes must contain octets");
+            }
+            return entry as number;
+          }),
+        ),
       };
       break;
     }

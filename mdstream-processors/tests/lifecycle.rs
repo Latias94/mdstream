@@ -1,8 +1,8 @@
 use mdstream_processors::{
     ArtifactChangeKind, ArtifactHost, ArtifactReleaseReason, CompletionOutcome,
     ConfigurationVersion, ContentProcessor, HostError, ProcessingPolicy, ProcessorArtifact,
-    ProcessorCapabilities, ProcessorDescriptor, ProcessorFailure, ProcessorFailureCode,
-    ProcessorLimits, ProcessorSlotState, run_catching,
+    ProcessorCapabilities, ProcessorDescriptor, ProcessorExpectation, ProcessorFailure,
+    ProcessorFailureCode, ProcessorInput, ProcessorLimits, ProcessorSlotState, run_catching,
 };
 use mdstream_protocol::{
     ApplyOutcome, ChangeId, ChangeImpact, ChangeSet, ChildList, ChildListOwner, CodeBlockSyntax,
@@ -206,6 +206,64 @@ fn document_with_custom_child(epoch: u64, root_id: u128, child_id: u128) -> Redu
     let mut reducer = Reducer::new();
     reducer.apply(change).unwrap();
     reducer
+}
+
+#[test]
+fn conditional_begin_rejects_changed_child_structure_with_stable_node_version() {
+    let root_id = NodeId::new(41);
+    let child_id = NodeId::new(42);
+    let mut reducer = document_with_custom_child(7, root_id.get(), child_id.get());
+    let document = reducer.document().unwrap();
+    let expected_node_version = document.node(root_id).unwrap().version.clone();
+    let expected_input_version = ProcessorInput::from_document(document, root_id)
+        .unwrap()
+        .version()
+        .clone();
+    let current_children = document.node(root_id).unwrap().children.clone();
+    let child_version = document.node(child_id).unwrap().version.clone();
+    let change = ChangeSet::new(
+        Epoch::new(7),
+        Sequence::new(1),
+        ChangeId::new("epoch:7:remove-child").unwrap(),
+        SourceDelta::unchanged(SourceCursor::new(1)),
+        vec![
+            ProjectionOp::SpliceChildren {
+                owner: ChildListOwner::Node { node_id: root_id },
+                expected_version: current_children.version().clone(),
+                start: 0,
+                delete_count: 1,
+                insert: Vec::new(),
+                new_version: ChildList::empty().version().clone(),
+            },
+            ProjectionOp::RemoveNode {
+                node_id: child_id,
+                expected_version: child_version,
+            },
+        ],
+    )
+    .unwrap();
+    reducer.apply(change).unwrap();
+    let document = reducer.document().unwrap();
+    assert_eq!(
+        document.node(root_id).unwrap().version,
+        expected_node_version
+    );
+
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
+    host.begin_epoch(Epoch::new(7)).unwrap();
+    let request = host
+        .begin_if_current(
+            document,
+            ProcessorExpectation::new(Epoch::new(7), root_id, expected_input_version),
+            EchoProcessor::new().descriptor().clone(),
+            ConfigurationVersion::new("config.v1").unwrap(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+
+    assert!(request.is_none());
+    assert_eq!(host.metrics().issued_requests, 0);
+    assert_eq!(host.metrics().slots, 0);
 }
 
 #[test]
@@ -817,6 +875,159 @@ fn reconcile_invalidates_ready_and_pending_state_for_changed_nodes() {
     assert_eq!(
         host.complete(document_b, result).unwrap(),
         CompletionOutcome::Stale
+    );
+}
+
+#[test]
+fn reconcile_preserves_artifacts_and_leases_when_reparenting_keeps_processor_input_current() {
+    let left_id = NodeId::new(41);
+    let right_id = NodeId::new(42);
+    let child_id = NodeId::new(43);
+    let left = ContentNode::leaf(
+        left_id,
+        NodeStability::Stable,
+        SourceRange::new(SourceCursor::new(0), SourceCursor::new(1)),
+        ContentKind::BlockQuote {
+            style: Default::default(),
+        },
+    );
+    let right = ContentNode::leaf(
+        right_id,
+        NodeStability::Stable,
+        SourceRange::new(SourceCursor::new(1), SourceCursor::new(2)),
+        ContentKind::BlockQuote {
+            style: Default::default(),
+        },
+    );
+    let child = ContentNode::leaf(
+        child_id,
+        NodeStability::Stable,
+        SourceRange::new(SourceCursor::new(1), SourceCursor::new(1)),
+        ContentKind::Paragraph {},
+    );
+    let roots = ChildList::new(vec![left_id, right_id]);
+    let left_children = ChildList::new(vec![child_id]);
+    let mut reducer = Reducer::new();
+    reducer
+        .apply(
+            ChangeSet::start_epoch(
+                Epoch::new(7),
+                ChangeId::new("reparent:start").unwrap(),
+                None,
+                SourceDelta::append(SourceCursor::new(0), "ab"),
+                vec![
+                    ProjectionOp::InsertNode { node: left },
+                    ProjectionOp::InsertNode { node: right },
+                    ProjectionOp::InsertNode { node: child },
+                    ProjectionOp::SpliceChildren {
+                        owner: ChildListOwner::Node { node_id: left_id },
+                        expected_version: ChildList::empty().version().clone(),
+                        start: 0,
+                        delete_count: 0,
+                        insert: vec![child_id],
+                        new_version: left_children.version().clone(),
+                    },
+                    ProjectionOp::SpliceChildren {
+                        owner: ChildListOwner::Document,
+                        expected_version: ChildList::empty().version().clone(),
+                        start: 0,
+                        delete_count: 0,
+                        insert: roots.as_slice().to_vec(),
+                        new_version: roots.version().clone(),
+                    },
+                    ProjectionOp::AdvanceProjection {
+                        expected_cursor: SourceCursor::new(0),
+                        new_cursor: SourceCursor::new(2),
+                    },
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let ready_processor = EchoProcessor::new();
+    let pending_processor = FailingProcessor::new("test.reparent.pending", false);
+    let configuration = ConfigurationVersion::new("config.v1").unwrap();
+    let mut host = ArtifactHost::new(ProcessorLimits::default()).unwrap();
+    host.begin_epoch(Epoch::new(7)).unwrap();
+    let initial_document = reducer.document().unwrap();
+    let ready = host
+        .begin(
+            initial_document,
+            ready_processor.descriptor().clone(),
+            child_id,
+            configuration.clone(),
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    host.complete(initial_document, run_catching(&ready_processor, &ready))
+        .unwrap();
+    let pending = host
+        .begin(
+            initial_document,
+            pending_processor.descriptor().clone(),
+            child_id,
+            configuration,
+            ProcessingPolicy::StableOnly,
+        )
+        .unwrap();
+    let pending_result = run_catching(&pending_processor, &pending);
+    let initial_input_version = pending.input().version().clone();
+    host.take_changes();
+
+    let right_children = ChildList::new(vec![child_id]);
+    let impact = match reducer
+        .apply(
+            ChangeSet::new(
+                Epoch::new(7),
+                Sequence::new(1),
+                ChangeId::new("reparent:left-to-right").unwrap(),
+                SourceDelta::unchanged(SourceCursor::new(2)),
+                vec![
+                    ProjectionOp::SpliceChildren {
+                        owner: ChildListOwner::Node { node_id: left_id },
+                        expected_version: left_children.version().clone(),
+                        start: 0,
+                        delete_count: 1,
+                        insert: Vec::new(),
+                        new_version: ChildList::empty().version().clone(),
+                    },
+                    ProjectionOp::SpliceChildren {
+                        owner: ChildListOwner::Node { node_id: right_id },
+                        expected_version: ChildList::empty().version().clone(),
+                        start: 0,
+                        delete_count: 0,
+                        insert: vec![child_id],
+                        new_version: right_children.version().clone(),
+                    },
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    {
+        ApplyOutcome::Applied { impact, .. } => impact,
+        outcome => panic!("expected reparenting to apply, got {outcome:?}"),
+    };
+    assert!(impact.changed_nodes.contains(&child_id));
+    let reparented = reducer.document().unwrap();
+    assert_eq!(
+        ProcessorInput::from_document(reparented, child_id)
+            .unwrap()
+            .version(),
+        &initial_input_version
+    );
+
+    host.reconcile(reparented, &impact).unwrap();
+
+    assert!(host.take_changes().is_empty());
+    assert!(host.artifact(ready.key().slot()).is_some());
+    assert!(!pending.is_cancelled());
+    assert_eq!(host.metrics().retained_artifacts, 1);
+    assert_eq!(host.metrics().in_flight_jobs, 1);
+    assert_eq!(
+        host.complete(reparented, pending_result).unwrap(),
+        CompletionOutcome::Applied
     );
 }
 

@@ -28,10 +28,12 @@ import {
   defaultWasmLoader,
   drainOutput,
   loadWasmBindings,
-  type WasmBindings,
+  readProcessorSchedulerLimits,
+  type ValidatedWasmBindings,
   type WasmEngineSession,
   type WasmModuleLoader,
   type WasmOutput,
+  type WasmReducerSession,
 } from "./wasm.js";
 
 export type { WasmModuleLoader } from "./wasm.js";
@@ -42,8 +44,6 @@ export interface ProtocolLimitOptions {
   readonly maxSourceBytes?: DecimalInput;
   readonly maxNodes?: DecimalInput;
   readonly maxResources?: DecimalInput;
-  readonly maxDefinitions?: DecimalInput;
-  readonly maxDefinitionEdges?: DecimalInput;
   readonly maxOperations?: DecimalInput;
   readonly maxChangeStructuralItems?: DecimalInput;
   readonly maxDocumentStructuralItems?: DecimalInput;
@@ -53,10 +53,15 @@ export interface ProtocolLimitOptions {
   readonly maxNodeMetadataBytes?: DecimalInput;
   readonly maxChangeMetadataBytes?: DecimalInput;
   readonly maxDocumentMetadataBytes?: DecimalInput;
-  readonly maxDefinitionMetadataBytes?: DecimalInput;
   readonly maxTreeDepth?: DecimalInput;
+}
+
+export interface CompilerLimitOptions {
   readonly maxMarkdownEvents?: DecimalInput;
   readonly maxMarkdownOverlapWork?: DecimalInput;
+  readonly maxDefinitions?: DecimalInput;
+  readonly maxDefinitionEdges?: DecimalInput;
+  readonly maxDefinitionMetadataBytes?: DecimalInput;
 }
 
 export interface EngineLimitOptions {
@@ -97,6 +102,7 @@ export interface CustomBlockOptions {
 export interface MdstreamSessionOptions {
   readonly captureTransitions?: boolean;
   readonly protocol?: ProtocolLimitOptions;
+  readonly compiler?: CompilerLimitOptions;
   readonly engine?: EngineLimitOptions;
   readonly processor?: ProcessorLimitOptions;
   readonly wire?: WireLimitOptions;
@@ -162,24 +168,24 @@ export async function initMdstream(
 }
 
 export class MdstreamRuntime {
-  readonly #wasm: WasmBindings;
+  readonly #wasm: ValidatedWasmBindings;
   readonly abiVersion: number;
   readonly packageVersion: string;
   readonly bindingSchema: string;
   readonly bindingOptionsSchema: string;
   readonly transitionSchema: typeof TRANSITION_SCHEMA;
 
-  private constructor(wasm: WasmBindings) {
+  private constructor(wasm: ValidatedWasmBindings) {
     this.#wasm = wasm;
-    this.abiVersion = wasm.abiVersion();
-    this.packageVersion = wasm.packageVersion();
-    this.bindingSchema = wasm.bindingSchema();
-    this.bindingOptionsSchema = wasm.bindingOptionsSchema();
-    this.transitionSchema = TRANSITION_SCHEMA;
+    this.abiVersion = wasm.metadata.abiVersion;
+    this.packageVersion = wasm.metadata.packageVersion;
+    this.bindingSchema = wasm.metadata.bindingSchema;
+    this.bindingOptionsSchema = wasm.metadata.bindingOptionsSchema;
+    this.transitionSchema = wasm.metadata.transitionSchema;
   }
 
   /** @internal */
-  static fromWasm(wasm: WasmBindings): MdstreamRuntime {
+  static fromWasm(wasm: ValidatedWasmBindings): MdstreamRuntime {
     return new MdstreamRuntime(wasm);
   }
 
@@ -205,16 +211,20 @@ export class MdstreamRuntime {
       throw MdstreamError.from(error);
     }
     try {
-      const store = new RustBackedStore(
-        new this.#wasm.MdstreamReducerSession(prepared.encodedJson),
-        this.bindingSchema,
-        prepared.captureTransitions,
-      );
-      return MdstreamEngine.fromSessions(
-        engine,
-        store,
-        prepared.schedulerLimits,
-      );
+      const reducer = new this.#wasm.MdstreamReducerSession(prepared.encodedJson);
+      let store: RustBackedStore | undefined;
+      try {
+        const schedulerLimits = readProcessorSchedulerLimits(reducer);
+        store = new RustBackedStore(
+          reducer,
+          this.bindingSchema,
+          prepared.captureTransitions,
+        );
+        return MdstreamEngine.fromSessions(engine, store, schedulerLimits);
+      } catch (error) {
+        releaseFailedReducer(reducer, store);
+        throw error;
+      }
     } catch (error) {
       engine.free();
       throw MdstreamError.from(error);
@@ -589,7 +599,6 @@ async function createRuntime(loader: WasmModuleLoader): Promise<MdstreamRuntime>
 interface PreparedSessionOptions {
   readonly encodedJson: string | undefined;
   readonly captureTransitions: boolean;
-  readonly schedulerLimits: ProcessorSchedulerLimits;
 }
 
 function prepareSessionOptions(
@@ -600,35 +609,28 @@ function prepareSessionOptions(
     return {
       encodedJson: undefined,
       captureTransitions: false,
-      schedulerLimits: { maxInFlightJobs: 32, maxCandidates: 256 },
     };
   }
   const normalized = normalizeOptions(options) as Record<string, unknown>;
-  const processor = recordOrEmpty(normalized.processor);
   return {
     encodedJson: JSON.stringify({ schema, ...normalized }),
     captureTransitions: normalized.capture_transitions === true,
-    schedulerLimits: {
-      maxInFlightJobs: schedulingLimit(processor.max_in_flight_jobs, 32),
-      maxCandidates: schedulingLimit(processor.max_slots, 256),
-    },
   };
 }
 
-function schedulingLimit(value: unknown, fallback: number): number {
-  if (value !== undefined && typeof value !== "string") {
-    throw new TypeError("mdstream processor limits must be decimal strings");
+function releaseFailedReducer(
+  reducer: WasmReducerSession,
+  store: RustBackedStore | undefined,
+): void {
+  try {
+    if (store === undefined) {
+      reducer.free();
+    } else {
+      store.close();
+    }
+  } catch {
+    // Preserve the construction failure that triggered cleanup.
   }
-  const parsed = value === undefined ? BigInt(fallback) : BigInt(value);
-  return parsed > BigInt(Number.MAX_SAFE_INTEGER)
-    ? Number.MAX_SAFE_INTEGER
-    : Number(parsed);
-}
-
-function recordOrEmpty(value: unknown): Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Readonly<Record<string, unknown>>
-    : {};
 }
 
 function normalizeOptions(value: unknown): unknown {

@@ -14,11 +14,11 @@ import {
   type DocumentSummaryView,
   type Epoch,
   type NodeId,
-  type NodeVersion,
   type NodeView,
   type PendingSourceView,
   type ProcessorCompletionView,
   type ProcessorFailureCode,
+  type ProcessorInputVersion,
   type ProcessorRequestView,
   type ReducerStatusView,
   type ReducerUpdateView,
@@ -129,7 +129,7 @@ export interface MdstreamStore extends MdstreamStoreView {
 export interface BeginProcessorOptions {
   readonly expectedEpoch: Epoch;
   readonly nodeId: NodeId;
-  readonly expectedNodeVersion: NodeVersion;
+  readonly expectedInputVersion: ProcessorInputVersion;
   readonly processorId: string;
   readonly processorVersion: string;
   readonly configurationVersion: string;
@@ -473,7 +473,7 @@ export class RustBackedStore implements MdstreamStore {
         this.#session.beginProcessorIfCurrent(
           options.expectedEpoch,
           options.nodeId,
-          options.expectedNodeVersion,
+          options.expectedInputVersion,
           options.processorId,
           options.processorVersion,
           options.configurationVersion,

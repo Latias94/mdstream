@@ -5,7 +5,7 @@ use pulldown_cmark::{CowStr, Event, Parser, RefDefs, Tag, TagEnd};
 use unicase::UniCase;
 
 use crate::compiler::{
-    CustomBlockSpec,
+    CompilerLimits, CustomBlockSpec,
     custom::{
         CustomBlockMatch, CustomStartContext, PendingCustomState,
         find_custom_blocks_with_node_budget, parse_custom_attributes,
@@ -49,8 +49,7 @@ pub(super) fn compile_markdown(
     compile_markdown_with_custom(
         source,
         absolute_base,
-        &[],
-        ProtocolLimits::default(),
+        MarkdownConfig::new(&[], ProtocolLimits::default(), CompilerLimits::default()),
         DraftUsage::default(),
         CustomStartContext::DocumentStart,
         true,
@@ -67,11 +66,31 @@ pub(crate) struct MarkdownCompilation {
     pub(crate) pending_custom: Option<PendingCustomState>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct MarkdownConfig<'config> {
+    custom_blocks: &'config [CustomBlockSpec],
+    protocol_limits: ProtocolLimits,
+    compiler_limits: CompilerLimits,
+}
+
+impl<'config> MarkdownConfig<'config> {
+    pub(crate) const fn new(
+        custom_blocks: &'config [CustomBlockSpec],
+        protocol_limits: ProtocolLimits,
+        compiler_limits: CompilerLimits,
+    ) -> Self {
+        Self {
+            custom_blocks,
+            protocol_limits,
+            compiler_limits,
+        }
+    }
+}
+
 pub(crate) fn compile_markdown_with_custom(
     source: &str,
     absolute_base: SourceCursor,
-    custom_blocks: &[CustomBlockSpec],
-    limits: ProtocolLimits,
+    config: MarkdownConfig<'_>,
     baseline: DraftUsage,
     custom_start_context: CustomStartContext,
     confirm_eof: bool,
@@ -80,8 +99,7 @@ pub(crate) fn compile_markdown_with_custom(
     let mut compiler = MarkdownCompiler::new(
         source,
         absolute_base,
-        custom_blocks,
-        limits,
+        config,
         baseline,
         custom_start_context,
         confirm_eof,
@@ -108,8 +126,7 @@ struct CustomBody {
 struct MarkdownCompiler<'source, 'config> {
     source: &'source str,
     absolute_base: SourceCursor,
-    custom_blocks: &'config [CustomBlockSpec],
-    limits: ProtocolLimits,
+    config: MarkdownConfig<'config>,
     budget: DraftBudget,
     roots: Vec<DraftNode>,
     resources: Vec<DraftResource>,
@@ -129,8 +146,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
     const fn new(
         source: &'source str,
         absolute_base: SourceCursor,
-        custom_blocks: &'config [CustomBlockSpec],
-        limits: ProtocolLimits,
+        config: MarkdownConfig<'config>,
         baseline: DraftUsage,
         custom_start_context: CustomStartContext,
         confirm_eof: bool,
@@ -138,9 +154,8 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
         Self {
             source,
             absolute_base,
-            custom_blocks,
-            limits,
-            budget: DraftBudget::new(limits, baseline),
+            config,
+            budget: DraftBudget::new(config.protocol_limits, baseline),
             roots: Vec::new(),
             resources: Vec::new(),
             definitions: Vec::new(),
@@ -160,16 +175,16 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
         if self.source.is_empty() {
             return Ok(());
         }
-        if self.custom_blocks.is_empty() {
+        if self.config.custom_blocks.is_empty() {
             return self.compile_markdown_fragment(0..self.source.len());
         }
 
         let scan = find_custom_blocks_with_node_budget(
             self.source,
-            self.custom_blocks,
-            self.limits,
+            self.config.custom_blocks,
+            self.config.protocol_limits,
             self.budget.usage().nodes,
-            self.limits.max_nodes,
+            self.config.protocol_limits.max_nodes,
             self.custom_start_context,
             self.confirm_eof,
         )
@@ -270,17 +285,20 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
                 fragment,
                 parser.into_offset_iter(),
                 self.stack.len(),
-                self.limits.max_markdown_events,
-                self.limits.max_tree_depth,
+                self.config.compiler_limits.max_markdown_events,
+                self.config.protocol_limits.max_tree_depth,
             )?;
             self.record_parse(fragment.len())?;
-            let unresolved =
-                classify_unresolved_footnotes(fragment, &events, self.limits.max_markdown_events)?;
+            let unresolved = classify_unresolved_footnotes(
+                fragment,
+                &events,
+                self.config.compiler_limits.max_markdown_events,
+            )?;
             let events = overlay_unresolved_footnotes(
                 fragment,
                 events,
                 unresolved,
-                self.limits.max_markdown_overlap_work,
+                self.config.compiler_limits.max_markdown_overlap_work,
             )?;
             self.consume_fragment_events(events, range.start)?;
         } else {
@@ -353,11 +371,13 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
         self.ensure_tree_depth(self.stack.len().saturating_add(1))?;
         self.budget.reserve_node(0)?;
         let spec = self
+            .config
             .custom_blocks
             .get(block.spec_index)
             .ok_or(MarkdownError::Unsupported("custom-block-spec"))?;
-        let attributes = parse_custom_attributes(block.attributes, spec, self.limits)
-            .map_err(markdown_custom_error)?;
+        let attributes =
+            parse_custom_attributes(block.attributes, spec, self.config.protocol_limits)
+                .map_err(markdown_custom_error)?;
         let content = DraftContentKind::Custom {
             namespace: spec.namespace().to_string(),
             name: spec.name().to_string(),
@@ -886,14 +906,14 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
             .len()
             .checked_add(1)
             .ok_or(MarkdownError::NumericOverflow("child-list length"))?;
-        if !root && child_count > self.limits.max_children_per_list {
+        if !root && child_count > self.config.protocol_limits.max_children_per_list {
             return Err(MarkdownError::LimitExceeded {
                 field: "children",
-                limit: self.limits.max_children_per_list,
+                limit: self.config.protocol_limits.max_children_per_list,
                 actual: child_count,
             });
         }
-        let metadata_bytes = draft_node_metadata(&node.content, self.limits)?;
+        let metadata_bytes = draft_node_metadata(&node.content, self.config.protocol_limits)?;
         self.budget.reserve_node_payload(root, metadata_bytes)?;
         let target = self
             .stack
@@ -923,8 +943,13 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
         }
 
         let source = absolute_range(source, self.absolute_base)?;
-        let metadata_bytes =
-            draft_resource_metadata_fields(role, reference_label, destination, title, self.limits)?;
+        let metadata_bytes = draft_resource_metadata_fields(
+            role,
+            reference_label,
+            destination,
+            title,
+            self.config.protocol_limits,
+        )?;
         self.budget.reserve_resource(metadata_bytes)?;
 
         let index = DraftResourceIndex::new(self.resources.len());
@@ -1011,7 +1036,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
                     target: None,
                 },
             );
-            let metadata_bytes = draft_node_metadata(&node.content, self.limits)?;
+            let metadata_bytes = draft_node_metadata(&node.content, self.config.protocol_limits)?;
             definition_nodes.push(node);
             definition_metadata.push(metadata_bytes);
         }
@@ -1021,7 +1046,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
             self.budget
                 .reserve_node_payload(index < root_definitions, metadata_bytes)?;
         }
-        let usage = validate_draft_limits(&forest, self.limits)?;
+        let usage = validate_draft_limits(&forest, self.config.protocol_limits)?;
         let baseline = self.budget.baseline();
         debug_assert_eq!(
             DraftUsage {
@@ -1046,10 +1071,10 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
     }
 
     fn ensure_tree_depth(&self, actual: usize) -> Result<(), MarkdownError> {
-        if actual > self.limits.max_tree_depth {
+        if actual > self.config.protocol_limits.max_tree_depth {
             Err(MarkdownError::LimitExceeded {
                 field: "tree.depth",
-                limit: self.limits.max_tree_depth,
+                limit: self.config.protocol_limits.max_tree_depth,
                 actual,
             })
         } else {

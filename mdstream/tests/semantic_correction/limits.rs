@@ -1,4 +1,4 @@
-use mdstream::StreamEngine;
+use mdstream::{CompilerLimits, StreamEngine};
 use mdstream_protocol::{ProjectionOp, ProtocolLimits};
 
 #[test]
@@ -81,9 +81,9 @@ fn late_definition_work_is_exactly_proportional_to_its_reverse_edges() {
 #[test]
 fn definition_edge_limit_rejects_the_entire_transition_and_allows_retry() {
     let mut engine = StreamEngine::builder()
-        .protocol_limits(ProtocolLimits {
+        .compiler_limits(CompilerLimits {
             max_definition_edges: 1,
-            ..ProtocolLimits::default()
+            ..CompilerLimits::default()
         })
         .build()
         .unwrap();
@@ -236,9 +236,9 @@ fn optional_definition_title_limit_accepts_the_boundary_and_rejects_boundary_plu
 #[test]
 fn cumulative_definition_metadata_limit_is_atomic_at_boundary_plus_one() {
     let mut engine = StreamEngine::builder()
-        .protocol_limits(ProtocolLimits {
+        .compiler_limits(CompilerLimits {
             max_definition_metadata_bytes: 12,
-            ..ProtocolLimits::default()
+            ..CompilerLimits::default()
         })
         .build()
         .unwrap();
@@ -283,10 +283,10 @@ fn cumulative_definition_metadata_limit_is_atomic_at_boundary_plus_one() {
 #[test]
 fn unused_definitions_are_retained_under_independent_atomic_limits() {
     let mut engine = StreamEngine::builder()
-        .protocol_limits(ProtocolLimits {
+        .compiler_limits(CompilerLimits {
             max_definitions: 1,
             max_definition_metadata_bytes: 3 * "a".len() + "/a".len(),
-            ..ProtocolLimits::default()
+            ..CompilerLimits::default()
         })
         .build()
         .unwrap();

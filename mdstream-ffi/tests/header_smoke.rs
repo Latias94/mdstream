@@ -33,6 +33,7 @@ int mdstream_header_smoke(void) {
     MdstreamEngineResult engine = {MDSTREAM_OK, 0, buffer};
     MdstreamReducerResult reducer = {MDSTREAM_OK, 0, buffer};
     MdstreamPayloadResult payload = {MDSTREAM_OK, 0, buffer};
+    MdstreamProcessorSchedulerLimits scheduler_limits = {0};
     uint32_t (*abi_version)(void) = &mdstream_abi_version;
     const char* (*package_version)(void) = &mdstream_package_version;
     const char* (*binding_schema)(void) = &mdstream_binding_schema;
@@ -44,6 +45,7 @@ int mdstream_header_smoke(void) {
     size_t (*reducer_result_size)(void) = &mdstream_reducer_result_struct_size;
     size_t (*payload_result_size)(void) = &mdstream_payload_result_struct_size;
     size_t (*allocation_size)(void) = &mdstream_allocation_metrics_struct_size;
+    size_t (*scheduler_limits_size)(void) = &mdstream_processor_scheduler_limits_struct_size;
     MdstreamAllocationMetrics (*allocation_metrics)(void) = &mdstream_allocation_metrics;
     MdstreamEngineResult (*engine_new)(const uint8_t*, size_t) = &mdstream_engine_new;
     void (*engine_free)(MdstreamEngine*) = &mdstream_engine_free;
@@ -51,6 +53,7 @@ int mdstream_header_smoke(void) {
     MdstreamCallResult (*engine_execute)(MdstreamEngine*, const uint8_t*, size_t) = &mdstream_engine_execute;
     MdstreamReducerResult (*reducer_new)(const uint8_t*, size_t) = &mdstream_reducer_new;
     void (*reducer_free)(MdstreamReducer*) = &mdstream_reducer_free;
+    MdstreamProcessorSchedulerLimits (*reducer_scheduler_limits)(const MdstreamReducer*) = &mdstream_reducer_processor_scheduler_limits;
     MdstreamCallResult (*reducer_apply)(MdstreamReducer*, const uint8_t*, size_t) = &mdstream_reducer_apply_change;
     MdstreamCallResult (*reducer_recover)(MdstreamReducer*, const uint8_t*, size_t) = &mdstream_reducer_recover_snapshot;
     MdstreamCallResult (*reducer_execute)(MdstreamReducer*, const uint8_t*, size_t) = &mdstream_reducer_execute;
@@ -64,6 +67,7 @@ int mdstream_header_smoke(void) {
     (void)engine;
     (void)reducer;
     (void)payload;
+    (void)scheduler_limits;
     (void)abi_version;
     (void)package_version;
     (void)binding_schema;
@@ -75,6 +79,7 @@ int mdstream_header_smoke(void) {
     (void)reducer_result_size;
     (void)payload_result_size;
     (void)allocation_size;
+    (void)scheduler_limits_size;
     (void)allocation_metrics;
     (void)engine_new;
     (void)engine_free;
@@ -82,6 +87,7 @@ int mdstream_header_smoke(void) {
     (void)engine_execute;
     (void)reducer_new;
     (void)reducer_free;
+    (void)reducer_scheduler_limits;
     (void)reducer_apply;
     (void)reducer_recover;
     (void)reducer_execute;

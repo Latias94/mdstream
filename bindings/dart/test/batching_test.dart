@@ -83,6 +83,25 @@ void main() {
       expect(batcher.metrics.appendCalls, '1');
     });
 
+    test('rejects unsupported lifecycle operations before flushing', () {
+      for (final operation in <List<void> Function(LosslessInputBatcher<void>)>[
+        (batcher) => batcher.finish(),
+        (batcher) => batcher.reset(),
+        (batcher) => batcher.createRecoverySnapshot(),
+      ]) {
+        var appendCalls = 0;
+        final batcher = LosslessInputBatcher<void>(
+          maxBatchBytes: 16,
+          append: (_) => appendCalls += 1,
+        );
+        batcher.push('pending');
+
+        expect(() => operation(batcher), throwsStateError);
+        expect(appendCalls, 0);
+        expect(batcher.metrics.pendingBytes, '7');
+      }
+    });
+
     test('flushes before lifecycle and snapshot callbacks', () {
       final events = <String>[];
       final batcher = LosslessInputBatcher<String>(

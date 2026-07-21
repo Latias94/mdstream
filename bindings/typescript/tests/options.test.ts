@@ -23,6 +23,14 @@ describe("binding option parity", () => {
         throw new Error("not used");
       }
 
+      processorMaxInFlightJobs(): never {
+        throw new Error("not used");
+      }
+
+      processorMaxQueuedCandidates(): never {
+        throw new Error("not used");
+      }
+
       free(): void {}
     }
     const loader: WasmModuleLoader = () => ({
@@ -51,6 +59,15 @@ describe("binding option parity", () => {
       captureTransitions: true,
       wire: { maxReducerUpdateBytes: "32768" },
     }).close();
+    runtime.createStore({
+      compiler: {
+        maxMarkdownEvents: "8",
+        maxMarkdownOverlapWork: 16n,
+        maxDefinitions: "32",
+        maxDefinitionEdges: 64n,
+        maxDefinitionMetadataBytes: "128",
+      },
+    }).close();
 
     expect(encoded).toEqual([
       {
@@ -71,6 +88,16 @@ describe("binding option parity", () => {
         capture_transitions: true,
         wire: { max_reducer_update_bytes: "32768" },
       },
+      {
+        schema: "mdstream.bindings-options/0.4",
+        compiler: {
+          max_markdown_events: "8",
+          max_markdown_overlap_work: "16",
+          max_definitions: "32",
+          max_definition_edges: "64",
+          max_definition_metadata_bytes: "128",
+        },
+      },
     ]);
 
     const _removedOption: MdstreamSessionOptions = {
@@ -80,9 +107,19 @@ describe("binding option parity", () => {
       },
     };
     expect(_removedOption.wire).toBeDefined();
+
+    const _movedProtocolOption: MdstreamSessionOptions = {
+      protocol: {
+        // @ts-expect-error Definition registry budgets belong to the compiler.
+        maxDefinitions: "32",
+      },
+    };
+    expect(_movedProtocolOption.protocol).toBeDefined();
   });
 
   it("snapshots getter-backed options exactly once before constructing sessions", async () => {
+    let nativeJobReads = 0;
+    let nativeSlotReads = 0;
     class EngineSession {
       free(): void {}
     }
@@ -93,6 +130,16 @@ describe("binding option parity", () => {
 
       beginProcessorIfCurrent(): never {
         throw new Error("not used");
+      }
+
+      processorMaxInFlightJobs(): number {
+        nativeJobReads += 1;
+        return 2;
+      }
+
+      processorMaxQueuedCandidates(): number {
+        nativeSlotReads += 1;
+        return 4;
       }
 
       free(): void {}
@@ -138,10 +185,12 @@ describe("binding option parity", () => {
 
     runtime.createEngine(options).close();
 
-    expect({ captureReads, jobReads, slotReads }).toEqual({
+    expect({ captureReads, jobReads, slotReads, nativeJobReads, nativeSlotReads }).toEqual({
       captureReads: 1,
       jobReads: 1,
       slotReads: 1,
+      nativeJobReads: 1,
+      nativeSlotReads: 1,
     });
   });
 });

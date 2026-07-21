@@ -14,4 +14,4 @@ pub(crate) use budget::DraftUsage;
 pub use diagnostic::MarkdownDiagnostic;
 pub(crate) use diagnostic::MarkdownError;
 pub(crate) use limits::validate_draft_limits;
-pub(crate) use parser::compile_markdown_with_custom;
+pub(crate) use parser::{MarkdownConfig, compile_markdown_with_custom};

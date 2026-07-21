@@ -8,14 +8,14 @@ import 'support/native_library.dart';
 
 final _capturedOptions = MdstreamSessionOptions(
   captureTransitions: true,
-  protocol: const {
-    'max_source_bytes': '1048576',
-    'max_nodes': '4096',
-    'max_resources': '256',
-    'max_operations': '4096',
-    'max_change_structural_items': '4096',
-    'max_children_per_list': '4096',
-  },
+  protocol: MdstreamProtocolLimits(
+    maxSourceBytes: '1048576',
+    maxNodes: '4096',
+    maxResources: '256',
+    maxOperations: '4096',
+    maxChangeStructuralItems: '4096',
+    maxChildrenPerList: '4096',
+  ),
 );
 
 void main() {
@@ -59,7 +59,9 @@ void main() {
   }, skip: skip);
 
   test('resource listener can dispose during a committed transition', () async {
-    const resourceId = '154582791709149689190109869243805354114';
+    final resourceId = ResourceId.parse(
+      '154582791709149689190109869243805354114',
+    );
     final runtime = MdstreamRuntime.openPath(libraryPath!);
     final controller = MdstreamController.fromRuntime(runtime);
     final processor = _CountingProcessor('test.flutter.dispose.resource');
@@ -263,7 +265,7 @@ void main() {
   );
 
   test(
-    'transition listener can dispose before invalidations and processor scans',
+    'transition listener cannot dispose before invalidations and processor scans',
     () async {
       final runtime = MdstreamRuntime.openPath(libraryPath!);
       final controller = MdstreamController.fromRuntime(
@@ -277,19 +279,19 @@ void main() {
       controller.addListener(() => rootNotifications += 1);
       controller.transitions.addListener(() {
         transitionNotifications += 1;
-        controller.dispose();
+        expect(controller.dispose, throwsStateError);
       });
 
       final reportedErrors = await _captureFlutterErrors(() async {
         expect(() => controller.append('paragraph'), returnsNormally);
-        await _flushMicrotasks();
+        await controller.whenProcessorsIdle();
       });
 
       expect(reportedErrors, isEmpty);
-      expect(transitionNotifications, 1);
-      expect(rootNotifications, 0);
-      expect(processor.matchesCalls, 0);
-      expect(processor.processCalls, 0);
+      expect(transitionNotifications, greaterThan(0));
+      expect(rootNotifications, greaterThan(0));
+      expect(processor.matchesCalls, greaterThan(0));
+      expect(processor.processCalls, greaterThan(0));
       controller.dispose();
       expect(runtime.nativeAllocations.isZero, isTrue);
     },

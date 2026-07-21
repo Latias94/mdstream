@@ -4,10 +4,23 @@ import {
   initMdstream,
   type ContentNodeView,
   type MdstreamSessionOptions,
+  type ProcessorErrorEvent,
   type ProcessorRegistration,
   type ProcessorOutput,
   type ProcessorRequestView,
 } from "../src/index.js";
+import { ProcessorScheduler } from "../src/processors.js";
+import {
+  RustBackedStore,
+  type BeginProcessorOptions,
+  type ReducerResult,
+} from "../src/store.js";
+import type {
+  Epoch,
+  NodeId,
+  NodeView,
+  ProcessorInputVersion,
+} from "../src/views.js";
 import { nodeWasmLoader, textDecoder } from "./helpers.js";
 
 const capturedProcessorOptions = {
@@ -23,6 +36,160 @@ const capturedProcessorOptions = {
 } satisfies MdstreamSessionOptions;
 
 describe("host-side processor scheduling", () => {
+  it("rematches a topology-only input change after rejecting a stale candidate", async () => {
+    const epoch = "1" as Epoch;
+    const nodeId = "7" as NodeId;
+    const childA = "8" as NodeId;
+    const childB = "9" as NodeId;
+    const nodeVersion = "node:same" as ContentNodeView["version"];
+    const inputA = "input:A" as ProcessorInputVersion;
+    const inputB = "input:B" as ProcessorInputVersion;
+    const view = (inputVersion: ProcessorInputVersion, child: NodeId): NodeView => ({
+      schema: "mdstream.bindings/0.4",
+      kind: "node_view",
+      node: {
+        id: nodeId,
+        version: nodeVersion,
+        stability: "stable",
+        source: { start: "0", end: "0" } as ContentNodeView["source"],
+        body: { start: "0", end: "0" } as ContentNodeView["body"],
+        children: {
+          version: `children:${child}` as ContentNodeView["children"]["version"],
+          children: [child],
+        },
+        content: { kind: "paragraph" },
+      },
+      bodyText: "",
+      processorInputVersion: inputVersion,
+    });
+    const initialView = view(inputA, childA);
+    const replacementView = view(inputB, childB);
+    let currentView = initialView;
+    const conditionalBeginInputs: ProcessorInputVersion[] = [];
+    const issuedRequestInputs: ProcessorInputVersion[] = [];
+    const emptyResult = {
+      updates: [],
+      processorRequests: [],
+      processorCompletions: [],
+      artifactChanges: [],
+      outputPayloadBytes: "0",
+    } as unknown as ReducerResult;
+    const store = {
+      getSnapshot: () => ({
+        document: {
+          coordinate: { epoch },
+          roots: { children: [nodeId] },
+        },
+      }),
+      getNodeSnapshot: (requestedNodeId: NodeId) =>
+        requestedNodeId === nodeId ? currentView : undefined,
+      beginProcessor(options: BeginProcessorOptions): ReducerResult {
+        conditionalBeginInputs.push(options.expectedInputVersion);
+        if (options.expectedInputVersion !== currentView.processorInputVersion) {
+          return emptyResult;
+        }
+        issuedRequestInputs.push(currentView.processorInputVersion);
+        return {
+          ...emptyResult,
+          processorRequests: [{
+            schema: "mdstream.bindings/0.4",
+            kind: "processor_request",
+            requestId: "1",
+            key: {
+              epoch,
+              nodeId,
+              processorId: options.processorId,
+              nodeVersion,
+              inputVersion: currentView.processorInputVersion,
+              processorVersion: options.processorVersion,
+              configurationVersion: options.configurationVersion,
+              generation: "1",
+            },
+            input: { node: currentView.node, body: "", resource: null },
+          }],
+        } as unknown as ReducerResult;
+      },
+      completeProcessorText: () => emptyResult,
+      cancelProcessor: () => emptyResult,
+      runDocumentOperation: <Result>(operation: () => Result): Result => operation(),
+    } as unknown as RustBackedStore;
+    const scheduler = new ProcessorScheduler(store, {
+      maxInFlightJobs: 8,
+      maxCandidates: 8,
+    });
+    const processedInputs: ProcessorInputVersion[] = [];
+    const matchedViews: Array<{
+      readonly nodeVersion: ContentNodeView["version"];
+      readonly childrenVersion: ContentNodeView["children"]["version"];
+      readonly children: readonly NodeId[];
+      readonly inputVersion: ProcessorInputVersion;
+    }> = [];
+    scheduler.register({
+      descriptor: { id: "test.ts.input-freshness", version: "v1" },
+      configurationVersion: "default",
+      matches(node) {
+        matchedViews.push({
+          nodeVersion: node.version,
+          childrenVersion: node.children.version,
+          children: node.children.children,
+          inputVersion: currentView.processorInputVersion,
+        });
+        if (matchedViews.length === 1) {
+          currentView = replacementView;
+          scheduler.handleStoreEvents({
+            updates: [{
+              outcome: { kind: "applied" },
+              impact: {
+                fullReplace: false,
+                changedNodeIds: [nodeId],
+                removedNodeIds: [],
+              },
+            }],
+            artifactChanges: [],
+          } as never);
+        }
+        return true;
+      },
+      process(request) {
+        processedInputs.push(request.key.inputVersion);
+        return {
+          kind: "text",
+          protocol: "test.ts.input-freshness/1",
+          mediaType: "text/plain",
+          text: "current",
+        };
+      },
+    });
+
+    await scheduler.whenIdle();
+
+    expect(replacementView.node).toEqual({
+      ...initialView.node,
+      children: replacementView.node.children,
+    });
+    expect(replacementView.processorInputVersion).not.toBe(
+      initialView.processorInputVersion,
+    );
+    expect(matchedViews).toEqual([
+      {
+        nodeVersion,
+        childrenVersion: initialView.node.children.version,
+        children: [childA],
+        inputVersion: inputA,
+      },
+      {
+        nodeVersion,
+        childrenVersion: replacementView.node.children.version,
+        children: [childB],
+        inputVersion: inputB,
+      },
+    ]);
+    expect(conditionalBeginInputs).toEqual([inputA, inputB]);
+    expect(issuedRequestInputs).toEqual([inputB]);
+    expect(processedInputs).toEqual([inputB]);
+    scheduler.close();
+  });
+
   it("scans the current tree once when a processor is registered after content exists", async () => {
     const runtime = await initMdstream({ loader: nodeWasmLoader });
     const engine = runtime.createEngine();
@@ -141,6 +308,45 @@ describe("host-side processor scheduling", () => {
     replacement.dispose();
     await engine.whenProcessorsIdle();
     engine.close();
+  });
+
+  it("rejects invalid processor identities before scanning nodes", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine();
+    const beginProcessor = vi.spyOn(RustBackedStore.prototype, "beginProcessor");
+    engine.append("identity validation input");
+    engine.finish();
+    const invalidValues = ["", "bad/id", "non-ascii-é", "x".repeat(129)];
+    try {
+      for (const [field, invalid] of [
+        ["id", invalidValues],
+        ["version", invalidValues],
+        ["configuration", invalidValues],
+      ] as const) {
+        for (const value of invalid) {
+          expect(() => engine.registerProcessor({
+            descriptor: {
+              id: field === "id" ? value : "test.ts.valid-id",
+              version: field === "version" ? value : "v1",
+            },
+            configurationVersion: field === "configuration" ? value : "default",
+            matches: () => true,
+            process: () => ({
+              kind: "text",
+              protocol: "test.ts.identity-validation/1",
+              mediaType: "text/plain",
+              text: "unreachable",
+            }),
+          })).toThrow(TypeError);
+        }
+      }
+
+      await engine.whenProcessorsIdle();
+      expect(beginProcessor).not.toHaveBeenCalled();
+    } finally {
+      beginProcessor.mockRestore();
+      engine.close();
+    }
   });
 
   it("does not execute a processor unregistered by its pending notification", async () => {
@@ -529,6 +735,585 @@ describe("host-side processor scheduling", () => {
     engine.close();
   });
 
+  it("continues past a permanent resource limit while another job is active", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine({
+      processor: {
+        maxInputBytes: 1024n,
+        maxInFlightJobs: 2n,
+      },
+    });
+    const requests: ProcessorRequestView[] = [];
+    const errors: ProcessorErrorEvent[] = [];
+    let releaseFirst: (() => void) | undefined;
+    engine.subscribeProcessorErrors((event) => errors.push(event));
+
+    engine.append(`first\n\n${"x".repeat(4000)}\n\nthird`);
+    engine.finish();
+    engine.registerProcessor({
+      descriptor: { id: "test.ts.permanent-limit", version: "v1" },
+      configurationVersion: "test.ts.permanent-limit.default",
+      matches: (node) => node.content.kind === "paragraph",
+      process(request) {
+        requests.push(request);
+        const output: ProcessorOutput = {
+          kind: "text",
+          protocol: "test.ts.permanent-limit/1",
+          mediaType: "text/plain",
+          text: request.input.body,
+        };
+        if (request.input.body !== "first") {
+          return output;
+        }
+        return new Promise<ProcessorOutput>((resolve) => {
+          releaseFirst = () => resolve(output);
+        });
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(requests.map((request) => request.input.body)).toEqual([
+        "first",
+        "third",
+      ]);
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      phase: "begin",
+      error: { detailCode: "processor.resource_limit.input_bytes" },
+    });
+
+    releaseFirst?.();
+    await engine.whenProcessorsIdle();
+
+    expect(engine.store.processorMetrics().issuedRequests).toBe("2");
+    engine.close();
+  });
+
+  it("crosses a task boundary between dispatch quanta", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine({
+      processor: {
+        maxInFlightJobs: 128n,
+        maxSlots: 128n,
+      },
+    });
+    const process = vi.fn<() => ProcessorOutput>(() => ({
+      kind: "text",
+      protocol: "test.ts.dispatch-quantum/1",
+      mediaType: "text/plain",
+      text: "done",
+    }));
+    engine.append(
+      Array.from({ length: 96 }, (_, index) => `paragraph ${index}`).join("\n\n"),
+    );
+    engine.finish();
+    engine.registerProcessor({
+      descriptor: { id: "test.ts.dispatch-quantum", version: "v1" },
+      configurationVersion: "test.ts.dispatch-quantum.default",
+      matches: (node) => node.content.kind === "paragraph",
+      process,
+    });
+    const taskMarker = new Promise<{
+      readonly issuedRequests: string;
+      readonly processCalls: number;
+    }>((resolve) => {
+      setTimeout(() => {
+        resolve({
+          issuedRequests: engine.store.processorMetrics().issuedRequests,
+          processCalls: process.mock.calls.length,
+        });
+      }, 0);
+    });
+
+    await Promise.resolve();
+
+    expect(engine.store.processorMetrics().issuedRequests).toBe("32");
+    expect(process).not.toHaveBeenCalled();
+
+    await expect(taskMarker).resolves.toEqual({
+      issuedRequests: "32",
+      processCalls: 32,
+    });
+
+    await engine.whenProcessorsIdle();
+
+    expect(process).toHaveBeenCalledTimes(96);
+    expect(engine.store.processorMetrics().issuedRequests).toBe("96");
+    engine.close();
+  });
+
+  it("lets timer work run before a large tree scan completes", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const candidateCount = 256;
+    const engine = runtime.createEngine({
+      processor: {
+        maxInFlightJobs: BigInt(candidateCount),
+        maxSlots: BigInt(candidateCount),
+      },
+    });
+    const matches = vi.fn(
+      (node: ContentNodeView) => node.content.kind === "paragraph",
+    );
+    const process = vi.fn<() => ProcessorOutput>(() => ({
+      kind: "text",
+      protocol: "test.ts.scan-quantum/1",
+      mediaType: "text/plain",
+      text: "done",
+    }));
+    engine.append(
+      Array.from(
+        { length: candidateCount },
+        (_, index) => `paragraph ${index}`,
+      ).join("\n\n"),
+    );
+    engine.finish();
+    engine.registerProcessor({
+      descriptor: { id: "test.ts.scan-quantum", version: "v1" },
+      configurationVersion: "test.ts.scan-quantum.default",
+      matches,
+      process,
+    });
+    const matchesAtTimer = await new Promise<number>((resolve) => {
+      setTimeout(() => resolve(matches.mock.calls.length), 0);
+    });
+
+    await engine.whenProcessorsIdle();
+
+    expect(matches.mock.calls.length).toBeGreaterThan(matchesAtTimer);
+    expect(process).toHaveBeenCalledTimes(candidateCount);
+    engine.close();
+  });
+
+  it("counts each processor match against the scan quantum", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine();
+    const processorCount = 256;
+    const matches = vi.fn(() => false);
+    engine.append("one node");
+    engine.finish();
+    for (let index = 0; index < processorCount; index += 1) {
+      engine.registerProcessor({
+        descriptor: { id: `test.ts.match-quantum.${index}`, version: "v1" },
+        configurationVersion: "test.ts.match-quantum.default",
+        matches,
+        process: () => ({
+          kind: "text",
+          protocol: "test.ts.match-quantum/1",
+          mediaType: "text/plain",
+          text: "unreachable",
+        }),
+      });
+    }
+
+    const matchesAtTimer = await new Promise<number>((resolve) => {
+      setTimeout(() => resolve(matches.mock.calls.length), 0);
+    });
+    await engine.whenProcessorsIdle();
+
+    expect(matchesAtTimer).toBeGreaterThan(0);
+    expect(matchesAtTimer).toBeLessThan(processorCount);
+    expect(matches.mock.calls.length).toBeGreaterThanOrEqual(processorCount);
+    engine.close();
+  });
+
+  it("stops a large tree scan after its last processor is unregistered", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const candidateCount = 256;
+    const engine = runtime.createEngine({
+      processor: { maxSlots: BigInt(candidateCount) },
+    });
+    const matches = vi.fn(() => false);
+    engine.append(
+      Array.from(
+        { length: candidateCount },
+        (_, index) => `paragraph ${index}`,
+      ).join("\n\n"),
+    );
+    engine.finish();
+    const registration = engine.registerProcessor({
+      descriptor: { id: "test.ts.scan-dispose", version: "v1" },
+      configurationVersion: "test.ts.scan-dispose.default",
+      matches,
+      process: () => ({
+        kind: "text",
+        protocol: "test.ts.scan-dispose/1",
+        mediaType: "text/plain",
+        text: "unreachable",
+      }),
+    });
+    const callsAtDispose = await new Promise<number>((resolve) => {
+      setTimeout(() => {
+        const calls = matches.mock.calls.length;
+        registration.dispose();
+        resolve(calls);
+      }, 0);
+    });
+
+    await engine.whenProcessorsIdle();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(callsAtDispose).toBeGreaterThan(0);
+    expect(callsAtDispose).toBeLessThan(candidateCount);
+    expect(matches).toHaveBeenCalledTimes(callsAtDispose);
+    engine.close();
+  });
+
+  it("removes one unregistered processor from an active shared scan", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine({ processor: { maxSlots: 256n } });
+    const firstMatches = vi.fn(() => false);
+    const secondMatches = vi.fn(() => false);
+    engine.append(
+      Array.from({ length: 128 }, (_, index) => `paragraph ${index}`).join("\n\n"),
+    );
+    engine.finish();
+    const first = engine.registerProcessor({
+      descriptor: { id: "test.ts.shared-dispose.first", version: "v1" },
+      configurationVersion: "test.ts.shared-dispose.default",
+      matches: firstMatches,
+      process: () => ({
+        kind: "text",
+        protocol: "test.ts.shared-dispose/1",
+        mediaType: "text/plain",
+        text: "unreachable",
+      }),
+    });
+    engine.registerProcessor({
+      descriptor: { id: "test.ts.shared-dispose.second", version: "v1" },
+      configurationVersion: "test.ts.shared-dispose.default",
+      matches: secondMatches,
+      process: () => ({
+        kind: "text",
+        protocol: "test.ts.shared-dispose/1",
+        mediaType: "text/plain",
+        text: "unreachable",
+      }),
+    });
+    const callsAtDispose = await new Promise<number>((resolve) => {
+      setTimeout(() => {
+        const calls = firstMatches.mock.calls.length;
+        first.dispose();
+        resolve(calls);
+      }, 0);
+    });
+
+    await engine.whenProcessorsIdle();
+
+    expect(callsAtDispose).toBeGreaterThan(0);
+    expect(firstMatches).toHaveBeenCalledTimes(callsAtDispose);
+    expect(secondMatches.mock.calls.length).toBeGreaterThan(callsAtDispose);
+    engine.close();
+  });
+
+  it("retries an input-budget block only after capacity changes", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const candidateCount = 130;
+    const engine = runtime.createEngine({
+      processor: {
+        maxInputBytes: 2048n,
+        maxInFlightJobs: 2n,
+        maxInFlightInputBytes: 1536n,
+        maxSlots: BigInt(candidateCount),
+      },
+    });
+    const beginProcessor = vi.spyOn(RustBackedStore.prototype, "beginProcessor");
+    const requests: ProcessorRequestView[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const body = "x".repeat(512);
+    engine.append(Array.from({ length: candidateCount }, () => body).join("\n\n"));
+    engine.finish();
+    try {
+      engine.registerProcessor({
+        descriptor: { id: "test.ts.input-credit", version: "v1" },
+        configurationVersion: "test.ts.input-credit.default",
+        matches: (node) => node.content.kind === "paragraph",
+        process(request) {
+          requests.push(request);
+          const output: ProcessorOutput = {
+            kind: "text",
+            protocol: "test.ts.input-credit/1",
+            mediaType: "text/plain",
+            text: request.input.body,
+          };
+          if (requests.length !== 1) {
+            return output;
+          }
+          return new Promise<ProcessorOutput>((resolve) => {
+            releaseFirst = () => resolve(output);
+          });
+        },
+      });
+
+      await vi.waitFor(() => expect(releaseFirst).toBeDefined());
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+      expect(beginProcessor).toHaveBeenCalledTimes(2);
+      expect(requests).toHaveLength(1);
+
+      releaseFirst?.();
+      await engine.whenProcessorsIdle();
+
+      expect(requests).toHaveLength(candidateCount);
+    } finally {
+      releaseFirst?.();
+      beginProcessor.mockRestore();
+      engine.close();
+    }
+  });
+
+  it("crosses a task boundary before refilling synchronous capacity", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine({
+      processor: { maxInFlightJobs: 1n },
+    });
+    const process = vi.fn<() => ProcessorOutput>(() => ({
+      kind: "text",
+      protocol: "test.ts.completion-refill/1",
+      mediaType: "text/plain",
+      text: "done",
+    }));
+    engine.append("one\n\ntwo\n\nthree");
+    engine.finish();
+    engine.registerProcessor({
+      descriptor: { id: "test.ts.completion-refill", version: "v1" },
+      configurationVersion: "test.ts.completion-refill.default",
+      matches: (node) => node.content.kind === "paragraph",
+      process,
+    });
+    const taskMarker = new Promise<{
+      readonly issuedRequests: string;
+      readonly processCalls: number;
+    }>((resolve) => {
+      setTimeout(() => {
+        resolve({
+          issuedRequests: engine.store.processorMetrics().issuedRequests,
+          processCalls: process.mock.calls.length,
+        });
+      }, 0);
+    });
+
+    await expect(taskMarker).resolves.toEqual({
+      issuedRequests: "1",
+      processCalls: 1,
+    });
+
+    await engine.whenProcessorsIdle();
+
+    expect(process).toHaveBeenCalledTimes(3);
+    expect(engine.store.processorMetrics().issuedRequests).toBe("3");
+    engine.close();
+  });
+
+  it("invalidates a queued dispatch continuation across reset", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine({
+      processor: {
+        maxInFlightJobs: 128n,
+        maxSlots: 128n,
+      },
+    });
+    const bodies: string[] = [];
+    engine.append(
+      Array.from({ length: 64 }, (_, index) => `old ${index}`).join("\n\n"),
+    );
+    engine.finish();
+    engine.registerProcessor({
+      descriptor: { id: "test.ts.reset-quantum", version: "v1" },
+      configurationVersion: "test.ts.reset-quantum.default",
+      matches: (node) => node.content.kind === "paragraph",
+      process(request) {
+        bodies.push(request.input.body);
+        return {
+          kind: "text",
+          protocol: "test.ts.reset-quantum/1",
+          mediaType: "text/plain",
+          text: request.input.body,
+        };
+      },
+    });
+
+    await Promise.resolve();
+    expect(engine.store.processorMetrics().issuedRequests).toBe("32");
+
+    engine.reset();
+    engine.append("replacement");
+    engine.finish();
+    await engine.whenProcessorsIdle();
+
+    expect(bodies).toEqual(["replacement"]);
+    engine.close();
+  });
+
+  it("invalidates a queued tree scan across reset", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const candidateCount = 256;
+    const engine = runtime.createEngine({
+      processor: {
+        maxInFlightJobs: BigInt(candidateCount),
+        maxSlots: BigInt(candidateCount),
+      },
+    });
+    const bodies: string[] = [];
+    const replacement = `old ${candidateCount - 1}`;
+    let replacementNodeId: ContentNodeView["id"] | undefined;
+    let replacementMatchCalls = 0;
+    engine.append(
+      Array.from(
+        { length: candidateCount },
+        (_, index) => `old ${index}`,
+      ).join("\n\n"),
+    );
+    engine.finish();
+    engine.registerProcessor({
+      descriptor: { id: "test.ts.reset-scan", version: "v1" },
+      configurationVersion: "test.ts.reset-scan.default",
+      matches(node) {
+        if (node.id === replacementNodeId) {
+          replacementMatchCalls += 1;
+        }
+        return node.content.kind === "paragraph";
+      },
+      process(request) {
+        bodies.push(request.input.body);
+        return {
+          kind: "text",
+          protocol: "test.ts.reset-scan/1",
+          mediaType: "text/plain",
+          text: request.input.body,
+        };
+      },
+    });
+    const oldRequestCount = await new Promise<number>((resolve) => {
+      setTimeout(() => {
+        const requestCount = bodies.length;
+        engine.reset();
+        engine.append(replacement);
+        engine.finish();
+        replacementNodeId = engine.store.getSnapshot().document?.roots
+          ?.children[0];
+        resolve(requestCount);
+      }, 0);
+    });
+
+    await engine.whenProcessorsIdle();
+
+    expect(bodies.slice(oldRequestCount)).toEqual([replacement]);
+    expect(replacementMatchCalls).toBe(1);
+    engine.close();
+  });
+
+  it("coalesces candidate queue saturation errors until capacity returns", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine({
+      processor: {
+        maxInFlightJobs: 1n,
+        maxSlots: 2n,
+      },
+    });
+    const errors = vi.fn();
+    const beginProcessor = vi.spyOn(RustBackedStore.prototype, "beginProcessor");
+    let release: (() => void) | undefined;
+    let processCalls = 0;
+    try {
+      engine.subscribeProcessorErrors(errors);
+      engine.append("one\n\ntwo\n\nthree\n\nfour\n\nfive\n\nsix");
+      engine.finish();
+      engine.registerProcessor({
+        descriptor: { id: "test.ts.queue-saturation", version: "v1" },
+        configurationVersion: "test.ts.queue-saturation.default",
+        matches: (node) => node.content.kind === "paragraph",
+        process(request) {
+          processCalls += 1;
+          const output: ProcessorOutput = {
+            kind: "text",
+            protocol: "test.ts.queue-saturation/1",
+            mediaType: "text/plain",
+            text: request.input.body,
+          };
+          if (processCalls > 1) {
+            return output;
+          }
+          return new Promise<ProcessorOutput>((resolve) => {
+            release = () => resolve(output);
+          });
+        },
+      });
+
+      await vi.waitFor(() => expect(release).toBeDefined());
+
+      const saturationErrors = errors.mock.calls
+        .map(([event]) => event)
+        .filter(({ error }) =>
+          error instanceof Error &&
+          "detailCode" in error &&
+          error.detailCode === "processor.candidate_queue_limit"
+        );
+      expect(saturationErrors).toHaveLength(1);
+
+      release?.();
+      await engine.whenProcessorsIdle();
+
+      const slotErrors = errors.mock.calls
+        .map(([event]) => event)
+        .filter(({ error }) =>
+          error instanceof Error &&
+          "detailCode" in error &&
+          error.detailCode === "processor.resource_limit.slots"
+        );
+      expect(beginProcessor).toHaveBeenCalledTimes(6);
+      expect(processCalls).toBe(2);
+      expect(slotErrors).toHaveLength(4);
+    } finally {
+      release?.();
+      beginProcessor.mockRestore();
+      engine.close();
+    }
+  });
+
+  it("cancels a paused scan when saturation feedback resets the engine", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine({
+      processor: {
+        maxInFlightJobs: 1n,
+        maxSlots: 2n,
+      },
+    });
+    const process = vi.fn<() => ProcessorOutput>(() => ({
+      kind: "text",
+      protocol: "test.ts.saturation-reset/1",
+      mediaType: "text/plain",
+      text: "unreachable",
+    }));
+    let reset = false;
+    engine.subscribeProcessorErrors(({ error }) => {
+      if (
+        !reset &&
+        error instanceof Error &&
+        "detailCode" in error &&
+        error.detailCode === "processor.candidate_queue_limit"
+      ) {
+        reset = true;
+        engine.reset();
+        engine.finish();
+      }
+    });
+    engine.append("one\n\ntwo\n\nthree\n\nfour\n\nfive");
+    engine.finish();
+    engine.registerProcessor({
+      descriptor: { id: "test.ts.saturation-reset", version: "v1" },
+      configurationVersion: "test.ts.saturation-reset.default",
+      matches: (node) => node.content.kind === "paragraph",
+      process,
+    });
+
+    await engine.whenProcessorsIdle();
+
+    expect(reset).toBe(true);
+    expect(process).not.toHaveBeenCalled();
+    engine.close();
+  });
+
   it("lets timer-backed jobs make progress while dispatch is saturated", async () => {
     const runtime = await initMdstream({ loader: nodeWasmLoader });
     const engine = runtime.createEngine({
@@ -697,10 +1482,20 @@ describe("host-side processor scheduling", () => {
       kind: "text",
       text: "first artifact",
     });
-    expect(secondArtifact?.artifact?.payload).toEqual({
-      kind: "binary",
-      bytes: Uint8Array.of(0, 127, 255),
-    });
+    const binaryPayload = secondArtifact?.artifact?.payload;
+    expect(binaryPayload?.kind).toBe("binary");
+    if (binaryPayload?.kind !== "binary") {
+      throw new Error("expected binary processor artifact");
+    }
+    expect(binaryPayload.bytes.byteLength).toBe(3);
+    const callerBytes = binaryPayload.bytes.copyBytes();
+    callerBytes[0] = 255;
+    expect(binaryPayload.bytes.copyBytes()).toEqual(Uint8Array.of(0, 127, 255));
+    expect(engine.store.getArtifactSnapshot({
+      epoch,
+      nodeId: request.key.nodeId,
+      processorId: "test.ts.second",
+    })).toBe(secondArtifact);
 
     const snapshot = engine.createRecoverySnapshot()!;
     const canonical = textDecoder.decode(snapshot);

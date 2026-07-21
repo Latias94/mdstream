@@ -1,4 +1,4 @@
-use mdstream::{CustomBlockSpec, EngineLimits, StreamEngine, StreamEngineBuilder};
+use mdstream::{CompilerLimits, CustomBlockSpec, EngineLimits, StreamEngine, StreamEngineBuilder};
 use mdstream_processors::{ArtifactHost, ProcessorLimits};
 use mdstream_protocol::{ProtocolLimits, Reducer};
 use serde::Deserialize;
@@ -46,6 +46,7 @@ impl Default for WireLimits {
 #[derive(Default)]
 pub(crate) struct BindingOptions {
     protocol: ProtocolLimits,
+    compiler: CompilerLimits,
     engine: EngineLimits,
     processor: ProcessorLimits,
     wire: WireLimits,
@@ -80,6 +81,9 @@ impl BindingOptions {
         let mut options = Self::default();
         if let Some(protocol) = raw.protocol {
             protocol.apply(&mut options.protocol)?;
+        }
+        if let Some(compiler) = raw.compiler {
+            compiler.apply(&mut options.compiler)?;
         }
         if let Some(engine) = raw.engine {
             engine.apply(&mut options.engine)?;
@@ -120,6 +124,7 @@ impl BindingOptions {
         let protocol = self.protocol;
         let mut builder = StreamEngineBuilder::new()
             .protocol_limits(self.protocol)
+            .compiler_limits(self.compiler)
             .engine_limits(self.engine);
         for spec in self.custom_blocks {
             builder = builder.custom_block(spec);
@@ -218,6 +223,8 @@ struct RawBindingOptions {
     #[serde(default)]
     protocol: Option<RawProtocolLimits>,
     #[serde(default)]
+    compiler: Option<RawCompilerLimits>,
+    #[serde(default)]
     engine: Option<RawEngineLimits>,
     #[serde(default)]
     processor: Option<RawProcessorLimits>,
@@ -288,8 +295,6 @@ raw_limits!(RawProtocolLimits => ProtocolLimits {
     max_source_bytes,
     max_nodes,
     max_resources,
-    max_definitions,
-    max_definition_edges,
     max_operations,
     max_change_structural_items,
     max_document_structural_items,
@@ -299,10 +304,15 @@ raw_limits!(RawProtocolLimits => ProtocolLimits {
     max_node_metadata_bytes,
     max_change_metadata_bytes,
     max_document_metadata_bytes,
-    max_definition_metadata_bytes,
     max_tree_depth,
+});
+
+raw_limits!(RawCompilerLimits => CompilerLimits {
     max_markdown_events,
     max_markdown_overlap_work,
+    max_definitions,
+    max_definition_edges,
+    max_definition_metadata_bytes,
 });
 
 raw_limits!(RawEngineLimits => EngineLimits {

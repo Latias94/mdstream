@@ -13,10 +13,11 @@ pub struct ProcessorLimits {
     /// Maximum logical bytes in one retained artifact envelope and payload.
     pub max_artifact_bytes: usize,
     /// Maximum number of issued jobs whose leases have not been settled.
+    /// Must be at least one.
     pub max_in_flight_jobs: usize,
     /// Maximum aggregate logical input bytes held by unsettled job leases.
     pub max_in_flight_input_bytes: usize,
-    /// Maximum number of stable epoch/node/processor slots.
+    /// Maximum number of stable epoch/node/processor slots. Must be at least one.
     pub max_slots: usize,
     /// Maximum number of artifacts retained across all ready slots.
     pub max_retained_artifacts: usize,
@@ -62,9 +63,15 @@ impl ProcessorLimits {
     ///
     /// # Errors
     ///
-    /// Returns [`ProcessorLimitsError`] when either queue budget is too small
-    /// or calculating the required byte budget overflows `usize`.
+    /// Returns [`ProcessorLimitsError`] when no job or slot can be admitted,
+    /// either queue budget is too small, or required byte arithmetic overflows.
     pub fn validate(&self) -> Result<(), ProcessorLimitsError> {
+        if self.max_in_flight_jobs == 0 {
+            return Err(ProcessorLimitsError::InFlightJobsTooSmall);
+        }
+        if self.max_slots == 0 {
+            return Err(ProcessorLimitsError::SlotsTooSmall);
+        }
         if self.max_pending_changes < self.max_slots {
             return Err(ProcessorLimitsError::PendingChangesTooSmall {
                 required: self.max_slots,
@@ -90,6 +97,10 @@ impl ProcessorLimits {
 /// Describes a processor limit configuration that cannot guarantee cleanup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessorLimitsError {
+    /// At least one processor job must be admissible.
+    InFlightJobsTooSmall,
+    /// At least one processor slot must be admissible.
+    SlotsTooSmall,
     /// The change queue cannot hold one cleanup record per slot.
     PendingChangesTooSmall { required: usize, actual: usize },
     /// The change queue byte budget cannot hold worst-case cleanup records.
@@ -104,6 +115,10 @@ pub enum ProcessorLimitsError {
 impl fmt::Display for ProcessorLimitsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InFlightJobsTooSmall => {
+                formatter.write_str("processor.max_in_flight_jobs must be at least 1")
+            }
+            Self::SlotsTooSmall => formatter.write_str("processor.max_slots must be at least 1"),
             Self::PendingChangesTooSmall { required, actual } => write!(
                 formatter,
                 "processor.pending_changes must be at least {required}, found {actual}"

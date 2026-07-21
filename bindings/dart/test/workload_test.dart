@@ -12,7 +12,7 @@ void main() {
       final runtime = MdstreamRuntime.openPath(libraryPath!);
       final engine = runtime.createEngine(
         options: MdstreamSessionOptions(
-          protocol: const {'max_operations': '40000'},
+          protocol: MdstreamProtocolLimits(maxOperations: '40000'),
         ),
       );
       try {

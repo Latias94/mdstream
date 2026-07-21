@@ -169,6 +169,7 @@ NodeView _decodeNode(
               'content': content,
             },
             'body_text': 'body',
+            'processor_input_version': 'sha256:processor-input',
           }),
           schema,
         )

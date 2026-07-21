@@ -6,12 +6,13 @@ use mdstream_protocol::{
 };
 
 use super::{
+    CompilerLimits,
     checkpoints::CheckpointGate,
     custom::{CustomStartContext, PendingCustomState},
     definitions::{SemanticCommit, SemanticState},
     frontier::{append_closes_structure, stable_root_prefix},
     identity::{IdentityCommit, IdentityLedger},
-    markdown::{DraftUsage, compile_markdown_with_custom, validate_draft_limits},
+    markdown::{DraftUsage, MarkdownConfig, compile_markdown_with_custom, validate_draft_limits},
     metrics::{CompileObservation, add_metric_bytes, add_semantic_metrics, compile_metrics},
     operations::{OperationSink, collect_resources, incremental_operations},
     reconcile::{ReconcileInput, collect_frontier_nodes, reconcile_frontier},
@@ -21,7 +22,8 @@ use super::{
 #[derive(Debug, Default)]
 pub(crate) struct ContentCompiler {
     custom_blocks: Vec<CustomBlockSpec>,
-    limits: ProtocolLimits,
+    protocol_limits: ProtocolLimits,
+    compiler_limits: CompilerLimits,
     identity: IdentityLedger,
     semantics: SemanticState,
     checkpoints: CheckpointGate,
@@ -76,11 +78,13 @@ pub(crate) struct CompilerCommit {
 impl ContentCompiler {
     pub(crate) fn with_custom_blocks(
         custom_blocks: Vec<CustomBlockSpec>,
-        limits: ProtocolLimits,
+        protocol_limits: ProtocolLimits,
+        compiler_limits: CompilerLimits,
     ) -> Self {
         Self {
             custom_blocks,
-            limits,
+            protocol_limits,
+            compiler_limits,
             ..Self::default()
         }
     }
@@ -214,7 +218,7 @@ impl ContentCompiler {
         let reserved_tail = usize::from(projection_cursor != revision)
             .checked_add(usize::from(finishing))
             .ok_or(CompilerError::CursorOverflow)?;
-        let mut operations = OperationSink::new(self.limits, reserved_tail)?;
+        let mut operations = OperationSink::new(self.protocol_limits, reserved_tail)?;
         let frontier_start = usize::try_from(self.frontier.start.get())
             .map_err(|_| CompilerError::InvalidSourceBoundary(self.frontier.start))?;
         let retained = document.map_or("", Document::source);
@@ -234,13 +238,16 @@ impl ContentCompiler {
             self.stable_root_count,
             &self.frontier_resources,
             &self.stable_resources,
-            self.limits,
+            self.protocol_limits,
         )?;
         let compilation = compile_markdown_with_custom(
             &source,
             self.frontier.start,
-            &self.custom_blocks,
-            self.limits,
+            MarkdownConfig::new(
+                &self.custom_blocks,
+                self.protocol_limits,
+                self.compiler_limits,
+            ),
             baseline,
             self.frontier.custom_start_context,
             finishing,
@@ -262,12 +269,21 @@ impl ContentCompiler {
         } else {
             revision
         };
-        let semantic =
-            self.semantics
-                .prepare(&mut draft, definitions, next_frontier_start, self.limits)?;
-        validate_draft_limits(&draft, self.limits)?;
+        let semantic = self.semantics.prepare(
+            &mut draft,
+            definitions,
+            next_frontier_start,
+            self.protocol_limits,
+            self.compiler_limits,
+        )?;
+        validate_draft_limits(&draft, self.protocol_limits)?;
         let (candidate, identity) = self.identity.stage(epoch, &draft, stable_draft_roots)?;
-        let mut semantic = semantic.finalize(document, &candidate, self.limits)?;
+        let mut semantic = semantic.finalize(
+            document,
+            &candidate,
+            self.protocol_limits,
+            self.compiler_limits,
+        )?;
 
         let mut stable_from_candidate = collect_resources(
             &candidate,
@@ -373,7 +389,7 @@ impl ContentCompiler {
         staging_frontier_bytes: usize,
         structural_source_bytes: usize,
     ) -> Result<CompilerTransition, CompilerError> {
-        let mut operations = OperationSink::new(self.limits, 1)?;
+        let mut operations = OperationSink::new(self.protocol_limits, 1)?;
         let mut visits = 0_u64;
         if let Some(document) = document {
             let roots = document
@@ -453,7 +469,7 @@ impl ContentCompiler {
         frontier_bytes: usize,
         observation: AppendObservation,
     ) -> Result<CompilerTransition, CompilerError> {
-        let mut operations = OperationSink::new(self.limits, 1)?;
+        let mut operations = OperationSink::new(self.protocol_limits, 1)?;
         let Some(visits) = incremental_operations(
             document,
             self.stable_root_count,

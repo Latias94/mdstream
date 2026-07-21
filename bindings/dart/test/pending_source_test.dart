@@ -80,7 +80,7 @@ void main() {
         expect(lastGood?.text, 'a');
 
         final gap = replica.applyChange(changes[2]);
-        expect(gap.updates.single.outcome.kind, 'recovery_required');
+        expect(gap.updates.single.outcome, isA<RecoveryRequiredOutcomeView>());
         expect(replica.pendingSourceView(), same(lastGood));
 
         final recovered = replica.recoverSnapshot(replacement);

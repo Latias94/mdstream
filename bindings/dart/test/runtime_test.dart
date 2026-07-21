@@ -23,7 +23,7 @@ void main() {
 
   test('session options encode decimal strings and reject JSON numbers', () {
     final options = MdstreamSessionOptions(
-      protocol: const {'max_nodes': '1024'},
+      protocol: MdstreamProtocolLimits(maxNodes: '1024'),
       customBlocks: const [
         MdstreamCustomBlock(namespace: 'app', name: 'panel'),
       ],
@@ -37,7 +37,9 @@ void main() {
       ],
     });
     expect(
-      () => MdstreamSessionOptions(protocol: const {'max_nodes': '01'}),
+      () => MdstreamSessionOptions(
+        protocol: MdstreamProtocolLimits(maxNodes: '01'),
+      ),
       throwsArgumentError,
     );
   });
@@ -49,7 +51,21 @@ void main() {
       expect(runtime.transitionSchema, transitionSchema);
 
       final reducer = runtime.createReducer();
+      expect(reducer.processorSchedulerLimits.maxInFlightJobs, 32);
+      expect(reducer.processorSchedulerLimits.maxQueuedCandidates, 256);
       reducer.close();
+
+      final engine = runtime.createEngine(
+        options: MdstreamSessionOptions(
+          processor: MdstreamProcessorLimits(
+            maxInFlightJobs: '3',
+            maxSlots: '7',
+          ),
+        ),
+      );
+      expect(engine.processorSchedulerLimits.maxInFlightJobs, 3);
+      expect(engine.processorSchedulerLimits.maxQueuedCandidates, 7);
+      engine.close();
       expect(runtime.nativeAllocations.isZero, isTrue);
     },
     skip: libraryPath == null

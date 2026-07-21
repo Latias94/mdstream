@@ -198,6 +198,14 @@ describe("framework-neutral transition feed", () => {
         return fakeOutput([]);
       }
 
+      processorMaxInFlightJobs(): number {
+        return 32;
+      }
+
+      processorMaxQueuedCandidates(): number {
+        return 256;
+      }
+
       free(): void {}
     }
     const loader: WasmModuleLoader = () => ({
@@ -411,5 +419,6 @@ function fakeTailNodeView(): unknown {
       content: { kind: "text", text: { kind: "source" } },
     },
     body_text: "A",
+    processor_input_version: "input.A",
   };
 }

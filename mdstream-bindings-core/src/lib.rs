@@ -8,7 +8,7 @@ mod errors;
 mod options;
 mod wire;
 
-pub use engine::{EngineSession, ReducerSession};
+pub use engine::{EngineSession, ProcessorSchedulerLimits, ReducerSession};
 pub use errors::{BindingError, BindingStatus, error_payload_json_bytes};
 pub use mdstream_processors::{ProcessorExpectation, ProcessorFailureCode};
 pub use options::BINDING_OPTIONS_SCHEMA;

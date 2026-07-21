@@ -36,8 +36,11 @@ void main() {
         final lastGoodDocument = replica.currentState.document;
         final lastGood = replica.currentState.document?.coordinate;
         final gap = replica.applyChange(changes[2]);
-        expect(gap.updates.single.outcome.kind, 'recovery_required');
-        expect(replica.currentState.status.kind, 'needs_snapshot');
+        expect(gap.updates.single.outcome, isA<RecoveryRequiredOutcomeView>());
+        expect(
+          replica.currentState.status,
+          isA<NeedsSnapshotReducerStatusView>(),
+        );
         expect(replica.currentState.document, same(lastGoodDocument));
         expect(
           replica.currentState.document?.coordinate.changeId,
@@ -58,7 +61,7 @@ void main() {
 
         final recovered = replica.recoverSnapshot(recovery);
         expect(recovered.updates.single.impact.fullReplace, isTrue);
-        expect(replica.currentState.status.kind, 'ready');
+        expect(replica.currentState.status, isA<ReadyReducerStatusView>());
         replica.applyChange(changes[3]);
         expect(replica.currentState.document?.lifecycle, 'finalized');
       } finally {
@@ -96,7 +99,7 @@ void main() {
         final impactBeforeRetry = stateBeforeRetry.impact;
         final coordinate = retryReducer.currentState.document?.coordinate;
         final retry = retryReducer.applyChange(first);
-        expect(retry.updates.single.outcome.kind, 'idempotent');
+        expect(retry.updates.single.outcome, isA<IdempotentOutcomeView>());
         expect(retryReducer.currentState, same(stateBeforeRetry));
         expect(retryReducer.currentState.impact, same(impactBeforeRetry));
         expect(
@@ -108,15 +111,18 @@ void main() {
         retryReducer.applyChange(second);
         final stateBeforeStale = retryReducer.currentState;
         final stale = retryReducer.applyChange(first);
-        expect(stale.updates.single.outcome.kind, 'stale');
+        expect(stale.updates.single.outcome, isA<StaleOutcomeView>());
         expect(retryReducer.currentState, same(stateBeforeStale));
 
         forkReducer.applyChange(first);
         final forkRecord = Map<String, Object?>.from(firstRecord)
           ..['change_id'] = 'dart:conflicting-current-change';
         final fork = forkReducer.applyChange(encodeChange(forkRecord));
-        expect(fork.updates.single.outcome.kind, 'recovery_required');
-        expect(forkReducer.currentState.status.kind, 'needs_snapshot');
+        expect(fork.updates.single.outcome, isA<RecoveryRequiredOutcomeView>());
+        expect(
+          forkReducer.currentState.status,
+          isA<NeedsSnapshotReducerStatusView>(),
+        );
       } finally {
         forkReducer.close();
         retryReducer.close();
@@ -174,15 +180,15 @@ void main() {
       ).map(encodeChange).toList(growable: false);
       final options = MdstreamSessionOptions(
         captureTransitions: true,
-        protocol: const {
-          'max_source_bytes': '1024',
-          'max_nodes': '16',
-          'max_resources': '16',
-          'max_operations': '64',
-          'max_change_structural_items': '64',
-          'max_children_per_list': '16',
-        },
-        wire: const {'max_reducer_update_bytes': '1048576'},
+        protocol: MdstreamProtocolLimits(
+          maxSourceBytes: '1024',
+          maxNodes: '16',
+          maxResources: '16',
+          maxOperations: '64',
+          maxChangeStructuralItems: '64',
+          maxChildrenPerList: '16',
+        ),
+        wire: MdstreamWireLimits(maxReducerUpdateBytes: '1048576'),
       );
       final producer = runtime.createReducer(options: options);
       final consumer = runtime.createReducer(options: options);
@@ -198,11 +204,11 @@ void main() {
         expect(initial.transitionFacts.single.after.continuityGeneration, '0');
 
         final retry = consumer.applyChange(changes[0]);
-        expect(retry.updates.single.outcome.kind, 'idempotent');
+        expect(retry.updates.single.outcome, isA<IdempotentOutcomeView>());
         expect(retry.transitionFacts, isEmpty);
 
         final gap = consumer.applyChange(changes[2]);
-        expect(gap.updates.single.outcome.kind, 'recovery_required');
+        expect(gap.updates.single.outcome, isA<RecoveryRequiredOutcomeView>());
         expect(gap.transitionFacts, isEmpty);
 
         final recovered = consumer.recoverSnapshot(advanced);

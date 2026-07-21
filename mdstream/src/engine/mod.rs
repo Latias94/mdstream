@@ -6,7 +6,9 @@ mod limits;
 mod storage;
 mod work;
 
-pub use crate::compiler::{CompilerError, CompilerMetrics, CustomBlockSpec, MarkdownDiagnostic};
+pub use crate::compiler::{
+    CompilerError, CompilerLimits, CompilerMetrics, CustomBlockSpec, MarkdownDiagnostic,
+};
 pub use builder::StreamEngineBuilder;
 pub use effects::EngineOutput;
 pub use lifecycle::EngineError;
@@ -29,7 +31,7 @@ pub struct StreamEngine {
     producer: Reducer,
     initial_epoch: Epoch,
     compiler: ContentCompiler,
-    limits: ProtocolLimits,
+    protocol_limits: ProtocolLimits,
     engine_limits: EngineLimits,
     work: EngineWorkMetrics,
 }
@@ -51,26 +53,37 @@ impl StreamEngine {
         Self::with_custom_blocks(
             Vec::new(),
             ProtocolLimits::default(),
+            CompilerLimits::default(),
             EngineLimits::default(),
         )
     }
 
     #[cfg(test)]
     fn with_limits(limits: ProtocolLimits) -> Self {
-        Self::with_custom_blocks(Vec::new(), limits, EngineLimits::default())
+        Self::with_custom_blocks(
+            Vec::new(),
+            limits,
+            CompilerLimits::default(),
+            EngineLimits::default(),
+        )
     }
 
     fn with_custom_blocks(
         custom_blocks: Vec<CustomBlockSpec>,
-        limits: ProtocolLimits,
+        protocol_limits: ProtocolLimits,
+        compiler_limits: CompilerLimits,
         engine_limits: EngineLimits,
     ) -> Self {
         Self {
             normalizer: NewlineNormalizer::default(),
-            producer: Reducer::with_limits(limits),
+            producer: Reducer::with_limits(protocol_limits),
             initial_epoch: Epoch::new(1),
-            compiler: ContentCompiler::with_custom_blocks(custom_blocks, limits),
-            limits,
+            compiler: ContentCompiler::with_custom_blocks(
+                custom_blocks,
+                protocol_limits,
+                compiler_limits,
+            ),
+            protocol_limits,
             engine_limits,
             work: EngineWorkMetrics::default(),
         }
@@ -153,8 +166,16 @@ impl StreamEngine {
             return Err(EngineError::Finished);
         }
 
+        let projected_bytes = self
+            .normalizer
+            .projected_canonical_bytes(chunk)
+            .ok_or(EngineError::CursorOverflow)?;
+        self.preflight_source(projected_bytes)?;
         let (normalizer, suffix) = self.normalizer.append(chunk);
-        self.preflight_source(&normalizer, &suffix)?;
+        debug_assert_eq!(
+            Some(projected_bytes),
+            suffix.len().checked_add(normalizer.pending_bytes())
+        );
         if suffix.is_empty() {
             self.normalizer = normalizer;
             return Ok(EngineOutput::default());
@@ -168,27 +189,26 @@ impl StreamEngine {
             return Ok(EngineOutput::default());
         }
 
+        let projected_bytes = self
+            .normalizer
+            .projected_canonical_bytes("")
+            .ok_or(EngineError::CursorOverflow)?;
+        self.preflight_source(projected_bytes)?;
         let (normalizer, suffix) = self.normalizer.finish();
-        self.preflight_source(&normalizer, &suffix)?;
         self.apply_compiler_transition(normalizer, suffix, true)
     }
 
-    fn preflight_source(
-        &self,
-        normalizer: &NewlineNormalizer,
-        suffix: &str,
-    ) -> Result<(), EngineError> {
+    fn preflight_source(&self, appended_source_bytes: usize) -> Result<(), EngineError> {
         let retained_source_bytes = self
             .producer
             .document()
             .map_or(0, |document| document.source().len());
         let source_bytes = retained_source_bytes
-            .checked_add(suffix.len())
-            .and_then(|bytes| bytes.checked_add(normalizer.pending_bytes()))
+            .checked_add(appended_source_bytes)
             .ok_or(EngineError::CursorOverflow)?;
-        if source_bytes > self.limits.max_source_bytes {
+        if source_bytes > self.protocol_limits.max_source_bytes {
             return Err(EngineError::Protocol(ProtocolError::SourceTooLarge {
-                limit: self.limits.max_source_bytes,
+                limit: self.protocol_limits.max_source_bytes,
                 actual: source_bytes,
             }));
         }
@@ -353,6 +373,44 @@ mod tests {
             .append("okay")
             .expect("a retry within the limit works");
         assert_eq!(engine.coordinate().unwrap().source_cursor.get(), 4);
+    }
+
+    #[test]
+    fn multibyte_source_limit_is_rejected_atomically_before_append_materialization() {
+        let limits = ProtocolLimits {
+            max_source_bytes: 3,
+            ..ProtocolLimits::default()
+        };
+        let mut engine = StreamEngine::with_limits(limits);
+        let before = engine.metrics();
+        let chunk = "éé";
+
+        assert_eq!(chunk.len(), 4);
+        assert!(matches!(
+            engine.append(chunk),
+            Err(EngineError::Protocol(ProtocolError::SourceTooLarge {
+                limit: 3,
+                actual: 4,
+            }))
+        ));
+        assert_eq!(engine.metrics(), before);
+        assert!(engine.snapshot().is_none());
+    }
+
+    #[test]
+    fn crlf_heavy_input_uses_canonical_bytes_for_source_limit() {
+        let limits = ProtocolLimits {
+            max_source_bytes: 3,
+            ..ProtocolLimits::default()
+        };
+        let mut engine = StreamEngine::with_limits(limits);
+        let chunk = "\r\n\r\n\r\n";
+
+        assert!(chunk.len() > limits.max_source_bytes);
+        engine
+            .append(chunk)
+            .expect("CRLF normalization should fit the canonical source limit");
+        assert_eq!(engine.snapshot().unwrap().source(), "\n\n\n");
     }
 
     #[test]

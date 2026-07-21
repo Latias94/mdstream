@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use mdstream_protocol::{Epoch, NodeId, RequestGeneration};
+use mdstream_protocol::{Epoch, NodeId, ProcessorInputVersion, RequestGeneration};
 
 use crate::{
     ArtifactChange, ArtifactChangeKind, ArtifactReleaseReason, CancellationToken, HostError,
@@ -91,6 +91,11 @@ impl ArtifactStore {
 
     pub fn contains_slot(&self, slot: &ProcessorSlotKey) -> bool {
         self.state(slot).is_some()
+    }
+
+    pub fn contains_node(&self, epoch: Epoch, node_id: NodeId) -> bool {
+        self.nodes
+            .contains_key(&ProcessorNodeKey::new(epoch, node_id))
     }
 
     #[cfg(test)]
@@ -425,34 +430,119 @@ impl ArtifactStore {
         Ok(())
     }
 
-    pub fn remove_nodes(
+    pub fn reconcile_nodes(
         &mut self,
         epoch: Epoch,
         removed_nodes: &[NodeId],
-        changed_nodes: &[NodeId],
+        changed_inputs: &[(NodeId, ProcessorInputVersion)],
     ) -> Result<(), HostError> {
         let removed = removed_nodes.iter().copied().collect::<BTreeSet<_>>();
-        let changed = changed_nodes
+        let changed = changed_inputs
             .iter()
-            .copied()
-            .filter(|node_id| !removed.contains(node_id))
-            .collect::<BTreeSet<_>>();
-        let targets = removed
+            .filter(|(node_id, _)| !removed.contains(node_id))
+            .cloned()
+            .collect::<BTreeMap<_, _>>();
+        let removed_targets = removed
             .into_iter()
-            .map(|node_id| {
-                (
-                    ProcessorNodeKey::new(epoch, node_id),
-                    ArtifactReleaseReason::NodeRemoved,
-                )
-            })
-            .chain(changed.into_iter().map(|node_id| {
-                (
-                    ProcessorNodeKey::new(epoch, node_id),
-                    ArtifactReleaseReason::NodeChanged,
-                )
+            .map(|node_id| ProcessorNodeKey::new(epoch, node_id))
+            .collect::<Vec<_>>();
+        let changed_targets = changed
+            .into_iter()
+            .map(|(node_id, version)| (ProcessorNodeKey::new(epoch, node_id), version))
+            .collect::<Vec<_>>();
+
+        let changes = removed_targets
+            .iter()
+            .filter_map(|key| self.nodes.get(key))
+            .flat_map(|node| node.slots.values())
+            .filter_map(|record| record.state.as_ref())
+            .map(|state| removed_change(state, ArtifactReleaseReason::NodeRemoved))
+            .chain(changed_targets.iter().flat_map(|(key, current_version)| {
+                self.nodes
+                    .get(key)
+                    .into_iter()
+                    .flat_map(|node| node.slots.values())
+                    .filter_map(|record| record.state.as_ref())
+                    .filter(move |state| state.key().input_version() != current_version)
+                    .map(|state| removed_change(state, ArtifactReleaseReason::NodeChanged))
             }))
             .collect::<Vec<_>>();
-        self.remove_node_batch(&targets)
+        let queue = self.reserve_changes(&changes)?;
+        let mut metrics = self.metrics;
+        let mut visits = 0_u64;
+
+        for key in &removed_targets {
+            let Some(node) = self.nodes.get(key) else {
+                continue;
+            };
+            for record in node.slots.values() {
+                apply_record_removal(&mut metrics, record)?;
+                visits = checked_record_visits(visits, record)?;
+            }
+        }
+        for (key, current_version) in &changed_targets {
+            let Some(node) = self.nodes.get(key) else {
+                continue;
+            };
+            for record in node.slots.values() {
+                if let Some(state) = record
+                    .state
+                    .as_ref()
+                    .filter(|state| state.key().input_version() != current_version)
+                {
+                    apply_state_removal(&mut metrics, state)?;
+                }
+                for lease in record
+                    .in_flight
+                    .values()
+                    .filter(|lease| lease.key.input_version() != current_version)
+                {
+                    apply_lease_removal(&mut metrics, lease)?;
+                }
+                visits = checked_record_visits(visits, record)?;
+            }
+        }
+        metrics.store_entry_visits = checked_add_u64(
+            metrics.store_entry_visits,
+            visits,
+            "processor.store_entry_visits",
+        )?;
+        apply_queue_reservation(&mut metrics, queue);
+
+        for key in &removed_targets {
+            if let Some(node) = self.nodes.remove(key) {
+                cancel_node_leases(node);
+            }
+        }
+        for (key, current_version) in &changed_targets {
+            let remove_node = if let Some(node) = self.nodes.get_mut(key) {
+                node.slots.retain(|_, record| {
+                    if record
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.key().input_version() != current_version)
+                    {
+                        record.state = None;
+                    }
+                    record.in_flight.retain(|_, lease| {
+                        let keep = lease.key.input_version() == current_version;
+                        if !keep {
+                            lease.cancellation.cancel();
+                        }
+                        keep
+                    });
+                    record.state.is_some() || !record.in_flight.is_empty()
+                });
+                node.slots.is_empty()
+            } else {
+                false
+            };
+            if remove_node {
+                self.nodes.remove(key);
+            }
+        }
+        self.commit(metrics, changes);
+        Ok(())
     }
 
     pub fn cancel(&mut self, key: &ProcessorRequestKey) -> Result<bool, HostError> {
@@ -738,6 +828,38 @@ fn apply_record_removal(
         apply_state_removal(metrics, state)?;
     }
     Ok(())
+}
+
+fn apply_lease_removal(
+    metrics: &mut ProcessorMetrics,
+    lease: &InFlightLease,
+) -> Result<(), HostError> {
+    metrics.in_flight_jobs = checked_sub(metrics.in_flight_jobs, 1, "processor.in_flight_jobs")?;
+    metrics.in_flight_input_bytes = checked_sub(
+        metrics.in_flight_input_bytes,
+        lease.input_bytes,
+        "processor.in_flight_input_bytes",
+    )?;
+    Ok(())
+}
+
+fn checked_record_visits(visits: u64, record: &SlotRecord) -> Result<u64, HostError> {
+    visits
+        .checked_add(
+            u64::try_from(record.in_flight.len().saturating_add(1))
+                .map_err(|_| HostError::CounterOverflow("processor.store_entry_visits"))?,
+        )
+        .ok_or(HostError::CounterOverflow("processor.store_entry_visits"))
+}
+
+fn cancel_node_leases(node: NodeBucket) {
+    for lease in node
+        .slots
+        .into_values()
+        .flat_map(|record| record.in_flight.into_values())
+    {
+        lease.cancellation.cancel();
+    }
 }
 
 fn apply_state_removal(

@@ -8,8 +8,7 @@ final class ContentProcessorDescriptor {
     required this.id,
     required this.version,
     this.acceptsProvisional = false,
-  }) : assert(id != ''),
-       assert(version != '');
+  });
 
   /// Stable processor identity.
   final String id;
@@ -221,12 +220,13 @@ final class MdstreamArtifacts {
 
 abstract interface class _ProcessorBackend {
   MdstreamStateView get state;
+  MdstreamProcessorSchedulerLimits get processorSchedulerLimits;
   bool get isClosed;
 
   ReducerResult beginProcessor({
     required Epoch expectedEpoch,
     required NodeId nodeId,
-    required NodeVersion expectedNodeVersion,
+    required ProcessorInputVersion expectedInputVersion,
     required String processorId,
     required String processorVersion,
     required String configurationVersion,
@@ -310,35 +310,115 @@ final class _ProcessorCandidate {
     required this.registration,
     required this.expectedEpoch,
     required this.nodeId,
-    required this.expectedNodeVersion,
+    required this.expectedInputVersion,
   });
 
   final _RegisteredProcessor registration;
   final NodeId nodeId;
   Epoch expectedEpoch;
-  NodeVersion expectedNodeVersion;
+  ProcessorInputVersion expectedInputVersion;
   bool queued = true;
 }
 
 final class _CandidateExpectation {
-  const _CandidateExpectation({required this.epoch, required this.nodeVersion});
+  const _CandidateExpectation({
+    required this.epoch,
+    required this.inputVersion,
+  });
 
   final Epoch epoch;
-  final NodeVersion nodeVersion;
+  final ProcessorInputVersion inputVersion;
+}
+
+enum _ProcessorScanPhase { changed, tree, fallback, done }
+
+final class _ProcessorScanWork {
+  _ProcessorScanWork({
+    required this.nodeIds,
+    required this.registrations,
+    required this.pendingRegistrations,
+  });
+
+  final List<NodeId> nodeIds;
+  List<_RegisteredProcessor> registrations;
+  List<_RegisteredProcessor> pendingRegistrations;
+  final ListQueue<NodeId> treeQueue = ListQueue<NodeId>();
+  final Set<NodeId> visited = <NodeId>{};
+  _ProcessorNodeScan? nodeScan;
+  _ProcessorScanPhase phase = _ProcessorScanPhase.changed;
+  int nodeIndex = 0;
+  int fallbackIndex = 0;
+  bool treeInitialized = false;
+}
+
+final class _ProcessorNodeScan {
+  _ProcessorNodeScan({
+    required this.nodeId,
+    required this.registrations,
+    required this.expectedEpoch,
+    required this.nodeView,
+    required this.viewFailed,
+    required this.viewError,
+    required this.viewStackTrace,
+  });
+
+  final NodeId nodeId;
+  List<_RegisteredProcessor> registrations;
+  final Epoch? expectedEpoch;
+  final NodeView? nodeView;
+  final bool viewFailed;
+  final Object? viewError;
+  final StackTrace? viewStackTrace;
+  int registrationIndex = 0;
+}
+
+final class _ProcessorNodeScanStep {
+  const _ProcessorNodeScanStep({
+    required this.complete,
+    required this.nodeView,
+    required this.blocked,
+  });
+
+  final bool complete;
+  final NodeView? nodeView;
+  final bool blocked;
 }
 
 enum _BeginDisposition { started, stale, blocked, terminal }
 
-final class _ProcessorScheduler {
-  _ProcessorScheduler({required this.backend, required this.onResult});
+final RegExp _processorIdentifierPattern = RegExp(r'^[A-Za-z0-9._:+-]{1,128}$');
 
-  static const int _maxDispatchJobs = 32;
-  static const int _maxQueuedCandidates = 4096;
+void _validateProcessorIdentifier(String value, String field) {
+  if (!_processorIdentifierPattern.hasMatch(value)) {
+    throw ArgumentError.value(
+      value,
+      field,
+      "must be 1-128 ASCII bytes using letters, digits, '.', '_', ':', '+', or '-'",
+    );
+  }
+}
+
+final class _ProcessorScheduler {
+  _ProcessorScheduler({
+    required this.backend,
+    required this.onResult,
+    required MdstreamProcessorSchedulerLimits limits,
+  }) : _maxDispatchJobs = limits.maxInFlightJobs,
+       _maxQueuedCandidates = limits.maxQueuedCandidates;
+
   static const int _candidateQueueCompactionFloor = 64;
   static const int _candidateQueueCompactionRatio = 4;
+  static const int _dispatchQuantum = 32;
+  static const int _scanQuantum = 64;
+  static const Set<String> _retryableResourceLimitDetailCodes = <String>{
+    'processor.resource_limit.in_flight_jobs',
+    'processor.resource_limit.in_flight_input_bytes',
+  };
 
   final _ProcessorBackend backend;
   final void Function(ReducerResult result) onResult;
+  final int _maxDispatchJobs;
+  final int _maxQueuedCandidates;
   final Map<String, _RegisteredProcessor> _processors =
       <String, _RegisteredProcessor>{};
   final Map<RequestGeneration, _InFlightProcessor> _inFlight =
@@ -359,20 +439,29 @@ final class _ProcessorScheduler {
   Map<RequestGeneration, Object>? _removedDuringBegin;
   int _beginDepth = 0;
   int _candidateCount = 0;
+  int _dispatchRevision = 0;
+  int? _scheduledDispatchRevision;
+  int _scanRevision = 0;
+  int? _scheduledScanRevision;
+  int? _scheduledScanContinuationRevision;
+  _ProcessorScanWork? _scanWork;
+  Completer<void>? _scanUnblocked;
   bool _dispatching = false;
-  bool _scanScheduled = false;
+  bool _dispatchBlocked = false;
+  bool _scanBlocked = false;
+  bool _candidateQueueSaturated = false;
   bool _closed = false;
 
   ProcessorRegistration register(ContentProcessor processor) {
     _assertOpen();
     final descriptor = processor.descriptor;
-    if (descriptor.id.isEmpty || descriptor.version.isEmpty) {
-      throw ArgumentError('processor id and version must not be empty');
-    }
+    _validateProcessorIdentifier(descriptor.id, 'processor.id');
+    _validateProcessorIdentifier(descriptor.version, 'processor.version');
     final configurationVersion = processor.configurationVersion;
-    if (configurationVersion.isEmpty) {
-      throw ArgumentError('processor configuration version must not be empty');
-    }
+    _validateProcessorIdentifier(
+      configurationVersion,
+      'processor.configuration_version',
+    );
     if (_processors.containsKey(descriptor.id)) {
       throw ArgumentError('processor ${descriptor.id} is already registered');
     }
@@ -393,11 +482,13 @@ final class _ProcessorScheduler {
     if (_closed) {
       return;
     }
+    var capacityChanged = false;
     for (final result in results) {
       for (final change in result.artifactChanges) {
-        if (change.change.kind == 'removed') {
+        final removal = change.change;
+        if (removal is RemovedArtifactChangeView) {
           final generation = change.key.generation;
-          final reason = change.change.reason ?? 'artifact_removed';
+          final reason = removal.reason;
           final entry = _inFlight[generation];
           if (entry == null) {
             if (_beginDepth > 0) {
@@ -409,6 +500,8 @@ final class _ProcessorScheduler {
             entry.cancellation.cancel(reason);
             if (identical(_inFlight[generation], entry)) {
               _inFlight.remove(generation);
+              _dispatchBlocked = false;
+              capacityChanged = true;
             }
           }
         }
@@ -417,11 +510,13 @@ final class _ProcessorScheduler {
         continue;
       }
       for (final update in result.updates) {
-        if (update.outcome.kind != 'applied' &&
-            update.outcome.kind != 'recovered') {
+        if (update.outcome is! AppliedOutcomeView &&
+            update.outcome is! RecoveredOutcomeView) {
           continue;
         }
         if (update.impact.fullReplace) {
+          _invalidateScheduledDispatch();
+          _invalidateScheduledScan();
           _clearCandidates();
           _clearRejectedCandidates();
           _pendingNodes.clear();
@@ -442,14 +537,28 @@ final class _ProcessorScheduler {
       }
     }
     _scheduleScan();
-    _drainCandidates();
+    if (capacityChanged) {
+      _scheduleDispatch();
+    } else {
+      _drainCandidates();
+    }
   }
 
   Future<void> whenIdle() async {
     for (;;) {
-      await Future<void>.value();
+      final scanUnblocked = _scanUnblocked;
+      if (_scanBlocked && scanUnblocked != null) {
+        await scanUnblocked.future;
+        continue;
+      }
+      if (_scheduledDispatchRevision != null ||
+          _scheduledScanRevision != null) {
+        await Future<void>.delayed(Duration.zero);
+      } else {
+        await Future<void>.value();
+      }
       _drainCandidates();
-      if (_scanScheduled ||
+      if (_scheduledScanRevision != null ||
           _pendingNodes.isNotEmpty ||
           _pendingRegistrations.isNotEmpty) {
         continue;
@@ -470,7 +579,8 @@ final class _ProcessorScheduler {
       return;
     }
     _closed = true;
-    _scanScheduled = false;
+    _invalidateScheduledDispatch();
+    _invalidateScheduledScan();
     _pendingNodes.clear();
     _pendingRegistrations.clear();
     _clearCandidates();
@@ -489,22 +599,17 @@ final class _ProcessorScheduler {
 
   void _scheduleScan() {
     if (_closed ||
-        _scanScheduled ||
+        _scheduledScanRevision != null ||
         (_pendingNodes.isEmpty && _pendingRegistrations.isEmpty)) {
       return;
     }
-    _scanScheduled = true;
-    scheduleMicrotask(() {
-      _scanScheduled = false;
-      _scanChangedNodes();
-    });
+    final revision = _scanRevision;
+    _scheduledScanRevision = revision;
+    scheduleMicrotask(() => _runScan(revision));
   }
 
-  void _scanChangedNodes() {
-    if (_closed) {
-      _pendingNodes.clear();
-      return;
-    }
+  _ProcessorScanWork _createScanWork() {
+    _candidateQueueSaturated = false;
     final nodeIds = List<NodeId>.of(_pendingNodes);
     _pendingNodes.clear();
     final pendingRegistrations = _pendingRegistrations
@@ -518,165 +623,374 @@ final class _ProcessorScheduler {
               registration.active && !pendingSet.contains(registration),
         )
         .toList(growable: false);
-    for (final nodeId in nodeIds) {
-      _scanNode(nodeId, registrations);
-    }
-    if (pendingRegistrations.isNotEmpty) {
-      _scanCurrentTree(pendingRegistrations);
-    }
-    _scheduleScan();
-    _drainCandidates();
+    return _ProcessorScanWork(
+      nodeIds: nodeIds,
+      registrations: registrations,
+      pendingRegistrations: pendingRegistrations,
+    );
   }
 
-  void _scanCurrentTree(List<_RegisteredProcessor> registrations) {
-    final roots = backend.state.currentState.document?.roots?.children;
-    if (roots == null || roots.isEmpty) {
+  void _runScan(int revision) {
+    if (!_isCurrentScan(revision)) {
       return;
     }
-    final queue = ListQueue<NodeId>.of(roots);
-    final visited = <NodeId>{};
-    while (queue.isNotEmpty && !_closed) {
-      final nodeId = queue.removeFirst();
-      if (!visited.add(nodeId)) {
-        continue;
+    final work = _scanWork ?? _createScanWork();
+    _scanWork = work;
+    var remaining = _scanQuantum;
+    while (remaining > 0 && work.phase != _ProcessorScanPhase.done) {
+      if (!_isCurrentScan(revision)) {
+        return;
       }
-      final nodeView = _scanNode(nodeId, registrations);
-      if (nodeView != null) {
-        queue.addAll(nodeView.node.children.children);
+      switch (work.phase) {
+        case _ProcessorScanPhase.changed:
+          if (!_hasActiveRegistrations(work.registrations) ||
+              (work.nodeScan == null &&
+                  work.nodeIndex >= work.nodeIds.length)) {
+            work.nodeScan = null;
+            work.phase = _hasActiveRegistrations(work.pendingRegistrations)
+                ? _ProcessorScanPhase.tree
+                : _ProcessorScanPhase.done;
+            continue;
+          }
+          final nodeScan = work.nodeScan;
+          if (nodeScan == null) {
+            final nodeId = work.nodeIds[work.nodeIndex];
+            work.nodeIndex += 1;
+            work.nodeScan = _createNodeScan(nodeId, work.registrations);
+          } else {
+            final step = _stepNodeScan(nodeScan);
+            if (step.blocked) {
+              if (!_isCurrentScan(revision)) {
+                return;
+              }
+              _blockScan();
+              remaining = 0;
+              break;
+            }
+            if (step.complete) {
+              work.nodeScan = null;
+            }
+          }
+          remaining -= 1;
+        case _ProcessorScanPhase.tree:
+          if (!_hasActiveRegistrations(work.pendingRegistrations)) {
+            work.nodeScan = null;
+            work.treeQueue.clear();
+            work.visited.clear();
+            work.phase = _ProcessorScanPhase.done;
+            continue;
+          }
+          if (!work.treeInitialized) {
+            final roots = backend.state.currentState.document?.roots?.children;
+            if (roots != null) {
+              work.treeQueue.addAll(roots);
+            }
+            work.treeInitialized = true;
+          }
+          final nodeScan = work.nodeScan;
+          if (nodeScan != null) {
+            final step = _stepNodeScan(nodeScan);
+            if (step.blocked) {
+              if (!_isCurrentScan(revision)) {
+                return;
+              }
+              _blockScan();
+              remaining = 0;
+              break;
+            }
+            if (step.complete) {
+              final nodeView = step.nodeView;
+              if (nodeView != null) {
+                work.treeQueue.addAll(nodeView.node.children.children);
+              }
+              work.nodeScan = null;
+            }
+            remaining -= 1;
+            break;
+          }
+          if (work.treeQueue.isEmpty) {
+            work.phase = _ProcessorScanPhase.fallback;
+            continue;
+          }
+          final nodeId = work.treeQueue.removeFirst();
+          remaining -= 1;
+          if (work.visited.add(nodeId)) {
+            work.nodeScan = _createNodeScan(nodeId, work.pendingRegistrations);
+          }
+        case _ProcessorScanPhase.fallback:
+          if (!_hasActiveRegistrations(work.pendingRegistrations) ||
+              (work.nodeScan == null &&
+                  work.fallbackIndex >= work.nodeIds.length)) {
+            work.nodeScan = null;
+            work.phase = _ProcessorScanPhase.done;
+            continue;
+          }
+          final nodeScan = work.nodeScan;
+          if (nodeScan != null) {
+            final step = _stepNodeScan(nodeScan);
+            if (step.blocked) {
+              if (!_isCurrentScan(revision)) {
+                return;
+              }
+              _blockScan();
+              remaining = 0;
+              break;
+            }
+            if (step.complete) {
+              work.nodeScan = null;
+            }
+            remaining -= 1;
+            break;
+          }
+          final nodeId = work.nodeIds[work.fallbackIndex];
+          work.fallbackIndex += 1;
+          remaining -= 1;
+          if (!work.visited.contains(nodeId)) {
+            work.nodeScan = _createNodeScan(nodeId, work.pendingRegistrations);
+          }
+        case _ProcessorScanPhase.done:
+          break;
       }
+    }
+    if (!_isCurrentScan(revision)) {
+      return;
+    }
+    if (work.phase == _ProcessorScanPhase.done) {
+      _scanWork = null;
+      _scheduledScanRevision = null;
+      _scheduleScan();
+      _drainCandidates();
+      return;
+    }
+    _drainCandidates();
+    if (!_isCurrentScan(revision)) {
+      return;
+    }
+    if (!_scanBlocked) {
+      _scheduleScanContinuation(revision);
     }
   }
 
-  NodeView? _scanNode(NodeId nodeId, List<_RegisteredProcessor> registrations) {
-    if (registrations.isEmpty) {
-      return null;
+  bool _isCurrentScan(int revision) =>
+      !_closed &&
+      revision == _scanRevision &&
+      _scheduledScanRevision == revision;
+
+  bool _hasActiveRegistrations(List<_RegisteredProcessor> registrations) =>
+      registrations.any((registration) => registration.active);
+
+  void _invalidateScheduledScan() {
+    _scanRevision += 1;
+    _scheduledScanRevision = null;
+    _scheduledScanContinuationRevision = null;
+    _scanWork = null;
+    _scanBlocked = false;
+    final scanUnblocked = _scanUnblocked;
+    _scanUnblocked = null;
+    if (scanUnblocked != null && !scanUnblocked.isCompleted) {
+      scanUnblocked.complete();
     }
+  }
+
+  void _blockScan() {
+    _scanBlocked = true;
+    _scanUnblocked ??= Completer<void>();
+  }
+
+  void _scheduleScanContinuation(int revision) {
+    if (_scheduledScanContinuationRevision != null) {
+      return;
+    }
+    _scheduledScanContinuationRevision = revision;
+    Timer.run(() {
+      if (_scheduledScanContinuationRevision != revision) {
+        return;
+      }
+      _scheduledScanContinuationRevision = null;
+      _runScan(revision);
+    });
+  }
+
+  _ProcessorNodeScan _createNodeScan(
+    NodeId nodeId,
+    List<_RegisteredProcessor> registrations,
+  ) {
     final expectedEpoch = backend.state.currentState.document?.coordinate.epoch;
-    if (expectedEpoch == null) {
-      for (final registration in registrations) {
-        _removeCandidate(registration, nodeId);
-      }
-      return null;
-    }
     NodeView? nodeView;
-    try {
-      nodeView = backend.state.nodeView(nodeId);
-    } catch (error, stackTrace) {
-      for (final registration in registrations) {
-        _removeCandidate(registration, nodeId);
-        if (registration.active) {
-          _emitError(
-            phase: ProcessorErrorPhase.view,
-            registration: registration,
-            nodeId: nodeId,
-            error: error,
-            stackTrace: stackTrace,
-          );
-        }
-      }
-      return null;
-    }
-    if (nodeView == null) {
-      for (final registration in registrations) {
-        _removeCandidate(registration, nodeId);
-      }
-      return null;
-    }
-    for (final registration in registrations) {
-      if (!registration.active) {
-        continue;
-      }
-      final processor = registration.processor;
-      if (nodeView.node.stability == 'provisional' &&
-          !(registration.descriptor.acceptsProvisional &&
-              registration.allowProvisional)) {
-        _removeCandidate(registration, nodeId);
-        continue;
-      }
-      bool matches;
+    Object? viewError;
+    StackTrace? viewStackTrace;
+    var viewFailed = false;
+    if (expectedEpoch != null) {
       try {
-        matches = processor.matches(nodeView.node);
+        nodeView = backend.state.nodeView(nodeId);
       } catch (error, stackTrace) {
-        _removeCandidate(registration, nodeId);
-        _emitError(
-          phase: ProcessorErrorPhase.matches,
-          registration: registration,
-          nodeId: nodeId,
-          error: error,
-          stackTrace: stackTrace,
-        );
-        continue;
+        viewFailed = true;
+        viewError = error;
+        viewStackTrace = stackTrace;
       }
-      if (matches && registration.active) {
-        _enqueueCandidate(
-          registration,
-          expectedEpoch,
-          nodeId,
-          nodeView.node.version,
+    }
+    return _ProcessorNodeScan(
+      nodeId: nodeId,
+      registrations: registrations,
+      expectedEpoch: expectedEpoch,
+      nodeView: nodeView,
+      viewFailed: viewFailed,
+      viewError: viewError,
+      viewStackTrace: viewStackTrace,
+    );
+  }
+
+  _ProcessorNodeScanStep _stepNodeScan(_ProcessorNodeScan scan) {
+    final registration = scan.registrationIndex < scan.registrations.length
+        ? scan.registrations[scan.registrationIndex]
+        : null;
+    if (registration == null) {
+      return _ProcessorNodeScanStep(
+        complete: true,
+        nodeView: scan.nodeView,
+        blocked: false,
+      );
+    }
+    if (registration.active) {
+      if (scan.expectedEpoch == null) {
+        _removeCandidate(registration, scan.nodeId);
+      } else if (scan.viewFailed) {
+        _removeCandidate(registration, scan.nodeId);
+        _emitError(
+          phase: ProcessorErrorPhase.view,
+          registration: registration,
+          nodeId: scan.nodeId,
+          error: scan.viewError!,
+          stackTrace: scan.viewStackTrace!,
         );
       } else {
-        _removeCandidate(registration, nodeId);
+        final nodeView = scan.nodeView;
+        if (nodeView == null) {
+          _removeCandidate(registration, scan.nodeId);
+          _advanceNodeScan(scan, registration);
+          return _nodeScanStep(scan);
+        }
+        final processor = registration.processor;
+        if (nodeView.node.stability == 'provisional' &&
+            !(registration.descriptor.acceptsProvisional &&
+                registration.allowProvisional)) {
+          _removeCandidate(registration, scan.nodeId);
+        } else {
+          bool matches;
+          try {
+            matches = processor.matches(nodeView.node);
+          } catch (error, stackTrace) {
+            _removeCandidate(registration, scan.nodeId);
+            _emitError(
+              phase: ProcessorErrorPhase.matches,
+              registration: registration,
+              nodeId: scan.nodeId,
+              error: error,
+              stackTrace: stackTrace,
+            );
+            _advanceNodeScan(scan, registration);
+            return _nodeScanStep(scan);
+          }
+          if (matches && registration.active) {
+            if (!_enqueueCandidate(
+              registration,
+              scan.expectedEpoch!,
+              scan.nodeId,
+              nodeView.processorInputVersion,
+            )) {
+              return _ProcessorNodeScanStep(
+                complete: false,
+                nodeView: nodeView,
+                blocked: true,
+              );
+            }
+          } else {
+            _removeCandidate(registration, scan.nodeId);
+          }
+        }
       }
     }
-    return nodeView;
+    _advanceNodeScan(scan, registration);
+    return _nodeScanStep(scan);
   }
 
-  void _enqueueCandidate(
+  void _advanceNodeScan(
+    _ProcessorNodeScan scan,
+    _RegisteredProcessor registration,
+  ) {
+    if (scan.registrationIndex < scan.registrations.length &&
+        identical(scan.registrations[scan.registrationIndex], registration)) {
+      scan.registrationIndex += 1;
+    }
+  }
+
+  _ProcessorNodeScanStep _nodeScanStep(_ProcessorNodeScan scan) {
+    return _ProcessorNodeScanStep(
+      complete: scan.registrationIndex >= scan.registrations.length,
+      nodeView: scan.nodeView,
+      blocked: false,
+    );
+  }
+
+  bool _enqueueCandidate(
     _RegisteredProcessor registration,
     Epoch expectedEpoch,
     NodeId nodeId,
-    NodeVersion expectedNodeVersion, {
+    ProcessorInputVersion expectedInputVersion, {
     bool front = false,
   }) {
     if (_closed || !registration.active) {
-      return;
+      return true;
     }
     final rejected = _rejectedCandidates[registration]?[nodeId];
     if (rejected?.epoch == expectedEpoch &&
-        rejected?.nodeVersion == expectedNodeVersion) {
-      return;
+        rejected?.inputVersion == expectedInputVersion) {
+      return true;
     }
-    final registrationCandidates = _candidates.putIfAbsent(
-      registration,
-      () => <NodeId, _ProcessorCandidate>{},
-    );
-    final existing = registrationCandidates[nodeId];
+    final registrationCandidates = _candidates[registration];
+    final existing = registrationCandidates?[nodeId];
     if (existing != null) {
       existing.expectedEpoch = expectedEpoch;
-      existing.expectedNodeVersion = expectedNodeVersion;
-      return;
+      existing.expectedInputVersion = expectedInputVersion;
+      return true;
     }
     if (_candidateCount >= _maxQueuedCandidates) {
-      _emitError(
-        phase: ProcessorErrorPhase.begin,
-        registration: registration,
-        nodeId: nodeId,
-        error: MdstreamException(
-          'processor candidate queue limit $_maxQueuedCandidates exceeded',
-          status: BindingStatus.resourceLimitExceeded.value,
-          statusName: BindingStatus.resourceLimitExceeded.statusName,
-          detailCode: 'processor.candidate_queue_limit',
-        ),
-        stackTrace: StackTrace.current,
-      );
-      if (registrationCandidates.isEmpty) {
-        _candidates.remove(registration);
+      if (!_candidateQueueSaturated) {
+        _candidateQueueSaturated = true;
+        _emitError(
+          phase: ProcessorErrorPhase.begin,
+          registration: registration,
+          nodeId: nodeId,
+          error: MdstreamException(
+            'processor candidate queue limit $_maxQueuedCandidates exceeded',
+            status: BindingStatus.resourceLimitExceeded.value,
+            statusName: BindingStatus.resourceLimitExceeded.statusName,
+            detailCode: 'processor.candidate_queue_limit',
+          ),
+          stackTrace: StackTrace.current,
+        );
       }
-      return;
+      return _closed || !registration.active;
+    }
+    final candidates =
+        registrationCandidates ?? <NodeId, _ProcessorCandidate>{};
+    if (registrationCandidates == null) {
+      _candidates[registration] = candidates;
     }
     final candidate = _ProcessorCandidate(
       registration: registration,
       expectedEpoch: expectedEpoch,
       nodeId: nodeId,
-      expectedNodeVersion: expectedNodeVersion,
+      expectedInputVersion: expectedInputVersion,
     );
-    registrationCandidates[nodeId] = candidate;
+    candidates[nodeId] = candidate;
     if (front) {
       _candidateQueue.addFirst(candidate);
     } else {
       _candidateQueue.addLast(candidate);
     }
     _candidateCount += 1;
+    return true;
   }
 
   void _removeCandidate(_RegisteredProcessor registration, NodeId nodeId) {
@@ -687,6 +1001,7 @@ final class _ProcessorScheduler {
     }
     candidate.queued = false;
     _candidateCount -= 1;
+    _markCandidateCapacityAvailable();
     if (registrationCandidates!.isEmpty) {
       _candidates.remove(registration);
     }
@@ -708,6 +1023,7 @@ final class _ProcessorScheduler {
       candidate.queued = false;
       _candidateCount -= 1;
     }
+    _markCandidateCapacityAvailable();
     _compactCandidateQueue();
   }
 
@@ -720,6 +1036,8 @@ final class _ProcessorScheduler {
     _candidates.clear();
     _candidateQueue.clear();
     _candidateCount = 0;
+    _candidateQueueSaturated = false;
+    _dispatchBlocked = false;
   }
 
   void _rejectCandidate(_ProcessorCandidate candidate) {
@@ -729,7 +1047,7 @@ final class _ProcessorScheduler {
     );
     rejected[candidate.nodeId] = _CandidateExpectation(
       epoch: candidate.expectedEpoch,
-      nodeVersion: candidate.expectedNodeVersion,
+      inputVersion: candidate.expectedInputVersion,
     );
   }
 
@@ -771,6 +1089,7 @@ final class _ProcessorScheduler {
         _candidates.remove(candidate.registration);
       }
       _candidateCount -= 1;
+      _markCandidateCapacityAvailable();
       _compactCandidateQueue();
       return candidate;
     }
@@ -797,25 +1116,80 @@ final class _ProcessorScheduler {
   }
 
   void _drainCandidates() {
-    if (_dispatching || _closed) {
+    if (_dispatching ||
+        _dispatchBlocked ||
+        _scheduledDispatchRevision != null ||
+        _closed) {
       return;
     }
     _dispatching = true;
+    var attempts = 0;
     try {
-      while (_candidateCount > 0 && _inFlight.length < _maxDispatchJobs) {
+      while (_candidateCount > 0 &&
+          _inFlight.length < _maxDispatchJobs &&
+          attempts < _dispatchQuantum) {
         final candidate = _takeCandidate();
         if (candidate == null) {
           break;
         }
+        attempts += 1;
         if (!candidate.registration.active) {
           continue;
         }
         if (_begin(candidate) == _BeginDisposition.blocked) {
+          _dispatchBlocked = true;
           break;
         }
       }
     } finally {
       _dispatching = false;
+    }
+    if (!_dispatchBlocked &&
+        _candidateCount > 0 &&
+        _inFlight.length < _maxDispatchJobs) {
+      _scheduleDispatch();
+    }
+  }
+
+  void _scheduleDispatch() {
+    if (_closed ||
+        _dispatchBlocked ||
+        _scheduledDispatchRevision != null ||
+        _candidateCount == 0 ||
+        _inFlight.length >= _maxDispatchJobs) {
+      return;
+    }
+    final revision = _dispatchRevision;
+    _scheduledDispatchRevision = revision;
+    Timer.run(() {
+      if (_scheduledDispatchRevision != revision) {
+        return;
+      }
+      _scheduledDispatchRevision = null;
+      _drainCandidates();
+    });
+  }
+
+  void _invalidateScheduledDispatch() {
+    _dispatchRevision += 1;
+    _scheduledDispatchRevision = null;
+    _dispatchBlocked = false;
+  }
+
+  void _markCandidateCapacityAvailable() {
+    if (_candidateCount < _maxQueuedCandidates) {
+      if (_scanBlocked) {
+        _scanBlocked = false;
+        final scanUnblocked = _scanUnblocked;
+        _scanUnblocked = null;
+        if (scanUnblocked != null && !scanUnblocked.isCompleted) {
+          scanUnblocked.complete();
+        }
+        final revision = _scheduledScanRevision;
+        if (revision != null) {
+          _scheduleScanContinuation(revision);
+        }
+      }
     }
   }
 
@@ -823,7 +1197,7 @@ final class _ProcessorScheduler {
     final registration = candidate.registration;
     final expectedEpoch = candidate.expectedEpoch;
     final nodeId = candidate.nodeId;
-    final expectedNodeVersion = candidate.expectedNodeVersion;
+    final expectedInputVersion = candidate.expectedInputVersion;
     final processor = registration.processor;
     ProcessorRequestView request;
     final parentRemovals = _removedDuringBegin;
@@ -834,7 +1208,7 @@ final class _ProcessorScheduler {
       final result = backend.beginProcessor(
         expectedEpoch: expectedEpoch,
         nodeId: nodeId,
-        expectedNodeVersion: expectedNodeVersion,
+        expectedInputVersion: expectedInputVersion,
         processorId: registration.descriptor.id,
         processorVersion: registration.descriptor.version,
         configurationVersion: registration.configurationVersion,
@@ -856,12 +1230,13 @@ final class _ProcessorScheduler {
     } catch (error, stackTrace) {
       final normalized = MdstreamException.fromObject(error);
       if (normalized.status == BindingStatus.resourceLimitExceeded.value &&
+          _retryableResourceLimitDetailCodes.contains(normalized.detailCode) &&
           _inFlight.isNotEmpty) {
         _enqueueCandidate(
           registration,
           expectedEpoch,
           nodeId,
-          expectedNodeVersion,
+          expectedInputVersion,
           front: true,
         );
         return _BeginDisposition.blocked;
@@ -915,9 +1290,10 @@ final class _ProcessorScheduler {
             .whenComplete(() {
               if (identical(_inFlight[request.requestId], entry)) {
                 _inFlight.remove(request.requestId);
+                _dispatchBlocked = false;
               }
               _jobs.remove(job);
-              _drainCandidates();
+              _scheduleDispatch();
               _scheduleScan();
             });
     _jobs.add(job);
@@ -1025,16 +1401,68 @@ final class _ProcessorScheduler {
     registration.active = false;
     _processors.remove(registration.descriptor.id);
     _pendingRegistrations.remove(registration);
+    _removeRegistrationFromScan(registration);
     _removeRegistrationCandidates(registration);
     _rejectedCandidates.remove(registration);
+    var capacityChanged = false;
     for (final entry in List<_InFlightProcessor>.of(_inFlight.values)) {
       if (identical(entry.registration, registration)) {
         entry.cancellation.cancel('processor_unregistered');
         _cancel(entry, ProcessorErrorPhase.cancel);
         _inFlight.remove(entry.request.requestId);
+        capacityChanged = true;
       }
     }
+    if (capacityChanged) {
+      _dispatchBlocked = false;
+    }
+    if (_processors.isEmpty) {
+      _invalidateScheduledScan();
+      _pendingNodes.clear();
+      _pendingRegistrations.clear();
+    }
     _drainCandidates();
+  }
+
+  void _removeRegistrationFromScan(_RegisteredProcessor registration) {
+    final work = _scanWork;
+    if (work == null) {
+      return;
+    }
+    work.registrations = work.registrations
+        .where((candidate) => !identical(candidate, registration))
+        .toList(growable: false);
+    work.pendingRegistrations = work.pendingRegistrations
+        .where((candidate) => !identical(candidate, registration))
+        .toList(growable: false);
+    final scan = work.nodeScan;
+    if (scan != null) {
+      final index = scan.registrations.indexWhere(
+        (candidate) => identical(candidate, registration),
+      );
+      if (index >= 0) {
+        scan.registrations = scan.registrations
+            .where((candidate) => !identical(candidate, registration))
+            .toList(growable: false);
+        if (index < scan.registrationIndex) {
+          scan.registrationIndex -= 1;
+        }
+      }
+    }
+    if (work.phase == _ProcessorScanPhase.changed &&
+        !_hasActiveRegistrations(work.registrations)) {
+      work.nodeScan = null;
+      work.phase = _hasActiveRegistrations(work.pendingRegistrations)
+          ? _ProcessorScanPhase.tree
+          : _ProcessorScanPhase.done;
+    } else if ((work.phase == _ProcessorScanPhase.tree ||
+            work.phase == _ProcessorScanPhase.fallback) &&
+        !_hasActiveRegistrations(work.pendingRegistrations)) {
+      work.nodeScan = null;
+      work.treeQueue.clear();
+      work.visited.clear();
+      work.phase = _ProcessorScanPhase.done;
+    }
   }
 
   void _cancel(_InFlightProcessor entry, ProcessorErrorPhase phase) {

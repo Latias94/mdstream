@@ -15,11 +15,26 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from build_native import (
+    HEADER_PATH,
     IOS_DEPLOYMENT_TARGET,
     MACOS_DEPLOYMENT_TARGET,
     PLUGIN_ROOT,
     REPOSITORY_ROOT,
     REQUIRED_EXPORTS,
+)
+from native_artifact import (
+    FRAMEWORK_MODULE_MAP,
+    NATIVE_MAGIC_PREFIX_BYTES,
+    NATIVE_CONTRACTS,
+    NativeArtifactError,
+    canonical_flutter_native_binary,
+    expected_native_groups,
+    inspect_framework_info,
+    inspect_xcframework,
+    is_canonical_flutter_native_path,
+    is_native_like_artifact,
+    is_reserved_flutter_native_path,
+    validate_native_image,
 )
 from package_metadata import PackageMetadataError, package_archive_path
 
@@ -28,7 +43,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 from archive_policy import (  # noqa: E402
     ArchiveLimits,
     ArchivePolicyError,
-    extraction_path,
+    extract_archive,
     read_archive,
 )
 
@@ -42,6 +57,11 @@ APPLE_HOST_TARGETS = {
     "ios": ("IPHONEOS_DEPLOYMENT_TARGET", "ios", IOS_DEPLOYMENT_TARGET),
     "macos": ("MACOSX_DEPLOYMENT_TARGET", "osx", MACOS_DEPLOYMENT_TARGET),
 }
+SWIFTPM_PLATFORMS = {
+    "ios": ("iOS", IOS_DEPLOYMENT_TARGET),
+    "macos": ("macOS", MACOS_DEPLOYMENT_TARGET),
+}
+SWIFTPM_CONSUMER_NAME = "MdstreamSwiftPMConsumer"
 
 
 class PackageSmokeError(RuntimeError):
@@ -105,54 +125,6 @@ def validate_dependency_graph(
         raise PackageSmokeError(
             f"Flutter dependency graph contains forbidden package(s): {', '.join(matches)}"
         )
-
-
-def _native_format(data: bytes) -> str:
-    prefix = data[:4]
-    if prefix == b"\x7fELF":
-        return "elf"
-    if prefix[:2] == b"MZ":
-        return "pe"
-    if prefix in {
-        b"\xfe\xed\xfa\xce",
-        b"\xce\xfa\xed\xfe",
-        b"\xfe\xed\xfa\xcf",
-        b"\xcf\xfa\xed\xfe",
-        b"\xca\xfe\xba\xbe",
-        b"\xbe\xba\xfe\xca",
-        b"\xca\xfe\xba\xbf",
-        b"\xbf\xba\xfe\xca",
-    }:
-        return "macho"
-    return "unknown"
-
-
-def _native_binary(name: str) -> tuple[str, str, str] | None:
-    parts = PurePosixPath(name).parts
-    if len(parts) == 6 and parts[:4] == (
-        "android",
-        "src",
-        "main",
-        "jniLibs",
-    ) and parts[5] == "libmdstream_ffi.so":
-        return "android", f"android/{parts[4]}", "elf"
-    if (
-        len(parts) == 4
-        and parts[0:2] == ("linux", "lib")
-        and parts[3] == "libmdstream_ffi.so"
-    ):
-        return "linux", f"linux/{parts[2]}", "elf"
-    if (
-        len(parts) == 4
-        and parts[0:2] == ("windows", "lib")
-        and parts[3] == "mdstream_ffi.dll"
-    ):
-        return "windows", f"windows/{parts[2]}", "pe"
-    if len(parts) >= 5 and parts[0] in {"ios", "macos"}:
-        if parts[1] == "MdstreamFFI.xcframework" and parts[-1] == "MdstreamFFI":
-            if parts[-2] == "MdstreamFFI.framework":
-                return parts[0], f"{parts[0]}/{parts[2]}", "macho"
-    return None
 
 
 def _group_for_entry(name: str) -> tuple[str, str] | None:
@@ -231,13 +203,105 @@ def inspect_package_archive(
                     f"{import_matches[0]}: {name}"
                 )
 
+    try:
+        canonical_header = HEADER_PATH.read_bytes()
+    except OSError as error:
+        raise PackageSmokeError(
+            f"failed to read canonical mdstream header: {error}"
+        ) from error
+
+    apple_binaries: dict[str, str] = {}
+    for platform_name in ("ios", "macos"):
+        framework_root = f"{platform_name}/MdstreamFFI.xcframework/"
+        info_name = f"{framework_root}Info.plist"
+        info = entries.get(info_name)
+        framework_entries = any(name.startswith(framework_root) for name in entries)
+        if info is None:
+            if framework_entries:
+                raise PackageSmokeError(
+                    f"{platform_name} XCFramework does not contain Info.plist"
+                )
+            continue
+        try:
+            slices = inspect_xcframework(info, platform_name)
+        except NativeArtifactError as error:
+            raise PackageSmokeError(
+                f"invalid {platform_name} XCFramework metadata: {error}"
+            ) from error
+        expected_files = {info_name}
+        for slice_ in slices:
+            bundle_root = (
+                f"{framework_root}{slice_.identifier}/MdstreamFFI.framework/"
+            )
+            binary_name = f"{framework_root}{slice_.binary_path}"
+            header_name = f"{bundle_root}Headers/mdstream.h"
+            module_name = f"{bundle_root}Modules/module.modulemap"
+            bundle_info_name = f"{bundle_root}Info.plist"
+            expected_files.update(
+                (binary_name, header_name, module_name, bundle_info_name)
+            )
+            missing = [
+                name
+                for name in (header_name, module_name, bundle_info_name)
+                if name not in entries
+            ]
+            if missing:
+                raise PackageSmokeError(
+                    "Apple framework slice is missing " + ", ".join(missing)
+                )
+            if entries[header_name] != canonical_header:
+                raise PackageSmokeError(
+                    f"Apple framework header differs from mdstream.h: {header_name}"
+                )
+            if entries[module_name] != FRAMEWORK_MODULE_MAP.encode("utf-8"):
+                raise PackageSmokeError(
+                    f"Apple framework has an unexpected module.modulemap: {module_name}"
+                )
+            try:
+                inspect_framework_info(
+                    entries[bundle_info_name],
+                    NATIVE_CONTRACTS[slice_.group],
+                )
+            except NativeArtifactError as error:
+                raise PackageSmokeError(
+                    f"invalid Apple framework Info.plist {bundle_info_name}: {error}"
+                ) from error
+            apple_binaries[binary_name] = slice_.group
+        actual_files = {
+            name for name in entries if name.startswith(framework_root)
+        }
+        if actual_files != expected_files:
+            missing = sorted(expected_files - actual_files)
+            unexpected = sorted(actual_files - expected_files)
+            detail = []
+            if missing:
+                detail.append(f"missing {missing[0]}")
+            if unexpected:
+                detail.append(f"unexpected {unexpected[0]}")
+            raise PackageSmokeError(
+                f"{platform_name} XCFramework file inventory mismatch: "
+                + "; ".join(detail)
+            )
+
     native_groups: dict[str, int] = {}
     platform_static = {name: 0 for name in ("android", "ios", "macos", "linux", "windows")}
     native_sizes: list[int] = []
     platform_binaries: dict[str, set[str]] = {
         name: set() for name in platform_static
     }
+    seen_apple_binaries: set[str] = set()
     for name, data in entries.items():
+        if (
+            not is_canonical_flutter_native_path(name)
+            and (
+                is_reserved_flutter_native_path(name)
+                or is_native_like_artifact(name, data[:NATIVE_MAGIC_PREFIX_BYTES])
+            )
+        ):
+            raise PackageSmokeError(
+                "publish archive contains a native-like file outside canonical "
+                f"native inventory: {name}"
+            )
         parts = PurePosixPath(name).parts
         platform_name = parts[0] if parts and parts[0] in platform_static else None
         grouped = _group_for_entry(name)
@@ -247,22 +311,34 @@ def inspect_package_archive(
         elif platform_name is not None:
             platform_static[platform_name] += len(data)
 
-        native = _native_binary(name)
+        native = canonical_flutter_native_binary(name)
         if native is None:
             continue
-        native_platform, group, expected_format = native
-        actual_format = _native_format(data)
-        if actual_format != expected_format:
+        native_platform, group = native
+        contract = NATIVE_CONTRACTS.get(group)
+        if contract is None:
             raise PackageSmokeError(
-                f"native magic mismatch for {name}: expected {expected_format}, got {actual_format}"
+                f"publish archive contains an unsupported native slice: {name}"
             )
+        if native_platform in {"ios", "macos"}:
+            if apple_binaries.get(name) != group:
+                raise PackageSmokeError(
+                    f"Apple native binary is not declared by its XCFramework: {name}"
+                )
+            seen_apple_binaries.add(name)
+        try:
+            image = validate_native_image(data, contract)
+        except NativeArtifactError as error:
+            raise PackageSmokeError(
+                f"native artifact contract mismatch for {name}: {error}"
+            ) from error
         if len(data) > native_ceiling_bytes:
             raise PackageSmokeError(
                 f"native library exceeds {native_ceiling_bytes}-byte ceiling: "
                 f"{name} ({len(data)} bytes)"
             )
         missing_symbols = [
-            symbol for symbol in REQUIRED_EXPORTS if symbol.encode("ascii") not in data
+            symbol for symbol in REQUIRED_EXPORTS if symbol not in image.exported_symbols
         ]
         if missing_symbols:
             raise PackageSmokeError(
@@ -272,33 +348,36 @@ def inspect_package_archive(
         native_sizes.append(len(data))
         platform_binaries[native_platform].add(group)
 
+    if seen_apple_binaries != set(apple_binaries):
+        missing = sorted(set(apple_binaries) - seen_apple_binaries)
+        raise PackageSmokeError(
+            "publish archive is missing XCFramework binary path(s): "
+            f"{', '.join(missing)}"
+        )
+
     if not native_sizes:
         raise PackageSmokeError("publish archive contains no mdstream native library")
 
-    expected_groups = {
-        "android": {"android/arm64-v8a", "android/armeabi-v7a", "android/x86_64"},
-        "linux": {"linux/x86_64"},
-        "windows": {"windows/x64"},
-    }
     if require_all_platforms:
         for platform_name in ("android", "ios", "macos", "linux", "windows"):
             if not platform_binaries[platform_name]:
                 raise PackageSmokeError(
                     f"publish archive has no staged {platform_name} native library"
                 )
-        for platform_name, required in expected_groups.items():
+        for platform_name in platform_binaries:
+            required = expected_native_groups(platform_name)
             missing = sorted(required - platform_binaries[platform_name])
             if missing:
                 raise PackageSmokeError(
                     f"publish archive is missing {platform_name} slice(s): "
                     f"{', '.join(missing)}"
                 )
-        if len(platform_binaries["ios"]) < 2:
-            raise PackageSmokeError("iOS XCFramework must contain device and simulator slices")
-
+    platform_native = {name: 0 for name in platform_static}
+    for group, size in native_groups.items():
+        platform_native[group.split("/", 1)[0]] += size
     increments = {
-        group: size + platform_static[group.split("/", 1)[0]]
-        for group, size in native_groups.items()
+        platform_name: platform_native[platform_name] + static_bytes
+        for platform_name, static_bytes in platform_static.items()
     }
     max_increment = max(increments.values(), default=0)
     if max_increment > increment_ceiling_bytes:
@@ -374,14 +453,263 @@ def _dependency_graph() -> dict[str, object]:
 
 
 def _extract_archive(archive: Path, destination: Path) -> None:
-    entries = _safe_archive_entries(archive)
-    for name, data in entries.items():
-        try:
-            path = extraction_path(destination, name)
-        except ArchivePolicyError as error:
-            raise PackageSmokeError(str(error)) from error
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+    try:
+        extract_archive(archive, destination)
+    except ArchivePolicyError as error:
+        raise PackageSmokeError(str(error)) from error
+
+
+def _restore_macos_frameworks(plugin_source: Path) -> None:
+    """Undo the CocoaPods build-time framework layout in a package tree."""
+    xcframework = plugin_source / "macos" / "MdstreamFFI.xcframework"
+    if not xcframework.is_dir():
+        return
+    for framework in xcframework.glob("*/*.framework"):
+        current = framework / "Versions" / "Current"
+        version = framework / "Versions" / "A"
+        if not current.is_symlink() or not version.is_dir():
+            continue
+        for name in ("MdstreamFFI", "Headers", "Modules", "Resources"):
+            root_entry = framework / name
+            if root_entry.is_symlink() or root_entry.exists():
+                root_entry.unlink()
+        for name in ("MdstreamFFI", "Headers", "Modules"):
+            shutil.move(str(version / name), str(framework / name))
+        resources = version / "Resources"
+        shutil.move(str(resources / "Info.plist"), str(framework / "Info.plist"))
+        shutil.rmtree(framework / "Versions")
+
+
+def _swiftpm_manifest_root(platform_name: str, plugin_source: Path = PLUGIN_ROOT) -> Path:
+    if platform_name not in SWIFTPM_PLATFORMS:
+        raise PackageSmokeError(
+            f"SwiftPM smoke only supports Apple platforms, got {platform_name!r}"
+        )
+    root = plugin_source / platform_name / "mdstream_flutter"
+    manifest = root / "Package.swift"
+    framework = root.parent / "MdstreamFFI.xcframework"
+    if not manifest.is_file():
+        raise PackageSmokeError(f"SwiftPM manifest does not exist: {manifest}")
+    if not framework.is_dir():
+        raise PackageSmokeError(
+            f"SwiftPM binary target does not exist: {framework}"
+        )
+    return root
+
+
+def _validate_swiftpm_manifest(platform_name: str, manifest: object) -> None:
+    if not isinstance(manifest, dict):
+        raise PackageSmokeError("swift package dump-package did not return an object")
+    if manifest.get("name") != "mdstream_flutter":
+        raise PackageSmokeError("SwiftPM manifest has an unexpected package name")
+
+    expected_platform, expected_version = SWIFTPM_PLATFORMS[platform_name]
+    platforms = manifest.get("platforms")
+    if not isinstance(platforms, list) or not any(
+        isinstance(value, dict)
+        and value.get("platformName") == platform_name
+        and value.get("version") == expected_version
+        for value in platforms
+    ):
+        raise PackageSmokeError(
+            f"SwiftPM manifest does not declare {expected_platform} {expected_version}"
+        )
+
+    products = manifest.get("products")
+    if not isinstance(products, list) or not any(
+        isinstance(value, dict)
+        and value.get("name") == "mdstream-flutter"
+        and value.get("targets") == ["mdstream_flutter"]
+        for value in products
+    ):
+        raise PackageSmokeError("SwiftPM manifest does not expose mdstream-flutter")
+
+    targets = manifest.get("targets")
+    if not isinstance(targets, list):
+        raise PackageSmokeError("SwiftPM manifest does not contain targets")
+    binary = next(
+        (
+            value
+            for value in targets
+            if isinstance(value, dict) and value.get("name") == "MdstreamFFI"
+        ),
+        None,
+    )
+    if not isinstance(binary, dict) or binary.get("type") != "binary":
+        raise PackageSmokeError("SwiftPM manifest does not declare MdstreamFFI binary target")
+    if binary.get("path") != "../MdstreamFFI.xcframework":
+        raise PackageSmokeError("SwiftPM MdstreamFFI target points at an unexpected path")
+
+    wrapper = next(
+        (
+            value
+            for value in targets
+            if isinstance(value, dict) and value.get("name") == "mdstream_flutter"
+        ),
+        None,
+    )
+    dependencies = wrapper.get("dependencies") if isinstance(wrapper, dict) else None
+    if not isinstance(dependencies, list) or not any(
+        isinstance(value, dict)
+        and isinstance(value.get("byName"), list)
+        and value.get("byName")
+        and value["byName"][0] == "MdstreamFFI"
+        for value in dependencies
+    ):
+        raise PackageSmokeError(
+            "SwiftPM mdstream_flutter target does not depend on MdstreamFFI"
+        )
+
+
+def _write_swiftpm_consumer(root: Path, platform_name: str, package_root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    _, minimum_version = SWIFTPM_PLATFORMS[platform_name]
+    swift_version = minimum_version.split(".", 1)[0]
+    platform_clause = (
+        f".iOS(.v{swift_version})"
+        if platform_name == "ios"
+        else f".macOS(.v{swift_version})"
+    )
+    package_path = json.dumps(str(package_root), ensure_ascii=True)
+    package_manifest = f'''// swift-tools-version: 5.9
+
+import PackageDescription
+
+let package = Package(
+    name: "{SWIFTPM_CONSUMER_NAME}",
+    platforms: [{platform_clause}],
+    dependencies: [
+        .package(path: {package_path}),
+    ],
+    targets: [
+        .target(
+            name: "{SWIFTPM_CONSUMER_NAME}",
+            dependencies: [
+                .product(name: "mdstream-flutter", package: "mdstream_flutter"),
+            ],
+            path: "Sources/{SWIFTPM_CONSUMER_NAME}"
+        ),
+        .testTarget(
+            name: "{SWIFTPM_CONSUMER_NAME}Tests",
+            dependencies: ["{SWIFTPM_CONSUMER_NAME}"],
+            path: "Tests/{SWIFTPM_CONSUMER_NAME}"
+        ),
+    ]
+)
+'''
+    source = '''import mdstream_flutter
+
+public enum MdstreamSwiftPMSmoke {
+    public static func bundledABIVersion() -> UInt32 {
+        mdstream_abi_version()
+    }
+
+    public static func bundledPackageVersion() -> String {
+        guard let value = mdstream_package_version() else {
+            return ""
+        }
+        return String(cString: value)
+    }
+}
+'''
+    tests = f'''import XCTest
+@testable import {SWIFTPM_CONSUMER_NAME}
+
+final class {SWIFTPM_CONSUMER_NAME}Tests: XCTestCase {{
+    func testBundledLibraryLoads() {{
+        XCTAssertEqual(MdstreamSwiftPMSmoke.bundledABIVersion(), 1)
+        XCTAssertFalse(MdstreamSwiftPMSmoke.bundledPackageVersion().isEmpty)
+    }}
+}}
+'''
+    (root / "Package.swift").write_text(package_manifest, encoding="utf-8")
+    source_root = root / "Sources" / SWIFTPM_CONSUMER_NAME
+    source_root.mkdir(parents=True, exist_ok=True)
+    (source_root / "MdstreamSwiftPMSmoke.swift").write_text(
+        source, encoding="utf-8"
+    )
+    test_root = root / "Tests" / SWIFTPM_CONSUMER_NAME
+    test_root.mkdir(parents=True, exist_ok=True)
+    (test_root / "MdstreamSwiftPMSmokeTests.swift").write_text(
+        tests, encoding="utf-8"
+    )
+
+
+def run_swiftpm_smoke(
+    *,
+    platform_name: str,
+    device: str | None,
+    keep_temporary: bool,
+    plugin_source: Path = PLUGIN_ROOT,
+) -> None:
+    if sys.platform != "darwin":
+        raise PackageSmokeError(
+            "SwiftPM Apple smoke requires a macOS runner; Linux emulation is unsupported"
+        )
+    package_root = _swiftpm_manifest_root(platform_name, plugin_source)
+    if platform_name == "ios" and not device:
+        raise PackageSmokeError("iOS SwiftPM smoke requires a simulator device id")
+
+    manifest_result = _run(
+        [
+            "swift",
+            "package",
+            "--package-path",
+            str(package_root),
+            "dump-package",
+        ],
+        cwd=REPOSITORY_ROOT,
+        capture=True,
+    )
+    try:
+        manifest = json.loads(manifest_result.stdout)
+    except json.JSONDecodeError as error:
+        raise PackageSmokeError(f"invalid SwiftPM manifest JSON: {error}") from error
+    _validate_swiftpm_manifest(platform_name, manifest)
+
+    temporary = Path(tempfile.mkdtemp(prefix=f"mdstream-swiftpm-{platform_name}-"))
+    try:
+        _write_swiftpm_consumer(temporary, platform_name, package_root)
+        env = os.environ.copy()
+        env.pop("MDSTREAM_NATIVE_LIBRARY", None)
+        env.pop("MDSTREAM_FFI_LIBRARY", None)
+        if platform_name == "ios":
+            assert device is not None
+            _run(
+                [
+                    "xcodebuild",
+                    "test",
+                    "-scheme",
+                    f"{SWIFTPM_CONSUMER_NAME}-Package",
+                    "-destination",
+                    f"platform=iOS Simulator,id={device}",
+                    "-derivedDataPath",
+                    str(temporary / "DerivedData"),
+                    "CODE_SIGNING_ALLOWED=NO",
+                    "CODE_SIGNING_REQUIRED=NO",
+                ],
+                cwd=temporary,
+                env=env,
+            )
+        else:
+            _run(
+                [
+                    "swift",
+                    "test",
+                    "--package-path",
+                    str(temporary),
+                    "--scratch-path",
+                    str(temporary / ".build"),
+                ],
+                cwd=REPOSITORY_ROOT,
+                env=env,
+            )
+    finally:
+        _restore_macos_frameworks(plugin_source)
+        if keep_temporary:
+            print(f"kept temporary SwiftPM consumer: {temporary}")
+        else:
+            shutil.rmtree(temporary, ignore_errors=True)
 
 
 def configure_apple_host_target(project_root: Path, platform_name: str) -> None:
@@ -484,6 +812,7 @@ def run_runtime_smoke(
             env=env,
         )
     finally:
+        _restore_macos_frameworks(plugin_source)
         if keep_temporary:
             print(f"kept temporary smoke app: {temporary}")
         else:
@@ -495,7 +824,16 @@ def _parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--host", action="store_true")
     mode.add_argument("--release", action="store_true")
-    mode.add_argument("--archive", type=Path)
+    mode.add_argument(
+        "--swiftpm",
+        action="store_true",
+        help="Run a downstream SwiftPM consumer against an Apple package manifest",
+    )
+    parser.add_argument(
+        "--archive",
+        type=Path,
+        help="Use this exact publish archive as the plugin source",
+    )
     parser.add_argument(
         "--platform", choices=("ios", "macos", "linux", "windows")
     )
@@ -518,6 +856,69 @@ def _host_platform() -> str:
 
 def main() -> int:
     args = _parse_args()
+    if args.swiftpm:
+        try:
+            if args.platform not in SWIFTPM_PLATFORMS:
+                raise PackageSmokeError(
+                    "--swiftpm requires --platform ios or --platform macos"
+                )
+            if args.archive is not None:
+                budget = _load_budget()
+                forbidden = _forbidden_dependencies(budget)
+                report = inspect_package_archive(
+                    args.archive,
+                    forbidden_terms=forbidden,
+                    native_ceiling_bytes=_budget_ceiling(
+                        budget, "flutter_native_library"
+                    ),
+                    increment_ceiling_bytes=_budget_ceiling(
+                        budget, "platform_package_increment"
+                    ),
+                    require_all_platforms=False,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "schema": "mdstream.flutter-swiftpm-archive/1",
+                            "archive": str(args.archive),
+                            "archive_bytes": report.archive_bytes,
+                            "platforms": report.platforms,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+                with tempfile.TemporaryDirectory(
+                    prefix="mdstream-flutter-swiftpm-archive-"
+                ) as temporary:
+                    extracted = Path(temporary) / "plugin"
+                    _extract_archive(args.archive, extracted)
+                    run_swiftpm_smoke(
+                        platform_name=args.platform,
+                        device=args.device,
+                        keep_temporary=args.keep_temporary,
+                        plugin_source=extracted,
+                    )
+                return 0
+            if not args.skip_native_build:
+                _run(
+                    [
+                        sys.executable,
+                        str(Path(__file__).with_name("build_native.py")),
+                        args.platform,
+                    ],
+                    cwd=REPOSITORY_ROOT,
+                )
+            run_swiftpm_smoke(
+                platform_name=args.platform,
+                device=args.device,
+                keep_temporary=args.keep_temporary,
+                plugin_source=PLUGIN_ROOT,
+            )
+        except PackageSmokeError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        return 0
     try:
         default_archive = package_archive_path()
     except PackageMetadataError as error:

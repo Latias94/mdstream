@@ -5,15 +5,17 @@ use mdstream_bindings_core::{
 };
 use mdstream_ffi::{
     MDSTREAM_ABI_VERSION, MdstreamAllocationMetrics, MdstreamBuffer, MdstreamCallResult,
-    MdstreamEngineResult, MdstreamPayloadResult, MdstreamReducerResult, mdstream_abi_version,
-    mdstream_allocation_metrics, mdstream_allocation_metrics_struct_size,
-    mdstream_binding_options_schema, mdstream_binding_schema, mdstream_buffer_free,
-    mdstream_buffer_struct_size, mdstream_call_result_struct_size, mdstream_engine_append,
-    mdstream_engine_execute, mdstream_engine_free, mdstream_engine_new,
-    mdstream_engine_result_struct_size, mdstream_output_free, mdstream_output_len,
-    mdstream_output_remaining, mdstream_output_take, mdstream_package_version,
-    mdstream_payload_result_struct_size, mdstream_reducer_apply_change, mdstream_reducer_execute,
-    mdstream_reducer_free, mdstream_reducer_new, mdstream_reducer_recover_snapshot,
+    MdstreamEngineResult, MdstreamPayloadResult, MdstreamProcessorSchedulerLimits,
+    MdstreamReducerResult, mdstream_abi_version, mdstream_allocation_metrics,
+    mdstream_allocation_metrics_struct_size, mdstream_binding_options_schema,
+    mdstream_binding_schema, mdstream_buffer_free, mdstream_buffer_struct_size,
+    mdstream_call_result_struct_size, mdstream_engine_append, mdstream_engine_execute,
+    mdstream_engine_free, mdstream_engine_new, mdstream_engine_result_struct_size,
+    mdstream_output_free, mdstream_output_len, mdstream_output_remaining, mdstream_output_take,
+    mdstream_package_version, mdstream_payload_result_struct_size,
+    mdstream_processor_scheduler_limits_struct_size, mdstream_reducer_apply_change,
+    mdstream_reducer_execute, mdstream_reducer_free, mdstream_reducer_new,
+    mdstream_reducer_processor_scheduler_limits, mdstream_reducer_recover_snapshot,
     mdstream_reducer_result_struct_size, mdstream_transition_schema,
 };
 use mdstream_protocol::{
@@ -102,6 +104,14 @@ fn c_abi_metadata_errors_outputs_and_stateful_roundtrip_match_the_frozen_contrac
         mdstream_allocation_metrics_struct_size(),
         size_of::<MdstreamAllocationMetrics>()
     );
+    assert_eq!(
+        mdstream_processor_scheduler_limits_struct_size(),
+        size_of::<MdstreamProcessorSchedulerLimits>()
+    );
+    assert_eq!(
+        unsafe { mdstream_reducer_processor_scheduler_limits(ptr::null()) },
+        MdstreamProcessorSchedulerLimits::default()
+    );
 
     let invalid = unsafe { mdstream_engine_new(ptr::null(), 1) };
     assert_eq!(invalid.status, BindingStatus::InvalidArgument.code());
@@ -173,6 +183,29 @@ fn c_abi_metadata_errors_outputs_and_stateful_roundtrip_match_the_frozen_contrac
     assert_eq!(reducer.status, BindingStatus::Ok.code());
     assert!(!reducer.reducer.is_null());
     assert!(reducer.error.data.is_null());
+    assert_eq!(
+        unsafe { mdstream_reducer_processor_scheduler_limits(reducer.reducer) },
+        MdstreamProcessorSchedulerLimits {
+            max_in_flight_jobs: 32,
+            max_queued_candidates: 256,
+        }
+    );
+
+    let custom_options = br#"{
+        "schema":"mdstream.bindings-options/0.4",
+        "processor":{"max_in_flight_jobs":"2","max_slots":"25"}
+    }"#;
+    let custom = unsafe { mdstream_reducer_new(custom_options.as_ptr(), custom_options.len()) };
+    assert_eq!(custom.status, BindingStatus::Ok.code());
+    assert!(!custom.reducer.is_null());
+    assert_eq!(
+        unsafe { mdstream_reducer_processor_scheduler_limits(custom.reducer) },
+        MdstreamProcessorSchedulerLimits {
+            max_in_flight_jobs: 2,
+            max_queued_candidates: 25,
+        }
+    );
+    unsafe { mdstream_reducer_free(custom.reducer) };
 
     let captured =
         unsafe { mdstream_reducer_new(transition_options.as_ptr(), transition_options.len()) };

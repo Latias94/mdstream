@@ -1,5 +1,3 @@
-// ignore_for_file: public_member_api_docs
-
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:typed_data';
@@ -7,17 +5,18 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 import 'errors.dart';
+import 'options.dart';
 import 'protocol.dart' as protocol;
 
 const int _expectedAbiVersion = 1;
 const String _expectedBindingSchema = 'mdstream.bindings/0.4';
 const String _expectedOptionsSchema = 'mdstream.bindings-options/0.4';
 
-final class NativeMdstreamEngine extends ffi.Opaque {}
+final class _NativeMdstreamEngine extends ffi.Opaque {}
 
-final class NativeMdstreamReducer extends ffi.Opaque {}
+final class _NativeMdstreamReducer extends ffi.Opaque {}
 
-final class NativeMdstreamOutput extends ffi.Opaque {}
+final class _NativeMdstreamOutput extends ffi.Opaque {}
 
 final class _MdstreamBuffer extends ffi.Struct {
   external ffi.Pointer<ffi.Uint8> data;
@@ -43,11 +42,19 @@ final class _MdstreamAllocationMetrics extends ffi.Struct {
   external int bufferBytes;
 }
 
+final class _MdstreamProcessorSchedulerLimits extends ffi.Struct {
+  @ffi.Size()
+  external int maxInFlightJobs;
+
+  @ffi.Size()
+  external int maxQueuedCandidates;
+}
+
 final class _MdstreamCallResult extends ffi.Struct {
   @ffi.Int32()
   external int status;
 
-  external ffi.Pointer<NativeMdstreamOutput> output;
+  external ffi.Pointer<_NativeMdstreamOutput> output;
 
   external _MdstreamBuffer error;
 }
@@ -56,7 +63,7 @@ final class _MdstreamEngineResult extends ffi.Struct {
   @ffi.Int32()
   external int status;
 
-  external ffi.Pointer<NativeMdstreamEngine> engine;
+  external ffi.Pointer<_NativeMdstreamEngine> engine;
 
   external _MdstreamBuffer error;
 }
@@ -65,7 +72,7 @@ final class _MdstreamReducerResult extends ffi.Struct {
   @ffi.Int32()
   external int status;
 
-  external ffi.Pointer<NativeMdstreamReducer> reducer;
+  external ffi.Pointer<_NativeMdstreamReducer> reducer;
 
   external _MdstreamBuffer error;
 }
@@ -88,6 +95,14 @@ typedef _StructSizeNative = ffi.Size Function();
 typedef _StructSizeDart = int Function();
 typedef _AllocationMetricsNative = _MdstreamAllocationMetrics Function();
 typedef _AllocationMetricsDart = _MdstreamAllocationMetrics Function();
+typedef _ReducerProcessorSchedulerLimitsNative =
+    _MdstreamProcessorSchedulerLimits Function(
+      ffi.Pointer<_NativeMdstreamReducer>,
+    );
+typedef _ReducerProcessorSchedulerLimitsDart =
+    _MdstreamProcessorSchedulerLimits Function(
+      ffi.Pointer<_NativeMdstreamReducer>,
+    );
 typedef _EngineNewNative =
     _MdstreamEngineResult Function(ffi.Pointer<ffi.Uint8>, ffi.Size);
 typedef _EngineNewDart =
@@ -97,61 +112,65 @@ typedef _ReducerNewNative =
 typedef _ReducerNewDart =
     _MdstreamReducerResult Function(ffi.Pointer<ffi.Uint8>, int);
 typedef _EngineFreeNative =
-    ffi.Void Function(ffi.Pointer<NativeMdstreamEngine>);
-typedef _EngineFreeDart = void Function(ffi.Pointer<NativeMdstreamEngine>);
+    ffi.Void Function(ffi.Pointer<_NativeMdstreamEngine>);
+typedef _EngineFreeDart = void Function(ffi.Pointer<_NativeMdstreamEngine>);
 typedef _ReducerFreeNative =
-    ffi.Void Function(ffi.Pointer<NativeMdstreamReducer>);
-typedef _ReducerFreeDart = void Function(ffi.Pointer<NativeMdstreamReducer>);
+    ffi.Void Function(ffi.Pointer<_NativeMdstreamReducer>);
+typedef _ReducerFreeDart = void Function(ffi.Pointer<_NativeMdstreamReducer>);
 typedef _EngineCallNative =
     _MdstreamCallResult Function(
-      ffi.Pointer<NativeMdstreamEngine>,
+      ffi.Pointer<_NativeMdstreamEngine>,
       ffi.Pointer<ffi.Uint8>,
       ffi.Size,
     );
 typedef _EngineCallDart =
     _MdstreamCallResult Function(
-      ffi.Pointer<NativeMdstreamEngine>,
+      ffi.Pointer<_NativeMdstreamEngine>,
       ffi.Pointer<ffi.Uint8>,
       int,
     );
 typedef _ReducerCallNative =
     _MdstreamCallResult Function(
-      ffi.Pointer<NativeMdstreamReducer>,
+      ffi.Pointer<_NativeMdstreamReducer>,
       ffi.Pointer<ffi.Uint8>,
       ffi.Size,
     );
 typedef _ReducerCallDart =
     _MdstreamCallResult Function(
-      ffi.Pointer<NativeMdstreamReducer>,
+      ffi.Pointer<_NativeMdstreamReducer>,
       ffi.Pointer<ffi.Uint8>,
       int,
     );
-typedef _OutputLenNative = ffi.Size Function(ffi.Pointer<NativeMdstreamOutput>);
-typedef _OutputLenDart = int Function(ffi.Pointer<NativeMdstreamOutput>);
+typedef _OutputLenNative =
+    ffi.Size Function(ffi.Pointer<_NativeMdstreamOutput>);
+typedef _OutputLenDart = int Function(ffi.Pointer<_NativeMdstreamOutput>);
 typedef _OutputTakeNative =
     _MdstreamPayloadResult Function(
-      ffi.Pointer<NativeMdstreamOutput>,
+      ffi.Pointer<_NativeMdstreamOutput>,
       ffi.Size,
     );
 typedef _OutputTakeDart =
-    _MdstreamPayloadResult Function(ffi.Pointer<NativeMdstreamOutput>, int);
+    _MdstreamPayloadResult Function(ffi.Pointer<_NativeMdstreamOutput>, int);
 typedef _OutputFreeNative =
-    ffi.Void Function(ffi.Pointer<NativeMdstreamOutput>);
-typedef _OutputFreeDart = void Function(ffi.Pointer<NativeMdstreamOutput>);
+    ffi.Void Function(ffi.Pointer<_NativeMdstreamOutput>);
+typedef _OutputFreeDart = void Function(ffi.Pointer<_NativeMdstreamOutput>);
 typedef _BufferFreeNative = ffi.Void Function(_MdstreamBuffer);
 typedef _BufferFreeDart = void Function(_MdstreamBuffer);
 
-/// One fully copied payload returned by the native transport.
+/// Package-internal fully copied payload returned by the native transport.
 final class NativePayload {
-  const NativePayload(this.kind, this.bytes);
+  const NativePayload._(this.kind, this.bytes);
 
+  /// Numeric payload discriminator defined by the binding schema.
   final int kind;
+
+  /// Owned payload bytes copied out of native memory.
   final Uint8List bytes;
 }
 
-/// Process-wide live allocations owned by `mdstream-ffi`.
+/// Package-internal process-wide allocations owned by `mdstream-ffi`.
 final class NativeAllocationMetrics {
-  const NativeAllocationMetrics({
+  const NativeAllocationMetrics._({
     required this.engineHandles,
     required this.reducerHandles,
     required this.outputs,
@@ -159,12 +178,22 @@ final class NativeAllocationMetrics {
     required this.bufferBytes,
   });
 
+  /// Number of live native engine handles.
   final int engineHandles;
+
+  /// Number of live native reducer handles.
   final int reducerHandles;
+
+  /// Number of live native output containers.
   final int outputs;
+
+  /// Number of live native byte buffers.
   final int buffers;
+
+  /// Total bytes retained by live native byte buffers.
   final int bufferBytes;
 
+  /// Whether every tracked native allocation count is zero.
   bool get isZero =>
       engineHandles == 0 &&
       reducerHandles == 0 &&
@@ -173,7 +202,7 @@ final class NativeAllocationMetrics {
       bufferBytes == 0;
 }
 
-/// Checked symbol table for one loaded `mdstream-ffi` dynamic library.
+/// Package-internal checked symbol table for one `mdstream-ffi` library.
 final class NativeBindings {
   NativeBindings._(this.library)
     : _abiVersion = library.lookupFunction<_AbiVersionNative, _AbiVersionDart>(
@@ -218,6 +247,10 @@ final class NativeBindings {
           .lookupFunction<_StructSizeNative, _StructSizeDart>(
             'mdstream_allocation_metrics_struct_size',
           ),
+      _processorSchedulerLimitsSize = library
+          .lookupFunction<_StructSizeNative, _StructSizeDart>(
+            'mdstream_processor_scheduler_limits_struct_size',
+          ),
       _allocationMetrics = library
           .lookupFunction<_AllocationMetricsNative, _AllocationMetricsDart>(
             'mdstream_allocation_metrics',
@@ -228,6 +261,11 @@ final class NativeBindings {
       _reducerNew = library.lookupFunction<_ReducerNewNative, _ReducerNewDart>(
         'mdstream_reducer_new',
       ),
+      _reducerProcessorSchedulerLimits = library
+          .lookupFunction<
+            _ReducerProcessorSchedulerLimitsNative,
+            _ReducerProcessorSchedulerLimitsDart
+          >('mdstream_reducer_processor_scheduler_limits'),
       _engineFree = library.lookupFunction<_EngineFreeNative, _EngineFreeDart>(
         'mdstream_engine_free',
       ),
@@ -304,6 +342,7 @@ final class NativeBindings {
   // wrapper, including wrappers that become unreachable together.
   static final List<NativeBindings> _processLifetimes = [];
 
+  /// Package-internal library handle retained for native finalizer lifetime.
   final ffi.DynamicLibrary library;
   final _AbiVersionDart _abiVersion;
   final _StaticStringDart _packageVersion;
@@ -316,9 +355,11 @@ final class NativeBindings {
   final _StructSizeDart _reducerResultSize;
   final _StructSizeDart _payloadResultSize;
   final _StructSizeDart _allocationMetricsSize;
+  final _StructSizeDart _processorSchedulerLimitsSize;
   final _AllocationMetricsDart _allocationMetrics;
   final _EngineNewDart _engineNew;
   final _ReducerNewDart _reducerNew;
+  final _ReducerProcessorSchedulerLimitsDart _reducerProcessorSchedulerLimits;
   final _EngineFreeDart _engineFree;
   final _ReducerFreeDart _reducerFree;
   final _EngineCallDart _engineAppend;
@@ -333,14 +374,24 @@ final class NativeBindings {
   final ffi.NativeFinalizer _engineFinalizer;
   final ffi.NativeFinalizer _reducerFinalizer;
 
+  /// Native ABI version reported by the loaded library.
   int get abiVersion => _abiVersion();
+
+  /// mdstream package version reported by the loaded library.
   String get packageVersion => _readStaticString(_packageVersion(), 'version');
+
+  /// Binding schema reported by the loaded library.
   String get bindingSchema => _readStaticString(_bindingSchema(), 'schema');
+
+  /// Binding options schema reported by the loaded library.
   String get optionsSchema =>
       _readStaticString(_optionsSchema(), 'options schema');
+
+  /// Transition schema reported by the loaded library.
   String get transitionSchema =>
       _readStaticString(_transitionSchema(), 'transition schema');
 
+  /// Creates an exactly-once native engine handle from encoded options.
   NativeEngineHandle createEngine(Uint8List options) {
     final result = _withInput(options, _engineNew);
     if (result.status != 0) {
@@ -363,6 +414,7 @@ final class NativeBindings {
     return NativeEngineHandle._(this, result.engine);
   }
 
+  /// Creates an exactly-once native reducer handle from encoded options.
   NativeReducerHandle createReducer(Uint8List options) {
     final result = _withInput(options, _reducerNew);
     if (result.status != 0) {
@@ -371,6 +423,7 @@ final class NativeBindings {
       }
       throw _exceptionFromBuffer(result.error, result.status);
     }
+    late final MdstreamProcessorSchedulerLimits processorSchedulerLimits;
     try {
       _expectEmptyError(result.error, 'reducer constructor');
       if (result.reducer.address == 0) {
@@ -378,18 +431,34 @@ final class NativeBindings {
           'reducer constructor returned a null handle',
         );
       }
+      final nativeLimits = _reducerProcessorSchedulerLimits(result.reducer);
+      if (nativeLimits.maxInFlightJobs < 1 ||
+          nativeLimits.maxQueuedCandidates < 1) {
+        throw _invalidNativeResult(
+          'reducer returned non-positive processor scheduler limits',
+        );
+      }
+      processorSchedulerLimits = MdstreamProcessorSchedulerLimits(
+        maxInFlightJobs: nativeLimits.maxInFlightJobs,
+        maxQueuedCandidates: nativeLimits.maxQueuedCandidates,
+      );
     } catch (_) {
       if (result.reducer.address != 0) {
         _reducerFree(result.reducer);
       }
       rethrow;
     }
-    return NativeReducerHandle._(this, result.reducer);
+    return NativeReducerHandle._(
+      this,
+      result.reducer,
+      processorSchedulerLimits,
+    );
   }
 
+  /// Reads current process-wide native allocation counters.
   NativeAllocationMetrics allocationMetrics() {
     final value = _allocationMetrics();
-    return NativeAllocationMetrics(
+    return NativeAllocationMetrics._(
       engineHandles: value.engineHandles,
       reducerHandles: value.reducerHandles,
       outputs: value.outputs,
@@ -398,36 +467,36 @@ final class NativeBindings {
     );
   }
 
-  List<NativePayload> engineAppend(
-    ffi.Pointer<NativeMdstreamEngine> engine,
+  List<NativePayload> _appendToEngine(
+    ffi.Pointer<_NativeMdstreamEngine> engine,
     Uint8List bytes,
   ) => _drain(
     _withInput(bytes, (data, len) => _engineAppend(engine, data, len)),
   );
 
-  List<NativePayload> engineExecute(
-    ffi.Pointer<NativeMdstreamEngine> engine,
+  List<NativePayload> _executeEngineCommand(
+    ffi.Pointer<_NativeMdstreamEngine> engine,
     Uint8List command,
   ) => _drain(
     _withInput(command, (data, len) => _engineExecute(engine, data, len)),
   );
 
-  List<NativePayload> reducerApply(
-    ffi.Pointer<NativeMdstreamReducer> reducer,
+  List<NativePayload> _applyToReducer(
+    ffi.Pointer<_NativeMdstreamReducer> reducer,
     Uint8List change,
   ) => _drain(
     _withInput(change, (data, len) => _reducerApply(reducer, data, len)),
   );
 
-  List<NativePayload> reducerRecover(
-    ffi.Pointer<NativeMdstreamReducer> reducer,
+  List<NativePayload> _recoverReducer(
+    ffi.Pointer<_NativeMdstreamReducer> reducer,
     Uint8List snapshot,
   ) => _drain(
     _withInput(snapshot, (data, len) => _reducerRecover(reducer, data, len)),
   );
 
-  List<NativePayload> reducerExecute(
-    ffi.Pointer<NativeMdstreamReducer> reducer,
+  List<NativePayload> _executeReducerCommand(
+    ffi.Pointer<_NativeMdstreamReducer> reducer,
     Uint8List command,
   ) => _drain(
     _withInput(command, (data, len) => _reducerExecute(reducer, data, len)),
@@ -477,6 +546,10 @@ final class NativeBindings {
         _allocationMetricsSize(),
         ffi.sizeOf<_MdstreamAllocationMetrics>(),
       ),
+      'MdstreamProcessorSchedulerLimits': (
+        _processorSchedulerLimitsSize(),
+        ffi.sizeOf<_MdstreamProcessorSchedulerLimits>(),
+      ),
     };
     for (final MapEntry(key: name, value: (native, dart)) in sizes.entries) {
       if (native != dart) {
@@ -510,7 +583,7 @@ final class NativeBindings {
         if (payload.status != 0) {
           throw _exceptionFromBuffer(payload.data, payload.status);
         }
-        payloads.add(NativePayload(payload.kind, _copyAndFree(payload.data)));
+        payloads.add(NativePayload._(payload.kind, _copyAndFree(payload.data)));
       }
       return payloads;
     } finally {
@@ -558,6 +631,7 @@ final class NativeBindings {
   }
 }
 
+/// Package-internal validation for the transition schema reported by native.
 void validateNativeTransitionSchema(String actual) {
   if (actual != protocol.transitionSchema) {
     throw MdstreamException(
@@ -570,23 +644,28 @@ void validateNativeTransitionSchema(String actual) {
   }
 }
 
-/// Exact-once native engine ownership used by the high-level runtime.
+/// Package-internal exact-once engine ownership for the high-level runtime.
 final class NativeEngineHandle implements ffi.Finalizable {
   NativeEngineHandle._(this._bindings, this._pointer) {
     _bindings._engineFinalizer.attach(this, _pointer.cast(), detach: this);
   }
 
   final NativeBindings _bindings;
-  ffi.Pointer<NativeMdstreamEngine> _pointer;
+  ffi.Pointer<_NativeMdstreamEngine> _pointer;
 
+  /// Whether native ownership has already been released.
   bool get isClosed => _pointer.address == 0;
 
+  /// Appends UTF-8 source bytes and returns copied native payloads.
   List<NativePayload> append(Uint8List bytes) =>
-      _withPointer((pointer) => _bindings.engineAppend(pointer, bytes));
+      _withPointer((pointer) => _bindings._appendToEngine(pointer, bytes));
 
-  List<NativePayload> execute(Uint8List command) =>
-      _withPointer((pointer) => _bindings.engineExecute(pointer, command));
+  /// Executes an encoded engine command and returns copied native payloads.
+  List<NativePayload> execute(Uint8List command) => _withPointer(
+    (pointer) => _bindings._executeEngineCommand(pointer, command),
+  );
 
+  /// Releases native ownership; subsequent calls are rejected.
   void close() {
     final pointer = _pointer;
     if (pointer.address == 0) {
@@ -597,7 +676,7 @@ final class NativeEngineHandle implements ffi.Finalizable {
     _bindings._engineFree(pointer);
   }
 
-  T _withPointer<T>(T Function(ffi.Pointer<NativeMdstreamEngine>) operation) {
+  T _withPointer<T>(T Function(ffi.Pointer<_NativeMdstreamEngine>) operation) {
     final pointer = _pointer;
     if (pointer.address == 0) {
       throw _closedException('engine');
@@ -606,26 +685,39 @@ final class NativeEngineHandle implements ffi.Finalizable {
   }
 }
 
-/// Exact-once native reducer ownership used by the high-level runtime.
+/// Package-internal exact-once reducer ownership for the high-level runtime.
 final class NativeReducerHandle implements ffi.Finalizable {
-  NativeReducerHandle._(this._bindings, this._pointer) {
+  NativeReducerHandle._(
+    this._bindings,
+    this._pointer,
+    this.processorSchedulerLimits,
+  ) {
     _bindings._reducerFinalizer.attach(this, _pointer.cast(), detach: this);
   }
 
   final NativeBindings _bindings;
-  ffi.Pointer<NativeMdstreamReducer> _pointer;
+  ffi.Pointer<_NativeMdstreamReducer> _pointer;
 
+  /// Effective native capacity for host-side processor scheduling.
+  final MdstreamProcessorSchedulerLimits processorSchedulerLimits;
+
+  /// Whether native ownership has already been released.
   bool get isClosed => _pointer.address == 0;
 
+  /// Applies an encoded change and returns copied native payloads.
   List<NativePayload> apply(Uint8List change) =>
-      _withPointer((pointer) => _bindings.reducerApply(pointer, change));
+      _withPointer((pointer) => _bindings._applyToReducer(pointer, change));
 
+  /// Recovers from an encoded snapshot and returns copied native payloads.
   List<NativePayload> recover(Uint8List snapshot) =>
-      _withPointer((pointer) => _bindings.reducerRecover(pointer, snapshot));
+      _withPointer((pointer) => _bindings._recoverReducer(pointer, snapshot));
 
-  List<NativePayload> execute(Uint8List command) =>
-      _withPointer((pointer) => _bindings.reducerExecute(pointer, command));
+  /// Executes an encoded reducer command and returns copied native payloads.
+  List<NativePayload> execute(Uint8List command) => _withPointer(
+    (pointer) => _bindings._executeReducerCommand(pointer, command),
+  );
 
+  /// Releases native ownership; subsequent calls are rejected.
   void close() {
     final pointer = _pointer;
     if (pointer.address == 0) {
@@ -636,7 +728,7 @@ final class NativeReducerHandle implements ffi.Finalizable {
     _bindings._reducerFree(pointer);
   }
 
-  T _withPointer<T>(T Function(ffi.Pointer<NativeMdstreamReducer>) operation) {
+  T _withPointer<T>(T Function(ffi.Pointer<_NativeMdstreamReducer>) operation) {
     final pointer = _pointer;
     if (pointer.address == 0) {
       throw _closedException('reducer');

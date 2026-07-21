@@ -26,7 +26,10 @@ void main() {
           configurationVersion: 'default-v1',
         );
         expect(begun.processorRequests, hasLength(1));
-        expect(begun.artifactChanges.single.change.kind, 'pending');
+        expect(
+          begun.artifactChanges.single.change,
+          isA<PendingArtifactChangeView>(),
+        );
         final request = begun.processorRequests.single;
         final completed = engine.completeProcessorText(
           requestId: request.requestId,
@@ -34,8 +37,14 @@ void main() {
           mediaType: 'text/plain',
           text: 'derived output',
         );
-        expect(completed.processorCompletions.single.outcome, 'applied');
-        expect(completed.artifactChanges.single.change.kind, 'ready');
+        expect(
+          completed.processorCompletions.single.outcome,
+          ProcessorCompletionOutcome.applied,
+        );
+        expect(
+          completed.artifactChanges.single.change,
+          isA<ReadyArtifactChangeView>(),
+        );
 
         final artifact = engine.state.artifactView(
           ArtifactSlot(
@@ -44,9 +53,12 @@ void main() {
             processorId: request.key.processorId,
           ),
         );
-        expect(artifact?.state, 'ready');
-        expect(artifact?.artifact?.payload.kind, 'text');
-        expect(artifact?.artifact?.payload.text, 'derived output');
+        expect(artifact?.state, ArtifactState.ready);
+        expect(artifact?.artifact?.payload, isA<TextArtifactPayloadView>());
+        expect(
+          (artifact?.artifact?.payload as TextArtifactPayloadView).text,
+          'derived output',
+        );
 
         final snapshot = engine.createRecoverySnapshot()!;
         final canonical = utf8.decode(snapshot.bytes);

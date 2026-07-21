@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use mdstream::{EngineLimits, EngineOutput, StreamEngine};
+use mdstream::{CompilerLimits, EngineLimits, EngineOutput, StreamEngine};
 use mdstream_conformance::{
     CanonicalPendingScenario, NormalizedSnapshot, PendingScenarioShape, PendingScenarioSize,
     ProtocolTrace, TraceInputEvent, replay_protocol_trace, utf8_ranges_from_target_widths,
@@ -57,19 +57,20 @@ fn assert_transition_limits(
     engine: &StreamEngine,
     output: &EngineOutput,
     protocol_limits: ProtocolLimits,
+    compiler_limits: CompilerLimits,
     engine_limits: EngineLimits,
 ) {
     let metrics = engine.metrics();
     assert!(metrics.storage.canonical_source_bytes <= protocol_limits.max_source_bytes);
     assert!(metrics.storage.frontier_bytes <= protocol_limits.max_source_bytes);
     assert!(metrics.retained_input_bytes <= protocol_limits.max_source_bytes);
-    assert!(metrics.compiler.retained_semantic_definitions <= protocol_limits.max_definitions);
+    assert!(metrics.compiler.retained_semantic_definitions <= compiler_limits.max_definitions);
     assert!(
-        metrics.compiler.retained_semantic_dependencies <= protocol_limits.max_definition_edges
+        metrics.compiler.retained_semantic_dependencies <= compiler_limits.max_definition_edges
     );
     assert!(
         metrics.compiler.retained_semantic_metadata_bytes
-            <= protocol_limits.max_definition_metadata_bytes
+            <= compiler_limits.max_definition_metadata_bytes
     );
     assert!(metrics.work.last_change_bytes <= engine_limits.max_change_bytes);
     assert!(metrics.work.last_transaction_bytes <= engine_limits.max_transaction_bytes);
@@ -89,9 +90,16 @@ fn consume_output(
     changes: &mut Vec<ChangeSet>,
     output: EngineOutput,
     protocol_limits: ProtocolLimits,
+    compiler_limits: CompilerLimits,
     engine_limits: EngineLimits,
 ) -> usize {
-    assert_transition_limits(engine, &output, protocol_limits, engine_limits);
+    assert_transition_limits(
+        engine,
+        &output,
+        protocol_limits,
+        compiler_limits,
+        engine_limits,
+    );
 
     let mut emitted_source_bytes = 0usize;
     for change in output.into_changes() {
@@ -129,9 +137,11 @@ fn run_schedule(
     ranges: &[Range<usize>],
 ) -> NormalizedSnapshot {
     let protocol_limits = ProtocolLimits::default();
+    let compiler_limits = CompilerLimits::default();
     let engine_limits = EngineLimits::default();
     let mut engine = StreamEngine::builder()
         .protocol_limits(protocol_limits)
+        .compiler_limits(compiler_limits)
         .engine_limits(engine_limits)
         .build()
         .expect("default limits accept canonical pending scenarios");
@@ -153,6 +163,7 @@ fn run_schedule(
             &mut changes,
             output,
             protocol_limits,
+            compiler_limits,
             engine_limits,
         );
         input_events.push(TraceInputEvent::Append {
@@ -171,6 +182,7 @@ fn run_schedule(
         &mut changes,
         output,
         protocol_limits,
+        compiler_limits,
         engine_limits,
     );
     input_events.push(TraceInputEvent::Finish {

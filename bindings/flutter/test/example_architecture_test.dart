@@ -11,6 +11,8 @@ void main() {
         'example/lib/bootstrap.dart',
         'example/lib/golden_stream_host.dart',
         'example/lib/content_ir_view.dart',
+        'example/lib/configure_host.dart',
+        'example/configure_host.dart',
         'example/integration_test/golden_stream_smoke_test.dart',
         'example/assets/golden_ai_stream.json',
       ];
@@ -31,6 +33,7 @@ void main() {
         'Mermaid source',
         'package:markdown',
         'package:merman',
+        '_ProcessorSchedulerLimits.fromSessionOptions',
       ]) {
         expect(packageSource, isNot(contains(forbidden)));
       }
@@ -44,6 +47,7 @@ void main() {
       expect(exampleSource, contains('controller.nodeKey'));
       expect(exampleSource, contains('controller.pendingSource'));
       expect(exampleSource, contains('controller.transitions'));
+      expect(exampleSource, contains('MACOSX_DEPLOYMENT_TARGET'));
       expect(exampleSource, isNot(contains('SvgPicture')));
       expect(exampleSource, isNot(contains('MarkdownBody')));
       expect(exampleSource, isNot(contains('package:markdown')));

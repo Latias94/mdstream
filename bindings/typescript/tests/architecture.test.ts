@@ -148,6 +148,38 @@ describe("framework-neutral package boundaries", () => {
       .join("\n");
     expect(publishedSource).not.toContain("examples/web");
   });
+
+  it("takes effective processor scheduler limits only from the native session", () => {
+    const sourceRoot = resolve(process.cwd(), "src");
+    const engineSource = readFileSync(
+      resolve(sourceRoot, "engine.ts"),
+      "utf8",
+    );
+    const schedulerLimitTypeOwners = ["processors.ts", "wasm.ts"].flatMap(
+      (file) => {
+        const path = resolve(sourceRoot, file);
+        const sourceFile = ts.createSourceFile(
+          path,
+          readFileSync(path, "utf8"),
+          ts.ScriptTarget.Latest,
+          true,
+          ts.ScriptKind.TS,
+        );
+        return findNamedObjectTypesWithProperties(
+          sourceFile,
+          new Set(["maxInFlightJobs", "maxCandidates"]),
+        ).map((name) => `${file}:${name}`);
+      },
+    );
+
+    expect(engineSource).toContain("readProcessorSchedulerLimits(reducer)");
+    expect(engineSource).not.toContain("schedulingLimit");
+    expect(engineSource).not.toMatch(/maxInFlightJobs:\s*32/u);
+    expect(engineSource).not.toMatch(/maxCandidates:\s*256/u);
+    expect(schedulerLimitTypeOwners).toEqual([
+      "processors.ts:ProcessorSchedulerLimits",
+    ]);
+  });
 });
 
 interface SourceAnalysis {
@@ -199,6 +231,40 @@ function findReducerConstructs(
       types.has(node.name.text)
     ) {
       found.push(`${file}: type ${node.name.text}`);
+    }
+  });
+  return found;
+}
+
+function findNamedObjectTypesWithProperties(
+  sourceFile: ts.SourceFile,
+  requiredProperties: ReadonlySet<string>,
+): string[] {
+  const found: string[] = [];
+  walk(sourceFile, (node) => {
+    let name: string | undefined;
+    let members: ts.NodeArray<ts.TypeElement> | undefined;
+    if (ts.isInterfaceDeclaration(node)) {
+      name = node.name.text;
+      members = node.members;
+    } else if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)) {
+      name = node.name.text;
+      members = node.type.members;
+    }
+    if (name === undefined || members === undefined) {
+      return;
+    }
+    const properties = new Set(
+      members.flatMap((member) =>
+        ts.isPropertySignature(member) &&
+        member.name !== undefined &&
+        ts.isIdentifier(member.name)
+          ? [member.name.text]
+          : [],
+      ),
+    );
+    if ([...requiredProperties].every((property) => properties.has(property))) {
+      found.push(name);
     }
   });
   return found;

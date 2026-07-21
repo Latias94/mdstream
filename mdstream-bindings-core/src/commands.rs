@@ -67,7 +67,7 @@ pub(crate) enum ReducerCommand<'a> {
         schema: String,
         expected_epoch: String,
         node_id: String,
-        expected_node_version: String,
+        expected_input_version: String,
         processor_id: String,
         processor_version: String,
         configuration_version: String,
@@ -106,7 +106,7 @@ const FIELD_REQUEST_ID: u32 = 1 << 11;
 const FIELD_OUTCOME: u32 = 1 << 12;
 const FIELD_EPOCH: u32 = 1 << 13;
 const FIELD_EXPECTED_EPOCH: u32 = 1 << 14;
-const FIELD_EXPECTED_NODE_VERSION: u32 = 1 << 15;
+const FIELD_EXPECTED_INPUT_VERSION: u32 = 1 << 15;
 const COMMON_FIELDS: u32 = FIELD_SCHEMA | FIELD_KIND;
 
 #[derive(Deserialize)]
@@ -127,7 +127,7 @@ enum ReducerField {
     Outcome,
     Epoch,
     ExpectedEpoch,
-    ExpectedNodeVersion,
+    ExpectedInputVersion,
     #[serde(other)]
     Unknown,
 }
@@ -170,7 +170,7 @@ impl<'de> Visitor<'de> for ReducerCommandVisitor {
         let mut outcome = None;
         let mut epoch = None;
         let mut expected_epoch = None;
-        let mut expected_node_version = None;
+        let mut expected_input_version = None;
 
         while let Some(field) = map.next_key()? {
             match field {
@@ -250,13 +250,13 @@ impl<'de> Visitor<'de> for ReducerCommandVisitor {
                     mark_field::<A::Error>(&mut seen, FIELD_EXPECTED_EPOCH, "expected_epoch")?;
                     expected_epoch = Some(map.next_value()?);
                 }
-                ReducerField::ExpectedNodeVersion => {
+                ReducerField::ExpectedInputVersion => {
                     mark_field::<A::Error>(
                         &mut seen,
-                        FIELD_EXPECTED_NODE_VERSION,
-                        "expected_node_version",
+                        FIELD_EXPECTED_INPUT_VERSION,
+                        "expected_input_version",
                     )?;
-                    expected_node_version = Some(map.next_value()?);
+                    expected_input_version = Some(map.next_value()?);
                 }
                 ReducerField::Unknown => {
                     return Err(de::Error::custom("unknown reducer command field"));
@@ -332,7 +332,7 @@ impl<'de> Visitor<'de> for ReducerCommandVisitor {
                 let required = COMMON_FIELDS
                     | FIELD_EXPECTED_EPOCH
                     | FIELD_NODE_ID
-                    | FIELD_EXPECTED_NODE_VERSION
+                    | FIELD_EXPECTED_INPUT_VERSION
                     | FIELD_PROCESSOR_ID
                     | FIELD_PROCESSOR_VERSION
                     | FIELD_CONFIGURATION_VERSION;
@@ -345,9 +345,9 @@ impl<'de> Visitor<'de> for ReducerCommandVisitor {
                     schema,
                     expected_epoch: required_field(expected_epoch, "expected_epoch")?,
                     node_id: required_field(node_id, "node_id")?,
-                    expected_node_version: required_field(
-                        expected_node_version,
-                        "expected_node_version",
+                    expected_input_version: required_field(
+                        expected_input_version,
+                        "expected_input_version",
                     )?,
                     processor_id: required_field(processor_id, "processor_id")?,
                     processor_version: required_field(processor_version, "processor_version")?,
@@ -589,7 +589,7 @@ mod tests {
                 r#"{{"schema":"{SCHEMA}","kind":"begin_processor","node_id":"1","processor_id":"test.echo","processor_version":"v1","configuration_version":"default"}}"#
             ),
             format!(
-                r#"{{"schema":"{SCHEMA}","kind":"begin_processor_if_current","expected_epoch":"1","node_id":"1","expected_node_version":"node:v1","processor_id":"test.echo","processor_version":"v1","configuration_version":"default"}}"#
+                r#"{{"schema":"{SCHEMA}","kind":"begin_processor_if_current","expected_epoch":"1","node_id":"1","expected_input_version":"input:v1","processor_id":"test.echo","processor_version":"v1","configuration_version":"default"}}"#
             ),
             format!(
                 r#"{{"schema":"{SCHEMA}","kind":"complete_processor","request_id":"1","outcome":{{"kind":"failure","code":"cancelled","message":"stop"}}}}"#

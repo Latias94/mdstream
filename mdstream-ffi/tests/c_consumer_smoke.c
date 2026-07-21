@@ -143,12 +143,22 @@ int main(void) {
         mdstream_engine_result_struct_size() != sizeof(MdstreamEngineResult) ||
         mdstream_reducer_result_struct_size() != sizeof(MdstreamReducerResult) ||
         mdstream_payload_result_struct_size() != sizeof(MdstreamPayloadResult) ||
-        mdstream_allocation_metrics_struct_size() != sizeof(MdstreamAllocationMetrics)
+        mdstream_allocation_metrics_struct_size() != sizeof(MdstreamAllocationMetrics) ||
+        mdstream_processor_scheduler_limits_struct_size() !=
+            sizeof(MdstreamProcessorSchedulerLimits)
     ) {
         return 3;
     }
-    if (!allocations_are_zero()) {
+    MdstreamProcessorSchedulerLimits null_limits =
+        mdstream_reducer_processor_scheduler_limits(NULL);
+    if (
+        null_limits.max_in_flight_jobs != 0 ||
+        null_limits.max_queued_candidates != 0
+    ) {
         return 4;
+    }
+    if (!allocations_are_zero()) {
+        return 5;
     }
 
     MdstreamEngineResult engine = mdstream_engine_new(NULL, 0);
@@ -159,8 +169,44 @@ int main(void) {
     ) {
         mdstream_buffer_free(engine.error);
         mdstream_buffer_free(reducer.error);
-        return 5;
+        return 6;
     }
+    MdstreamProcessorSchedulerLimits default_limits =
+        mdstream_reducer_processor_scheduler_limits(reducer.reducer);
+    if (
+        default_limits.max_in_flight_jobs != 32 ||
+        default_limits.max_queued_candidates != 256
+    ) {
+        mdstream_reducer_free(reducer.reducer);
+        mdstream_engine_free(engine.engine);
+        return 7;
+    }
+
+    static const uint8_t custom_options[] =
+        "{\"schema\":\"mdstream.bindings-options/0.4\","
+        "\"processor\":{\"max_in_flight_jobs\":\"2\",\"max_slots\":\"25\"}}";
+    MdstreamReducerResult custom = mdstream_reducer_new(
+        custom_options,
+        sizeof(custom_options) - 1
+    );
+    if (custom.status != MDSTREAM_OK || custom.reducer == NULL) {
+        mdstream_buffer_free(custom.error);
+        mdstream_reducer_free(reducer.reducer);
+        mdstream_engine_free(engine.engine);
+        return 8;
+    }
+    MdstreamProcessorSchedulerLimits custom_limits =
+        mdstream_reducer_processor_scheduler_limits(custom.reducer);
+    if (
+        custom_limits.max_in_flight_jobs != 2 ||
+        custom_limits.max_queued_candidates != 25
+    ) {
+        mdstream_reducer_free(custom.reducer);
+        mdstream_reducer_free(reducer.reducer);
+        mdstream_engine_free(engine.engine);
+        return 9;
+    }
+    mdstream_reducer_free(custom.reducer);
 
     int rc = apply_changes(
         reducer.reducer,

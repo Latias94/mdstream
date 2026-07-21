@@ -1,9 +1,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Engine-owned limits for one staged source/projection transition.
 ///
-/// Canonical document, parser, and operation limits remain in
-/// `mdstream_protocol::ProtocolLimits`. These limits bound the additional
-/// transaction and change-set plane owned by [`crate::StreamEngine`].
+/// Canonical document and operation limits remain in
+/// `mdstream_protocol::ProtocolLimits`, while parser work is bounded by
+/// [`crate::CompilerLimits`]. These limits bound the additional transaction
+/// and change-set plane owned by [`crate::StreamEngine`].
 pub struct EngineLimits {
     /// Maximum deterministic logical bytes retained by one emitted change.
     pub max_change_bytes: usize,

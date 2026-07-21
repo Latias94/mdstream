@@ -68,15 +68,185 @@ void main() {
               )
               as NodeView;
 
-      expect(update.outcome.coordinate?.epoch, '1');
+      expect(update.outcome, isA<AppliedOutcomeView>());
+      expect((update.outcome as AppliedOutcomeView).coordinate.epoch, '1');
       expect(update.document?.projectionCursor, '3');
-      expect(update.impact.changedNodeIds, <String>['7']);
+      expect(update.impact.changedNodeIds, <NodeId>[NodeId.parse('7')]);
       expect(node.node.id, '7');
       expect(node.node.source.start, '0');
-      expect(node.node.children.children, <String>['8']);
+      expect(node.node.children.children, <NodeId>[NodeId.parse('8')]);
       expect(node.node.content, isA<HeadingContentView>());
       expect((node.node.content as HeadingContentView).level, 1);
       expect(node.bodyText, 'Title');
+      expect(node.processorInputVersion, 'sha256:processor-input');
+    });
+
+    test('decodes processor artifacts into closed variants', () {
+      final applied =
+          decodeBindingView(
+                BindingPayloadKind.processorCompletion,
+                _bytes(_processorCompletion()),
+                schema,
+              )
+              as ProcessorCompletionView;
+      final stalePayload = _processorCompletion()..['outcome'] = 'stale';
+      final stale =
+          decodeBindingView(
+                BindingPayloadKind.processorCompletion,
+                _bytes(stalePayload),
+                schema,
+              )
+              as ProcessorCompletionView;
+
+      expect(applied.outcome, ProcessorCompletionOutcome.applied);
+      expect(stale.outcome, ProcessorCompletionOutcome.stale);
+
+      ArtifactChangeKindView decodeChange(Map<String, Object?> change) {
+        final payload = _artifactChange()..['change'] = change;
+        return (decodeBindingView(
+                  BindingPayloadKind.artifactChange,
+                  _bytes(payload),
+                  schema,
+                )
+                as ArtifactChangeView)
+            .change;
+      }
+
+      expect(
+        decodeChange(<String, Object?>{'kind': 'pending'}),
+        isA<PendingArtifactChangeView>(),
+      );
+      final ready = decodeChange(<String, Object?>{
+        'kind': 'ready',
+        'artifact_bytes': '42',
+      });
+      expect(ready, isA<ReadyArtifactChangeView>());
+      expect((ready as ReadyArtifactChangeView).artifactBytes, '42');
+      final failed = decodeChange(<String, Object?>{
+        'kind': 'failed',
+        'code': 'processor',
+      });
+      expect(failed, isA<FailedArtifactChangeView>());
+      expect((failed as FailedArtifactChangeView).code, 'processor');
+      final removed = decodeChange(<String, Object?>{
+        'kind': 'removed',
+        'reason': 'node_changed',
+        'released_artifact_bytes': '42',
+      });
+      expect(removed, isA<RemovedArtifactChangeView>());
+      expect((removed as RemovedArtifactChangeView).reason, 'node_changed');
+      expect(removed.releasedArtifactBytes, '42');
+
+      ArtifactView decodeArtifactPayload(Map<String, Object?> payload) {
+        final artifact = _artifactView();
+        final value = artifact['artifact']! as Map<String, Object?>;
+        value['payload'] = payload;
+        return decodeBindingView(
+              BindingPayloadKind.artifactView,
+              _bytes(artifact),
+              schema,
+            )
+            as ArtifactView;
+      }
+
+      final text = decodeArtifactPayload(<String, Object?>{
+        'kind': 'text',
+        'text': '<svg />',
+      });
+      expect(text.state, ArtifactState.ready);
+      expect(text.artifact?.payload, isA<TextArtifactPayloadView>());
+      expect(
+        (text.artifact!.payload as TextArtifactPayloadView).text,
+        '<svg />',
+      );
+
+      final binary = decodeArtifactPayload(<String, Object?>{
+        'kind': 'binary',
+        'bytes': <Object?>[0, 127, 255],
+      });
+      expect(binary.artifact?.payload, isA<BinaryArtifactPayloadView>());
+      expect(
+        (binary.artifact!.payload as BinaryArtifactPayloadView).bytes,
+        <int>[0, 127, 255],
+      );
+
+      final citation = decodeArtifactPayload(<String, Object?>{
+        'kind': 'citation',
+        'key': 'source',
+        'destination': 'https://example.com',
+        'title': 'Example',
+      });
+      expect(citation.artifact?.payload, isA<CitationArtifactPayloadView>());
+      final citationPayload =
+          citation.artifact!.payload as CitationArtifactPayloadView;
+      expect(citationPayload.key, 'source');
+      expect(citationPayload.destination, 'https://example.com');
+      expect(citationPayload.title, 'Example');
+
+      final binaryPayload =
+          binary.artifact!.payload as BinaryArtifactPayloadView;
+      expect(
+        () => binaryPayload.bytes[0] = 1,
+        throwsA(isA<UnsupportedError>()),
+      );
+    });
+
+    test('rejects unknown and mixed processor artifact variants', () {
+      final unknownCompletion = _processorCompletion()..['outcome'] = 'future';
+      final unknownState = _artifactView()..['state'] = 'future';
+      final mixedChange = _artifactChange();
+      (mixedChange['change']! as Map<String, Object?>)['code'] = 'processor';
+      final mixedPayload = _artifactView();
+      final artifact = mixedPayload['artifact']! as Map<String, Object?>;
+      final payload = artifact['payload']! as Map<String, Object?>;
+      payload['bytes'] = <Object?>[0];
+
+      for (final candidate in <(BindingPayloadKind, Map<String, Object?>)>[
+        (BindingPayloadKind.processorCompletion, unknownCompletion),
+        (BindingPayloadKind.artifactView, unknownState),
+        (BindingPayloadKind.artifactChange, mixedChange),
+        (BindingPayloadKind.artifactView, mixedPayload),
+      ]) {
+        expect(
+          () => decodeBindingView(candidate.$1, _bytes(candidate.$2), schema),
+          throwsA(
+            isA<MdstreamException>().having(
+              (error) => error.detailCode,
+              'detailCode',
+              'bindings.invalid_payload',
+            ),
+          ),
+        );
+      }
+    });
+
+    test('rejects inconsistent artifact state payloads', () {
+      final readyWithoutArtifact = _artifactView()..['artifact'] = null;
+      final pendingWithArtifact = _artifactView()..['state'] = 'pending';
+      final failedWithoutFailure = _artifactView()
+        ..['state'] = 'failed'
+        ..['artifact'] = null;
+
+      for (final payload in <Map<String, Object?>>[
+        readyWithoutArtifact,
+        pendingWithArtifact,
+        failedWithoutFailure,
+      ]) {
+        expect(
+          () => decodeBindingView(
+            BindingPayloadKind.artifactView,
+            _bytes(payload),
+            schema,
+          ),
+          throwsA(
+            isA<MdstreamException>().having(
+              (error) => error.detailCode,
+              'detailCode',
+              'bindings.invalid_payload',
+            ),
+          ),
+        );
+      }
     });
 
     test('recursively freezes raw JSON', () {
@@ -444,7 +614,7 @@ void main() {
         processorRequests: const [],
         processorCompletions: const [],
         artifactChanges: const [],
-        outputPayloadBytes: '0',
+        outputPayloadBytes: DecimalCounter.parse('0'),
       );
 
       expect(result.transitionFacts, hasLength(2));
@@ -465,7 +635,7 @@ void main() {
         processorRequests: const [],
         processorCompletions: const [],
         artifactChanges: const [],
-        outputPayloadBytes: '0',
+        outputPayloadBytes: DecimalCounter.parse('0'),
       );
       expect(disabled.transitionFacts, isEmpty);
       expect(
@@ -476,7 +646,7 @@ void main() {
       final operation = EngineResult(
         changes: const [],
         reducerResults: <ReducerResult>[disabled, result],
-        outputPayloadBytes: '0',
+        outputPayloadBytes: DecimalCounter.parse('0'),
       );
       expect(
         operation.transitionFacts.map((facts) {
@@ -640,6 +810,7 @@ Map<String, Object?> _nodeView() => <String, Object?>{
   'kind': 'node_view',
   'node': _node(),
   'body_text': 'Title',
+  'processor_input_version': 'sha256:processor-input',
 };
 
 Map<String, Object?> _resource() => <String, Object?>{

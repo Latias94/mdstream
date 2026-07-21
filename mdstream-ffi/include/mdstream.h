@@ -62,6 +62,12 @@ typedef struct MdstreamAllocationMetrics {
     uint64_t buffer_bytes;
 } MdstreamAllocationMetrics;
 
+/* Immutable native budgets for a host-language processor scheduler. */
+typedef struct MdstreamProcessorSchedulerLimits {
+    size_t max_in_flight_jobs;
+    size_t max_queued_candidates;
+} MdstreamProcessorSchedulerLimits;
+
 typedef struct MdstreamEngine MdstreamEngine;
 typedef struct MdstreamReducer MdstreamReducer;
 typedef struct MdstreamOutput MdstreamOutput;
@@ -115,6 +121,7 @@ size_t mdstream_engine_result_struct_size(void);
 size_t mdstream_reducer_result_struct_size(void);
 size_t mdstream_payload_result_struct_size(void);
 size_t mdstream_allocation_metrics_struct_size(void);
+size_t mdstream_processor_scheduler_limits_struct_size(void);
 
 /* Process-wide diagnostic snapshot used by binding ownership tests. */
 MdstreamAllocationMetrics mdstream_allocation_metrics(void);
@@ -139,6 +146,11 @@ MdstreamReducerResult mdstream_reducer_new(
  */
 void mdstream_engine_free(MdstreamEngine* engine);
 void mdstream_reducer_free(MdstreamReducer* reducer);
+
+/* NULL returns { 0, 0 }; a non-null reducer must remain live for the call. */
+MdstreamProcessorSchedulerLimits mdstream_reducer_processor_scheduler_limits(
+    const MdstreamReducer* reducer
+);
 
 /* Hot paths avoid an additional JSON command wrapper. */
 MdstreamCallResult mdstream_engine_append(
