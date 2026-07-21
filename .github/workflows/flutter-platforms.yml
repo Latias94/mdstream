@@ -36,6 +36,16 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install cargo-zigbuild 0.23.0
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild@0.23.0
+
       - name: Install Flutter 3.32.1
         uses: subosito/flutter-action@v2
         with:
@@ -128,7 +138,7 @@ jobs:
         run: flutter pub get
 
       - name: Install pinned Android NDK
-        run: '"${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264"'
+        run: '"${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" "build-tools;35.0.0"'
 
       - name: Build staged Android libraries
         run: python3 bindings/flutter/tool/build_native.py android
@@ -140,9 +150,10 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Load bundled Android library
-        uses: reactivecircus/android-emulator-runner@v2.34.0
+        uses: reactivecircus/android-emulator-runner@v2.38.0
         with:
           api-level: 35
+          target: google_apis_ps16k
           arch: x86_64
           profile: pixel_2
           script: python3 bindings/flutter/tool/android_smoke.py --skip-native-build --device emulator-5554
@@ -195,8 +206,13 @@ jobs:
         if: matrix.platform == 'macos'
         run: python3 bindings/flutter/tool/package_smoke.py --platform macos --device macos --skip-native-build --skip-archive
 
+      - name: Load bundled macOS library through SwiftPM
+        if: matrix.platform == 'macos'
+        run: python3 bindings/flutter/tool/package_smoke.py --swiftpm --platform macos --skip-native-build
+
       - name: Boot iOS simulator and load bundled library
         if: matrix.platform == 'ios'
+        timeout-minutes: 30
         shell: bash
         run: |
           DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(device["udid"] for devices in data["devices"].values() for device in devices if "iPhone" in device["name"]))')"
@@ -204,6 +220,7 @@ jobs:
           open -a Simulator --args -CurrentDeviceUDID "$DEVICE_ID"
           xcrun simctl bootstatus "$DEVICE_ID" -b
           python3 bindings/flutter/tool/package_smoke.py --platform ios --device "$DEVICE_ID" --skip-native-build --skip-archive
+          python3 bindings/flutter/tool/package_smoke.py --swiftpm --platform ios --device "$DEVICE_ID" --skip-native-build
 
       - name: Upload Apple native artifact
         uses: actions/upload-artifact@v4
@@ -363,3 +380,68 @@ jobs:
 
       - name: Load Linux plugin from exact publish archive
         run: xvfb-run -a python3 bindings/flutter/tool/package_smoke.py --archive "$FLUTTER_ARCHIVE" --platform linux --device linux --skip-native-build
+
+  package-linux-legacy-smoke:
+    name: Load exact Flutter archive / glibc 2.28
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Download exact Flutter publish archive
+        uses: actions/download-artifact@v4
+        with:
+          name: mdstream-flutter-package
+          path: target/flutter-package
+
+      - name: Resolve Flutter archive path
+        shell: bash
+        run: echo "FLUTTER_ARCHIVE=$(python3 bindings/flutter/tool/package_smoke.py --print-archive-path)" >> "$GITHUB_ENV"
+
+      - name: Build legacy-runtime consumer from exact archive
+        shell: bash
+        run: |
+          python3 scripts/verify-packages.py --extract-only \
+            "$FLUTTER_ARCHIVE" target/flutter-extracted
+          mkdir -p target/flutter-linux-legacy-smoke
+          zig cc -target x86_64-linux-gnu.2.17 \
+            -I mdstream-ffi/include \
+            mdstream-ffi/tests/c_consumer_smoke.c \
+            -L target/flutter-extracted/linux/lib/x86_64 \
+            -lmdstream_ffi \
+            -Wl,-rpath,/mdstream/lib \
+            -o target/flutter-linux-legacy-smoke/c-consumer
+
+      - name: Run exact native library on Debian 10
+        run: |
+          docker run --rm \
+            -v "$PWD/target/flutter-extracted/linux/lib/x86_64:/mdstream/lib:ro" \
+            -v "$PWD/target/flutter-linux-legacy-smoke/c-consumer:/mdstream/c-consumer:ro" \
+            debian:10.13-slim /mdstream/c-consumer
+
+  package-apple-swiftpm-smoke:
+    name: Load exact Flutter archive / SwiftPM macOS
+    needs: package
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download exact Flutter publish archive
+        uses: actions/download-artifact@v4
+        with:
+          name: mdstream-flutter-package
+          path: target/flutter-package
+
+      - name: Resolve Flutter archive path
+        shell: bash
+        run: echo "FLUTTER_ARCHIVE=$(python3 bindings/flutter/tool/package_smoke.py --print-archive-path)" >> "$GITHUB_ENV"
+
+      - name: Load SwiftPM package from exact publish archive
+        run: python3 bindings/flutter/tool/package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" --platform macos --skip-native-build

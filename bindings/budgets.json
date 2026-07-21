@@ -20,8 +20,8 @@
       "regression_percent": 15,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 1248983,
-        "artifact_sha256": "766c3d55aaedbb004e8bca8a7217c15281fcf9c9205841c4e8b993ce2c8c1192",
+        "measured_bytes": 1151778,
+        "artifact_sha256": "6937a9f38c12eb23d2d6313b00d1f720a3f1b5c6377c6dc5ca8ef70a2a278e86",
         "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
       }
     },
@@ -32,8 +32,8 @@
       "regression_percent": 15,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 1248794,
-        "artifact_sha256": "582df1f6ec72da91ef3fbab98c632c2c3921c42c3bc08bddae2b7572ed501a23",
+        "measured_bytes": 1151418,
+        "artifact_sha256": "c8fa0a8b50d2ddf743f0c6c3399825a2ddac0b2622c72c5472aa52fac5c87d9d",
         "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
       }
     },
@@ -44,8 +44,8 @@
       "regression_percent": 15,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 450831,
-        "artifact_sha256": "d6a4b723cc4aedf8ad2b3780a454edf035d26d499807c30a6418bab3d375300f",
+        "measured_bytes": 432038,
+        "artifact_sha256": "4f91eb4dfe403dfc6c23f559549f54b138cc25539a10af96d630060f2855c60f",
         "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
       }
     },
@@ -56,8 +56,8 @@
       "regression_percent": 15,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 339850,
-        "artifact_sha256": "20fc21738ab87b4883eb20c8bea60c84716507c0630c67f7b559dbeb2da95c10",
+        "measured_bytes": 335257,
+        "artifact_sha256": "6dc91bd6429791f839b2c9ab3f51a7e4e81f0a42f2135ec0b6f73ca8752f3e24",
         "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
       }
     },
@@ -68,8 +68,8 @@
       "regression_percent": 20,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 478290,
-        "artifact_sha256": "820b7d5c84a9a43d0c93c95ef1af6dbce287badd6475293d3be3fc98bebeb418",
+        "measured_bytes": 477596,
+        "artifact_sha256": "a22f771127bbe850a2ebf60b9d3b699d9070a0f1a1ac085cc1d384619fc5ea9e",
         "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
       }
     },
@@ -80,8 +80,8 @@
       "regression_percent": 20,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 24552,
-        "artifact_sha256": "fbadd4e871418c517524c7acb16554cef38702212e49bdab972b72d06ebab441",
+        "measured_bytes": 52067,
+        "artifact_sha256": "62edce351be84fbdd9f77e71018c0d1933328588d466488fcfc02167510a81bf",
         "command": "cd bindings/dart && dart pub publish --to-archive=../../target/dart-package/mdstream-0.4.0.tar.gz"
       }
     },
@@ -92,8 +92,8 @@
       "regression_percent": 20,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 3005272,
-        "artifact_sha256": "b143a177e752aa2756cf844aada17ee5646e8c1384c993e12e5531f7bc1930de",
+        "measured_bytes": 3119208,
+        "artifact_sha256": "eafaed33c5e237b0de5210141ab940268c0fd778ef4582a70cc484e25051438c",
         "command": "python3 bindings/flutter/tool/build_native.py android"
       }
     },
@@ -104,8 +104,8 @@
       "regression_percent": 20,
       "status": "measured",
       "measurement": {
-        "measured_bytes": 3006207,
-        "artifact_sha256": "821384e71cd47d4d11c68618b447a3b7aefa218f8dce2e320e911a0b6d096f3d",
+        "measured_bytes": 7696031,
+        "artifact_sha256": "143d61e60fd3c4d2b9e3ad30a1c83c8a57ee4e1b1a64ab700e76a6f8cd5cc8c6",
         "command": "python3 bindings/flutter/tool/package_smoke.py --skip-native-build --skip-runtime"
       }
     }

@@ -55,13 +55,42 @@ jobs:
               raise SystemExit(
                   f"tag version {version} does not match package version {manifest_version}"
               )
-          with open("CHANGELOG.md", encoding="utf-8") as handle:
-              changelog = handle.read()
-          heading = rf"^##\s+(?:\[{re.escape(version)}\]|{re.escape(version)})(?:\s+-\s+\d{{4}}-\d{{2}}-\d{{2}})?\s*$"
-          if re.search(heading, changelog, flags=re.MULTILINE) is None:
-              raise SystemExit(f"CHANGELOG.md has no release section for {version}")
           PY
+          python3 scripts/release_notes.py \
+            --version "$version" \
+            --changelog CHANGELOG.md \
+            --output target/release-notes.md
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble and smoke trusted release tools
+        run: |
+          set -euo pipefail
+          mkdir -p target/release-tools/scripts
+          mkdir -p target/release-tools/bindings/flutter/tool
+          cp \
+            scripts/archive_policy.py \
+            scripts/check-registry-version.py \
+            scripts/release_notes.py \
+            scripts/verify-packages.py \
+            target/release-tools/scripts/
+          cp \
+            bindings/flutter/tool/native_artifact.py \
+            target/release-tools/bindings/flutter/tool/
+          python3 target/release-tools/scripts/verify-packages.py --help >/dev/null
+
+      - name: Upload trusted release tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-registry-version-checker
+          path: target/release-tools/**
+          if-no-files-found: error
+
+      - name: Upload verified release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: mdstream-release-notes
+          path: target/release-notes.md
+          if-no-files-found: error
 
   quality:
     name: Full CI
@@ -73,9 +102,17 @@ jobs:
     needs: validate
     uses: ./.github/workflows/flutter-platforms.yml
 
+  release-preflight:
+    name: Release producer preflight
+    needs: [validate, quality, flutter-platforms, build-npm, build-dart]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm all publish archives passed their exact checks
+        run: echo "Rust, npm, Dart, and Flutter producer gates passed"
+
   publish-rust:
     name: Publish crates.io graph
-    needs: [validate, quality]
+    needs: [validate, quality, flutter-platforms, release-preflight]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -94,26 +131,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          crate_exists() {
-            python3 - "$1" "$VERSION" <<'PY'
-          import json
-          import sys
-          import urllib.error
-          import urllib.request
-
-          crate, version = sys.argv[1:]
-          try:
-              with urllib.request.urlopen(
-                  f"https://crates.io/api/v1/crates/{crate}/{version}", timeout=30
-              ) as response:
-                  json.load(response)
-          except urllib.error.HTTPError as error:
-              if error.code == 404:
-                  raise SystemExit(1)
-              raise
-          PY
-          }
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/mdstream-release-target"
 
           wait_for_crate() {
             local crate="$1"
@@ -130,17 +148,29 @@ jobs:
 
           mapfile -t crates < <(python3 scripts/verify-packages.py --print-rust-order)
           for crate in "${crates[@]}"; do
-            if crate_exists "$crate"; then
-              echo "$crate $VERSION already exists; skipping"
+            python3 scripts/verify-packages.py --phase registry --package "$crate"
+            archive="$CARGO_TARGET_DIR/package/$crate-$VERSION.crate"
+            test -f "$archive"
+            if python3 scripts/check-registry-version.py crates.io "$crate" "$VERSION"; then
+              echo "$crate $VERSION already exists; verifying immutable artifact"
             else
-              python3 scripts/verify-packages.py --phase registry --package "$crate"
+              registry_status=$?
+              if [[ "$registry_status" -ne 1 ]]; then
+                echo "cannot determine whether $crate $VERSION exists; refusing to publish" >&2
+                exit "$registry_status"
+              fi
               if [[ "$crate" == "mdstream-merman" ]]; then
-                cargo +1.95.0 publish --manifest-path mdstream-merman/Cargo.toml --token "$CARGO_REGISTRY_TOKEN"
+                cargo +1.95.0 publish --manifest-path mdstream-merman/Cargo.toml --locked --token "$CARGO_REGISTRY_TOKEN"
               else
-                cargo publish -p "$crate" --token "$CARGO_REGISTRY_TOKEN"
+                cargo publish -p "$crate" --locked --token "$CARGO_REGISTRY_TOKEN"
               fi
             fi
             wait_for_crate "$crate"
+            python3 scripts/verify-packages.py \
+              --compare-registry crates.io \
+              --package "$crate" \
+              --version "$VERSION" \
+              --archive "$archive"
           done
 
   build-npm:
@@ -202,7 +232,7 @@ jobs:
 
   publish-npm:
     name: Publish @mdstream/core
-    needs: [validate, quality, build-npm]
+    needs: [validate, quality, build-npm, flutter-platforms, release-preflight]
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -218,6 +248,12 @@ jobs:
       - name: Install OIDC-capable npm
         run: npm install --global npm@11.9.0
 
+      - name: Download registry version checker
+        uses: actions/download-artifact@v4
+        with:
+          name: release-registry-version-checker
+          path: target/release-tools
+
       - name: Download npm package
         uses: actions/download-artifact@v4
         with:
@@ -230,13 +266,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if npm view "@mdstream/core@$VERSION" version >/dev/null 2>&1; then
-            echo "@mdstream/core $VERSION already exists; skipping"
+          package="target/npm-package/mdstream-core-$VERSION.tgz"
+          test -f "$package"
+          if python3 target/release-tools/scripts/check-registry-version.py npm @mdstream/core "$VERSION"; then
+            echo "@mdstream/core $VERSION already exists; verifying immutable artifact"
           else
-            package="target/npm-package/mdstream-core-$VERSION.tgz"
-            test -f "$package"
+            registry_status=$?
+            if [[ "$registry_status" -ne 1 ]]; then
+              echo "cannot determine whether @mdstream/core $VERSION exists; refusing to publish" >&2
+              exit "$registry_status"
+            fi
             npm publish "$package" --access public --provenance
           fi
+          for _ in $(seq 1 36); do
+            if python3 target/release-tools/scripts/verify-packages.py \
+              --compare-registry npm \
+              --package @mdstream/core \
+              --version "$VERSION" \
+              --archive "$package"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "npm registry artifact did not match the producer archive" >&2
+          exit 1
 
   build-dart:
     name: Build standalone Dart package
@@ -278,7 +331,7 @@ jobs:
 
   publish-dart:
     name: Publish mdstream to pub.dev
-    needs: [validate, quality, build-dart]
+    needs: [validate, quality, build-dart, flutter-platforms, release-preflight]
     runs-on: ubuntu-latest
     environment: pub.dev
     permissions:
@@ -289,6 +342,12 @@ jobs:
         uses: dart-lang/setup-dart@v1
         with:
           sdk: 3.8.1
+
+      - name: Download registry version checker
+        uses: actions/download-artifact@v4
+        with:
+          name: release-registry-version-checker
+          path: target/release-tools
 
       - name: Download standalone Dart package
         uses: actions/download-artifact@v4
@@ -299,9 +358,25 @@ jobs:
       - name: Extract package into a Pub workspace
         run: |
           set -euo pipefail
-          mkdir -p target/dart-publish/dart
-          tar -xzf "target/dart-package/mdstream-${{ needs.validate.outputs.version }}.tar.gz" -C target/dart-publish/dart
+          mkdir -p target/dart-publish
+          python3 target/release-tools/scripts/verify-packages.py --extract-only \
+            "target/dart-package/mdstream-${{ needs.validate.outputs.version }}.tar.gz" \
+            target/dart-publish/dart
           printf 'name: mdstream_release_workspace\npublish_to: none\nenvironment:\n  sdk: ^3.8.0\nworkspace:\n  - dart\n' > target/dart-publish/pubspec.yaml
+
+      - name: Prove Pub repack preserves verified Dart content
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/dart-repacked
+          (
+            cd target/dart-publish/dart
+            dart pub publish --skip-validation --to-archive="$GITHUB_WORKSPACE/target/dart-repacked/mdstream-$VERSION.tar.gz"
+          )
+          python3 target/release-tools/scripts/verify-packages.py --compare-only \
+            "target/dart-package/mdstream-$VERSION.tar.gz" \
+            "target/dart-repacked/mdstream-$VERSION.tar.gz"
 
       - name: Publish standalone Dart package when missing
         env:
@@ -310,30 +385,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if curl --fail --silent --connect-timeout 5 --max-time 20 "https://pub.dev/api/packages/mdstream/versions/$VERSION" >/dev/null; then
-            echo "mdstream $VERSION already exists; skipping"
+          if python3 "$GITHUB_WORKSPACE/target/release-tools/scripts/check-registry-version.py" pub.dev mdstream "$VERSION"; then
+            echo "mdstream $VERSION already exists; verifying immutable artifact"
           else
+            registry_status=$?
+            if [[ "$registry_status" -ne 1 ]]; then
+              echo "cannot determine whether mdstream $VERSION exists; refusing to publish" >&2
+              exit "$registry_status"
+            fi
             dart pub publish --force --skip-validation
           fi
-
-      - name: Wait for standalone Dart package indexing
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          set -euo pipefail
           for _ in $(seq 1 36); do
-            if curl --fail --silent --connect-timeout 5 --max-time 20 "https://pub.dev/api/packages/mdstream/versions/$VERSION" >/dev/null; then
-              echo "mdstream $VERSION is visible on pub.dev"
+            if python3 "$GITHUB_WORKSPACE/target/release-tools/scripts/verify-packages.py" \
+              --compare-registry pub.dev \
+              --package mdstream \
+              --version "$VERSION" \
+              --archive "$GITHUB_WORKSPACE/target/dart-package/mdstream-$VERSION.tar.gz"; then
               exit 0
             fi
             sleep 5
           done
-          echo "timed out waiting for mdstream $VERSION" >&2
+          echo "pub.dev mdstream artifact did not match the producer archive" >&2
           exit 1
 
   publish-flutter:
     name: Publish mdstream_flutter to pub.dev
-    needs: [validate, quality, publish-dart, flutter-platforms]
+    needs: [validate, quality, publish-dart, flutter-platforms, release-preflight]
     runs-on: ubuntu-latest
     environment: pub.dev
     permissions:
@@ -345,6 +422,12 @@ jobs:
         with:
           sdk: 3.8.1
 
+      - name: Download registry version checker
+        uses: actions/download-artifact@v4
+        with:
+          name: release-registry-version-checker
+          path: target/release-tools
+
       - name: Download Flutter package
         uses: actions/download-artifact@v4
         with:
@@ -354,9 +437,25 @@ jobs:
       - name: Extract package into a Pub workspace
         run: |
           set -euo pipefail
-          mkdir -p target/flutter-publish/flutter
-          tar -xzf "target/flutter-package/mdstream_flutter-${{ needs.validate.outputs.version }}.tar.gz" -C target/flutter-publish/flutter
+          mkdir -p target/flutter-publish
+          python3 target/release-tools/scripts/verify-packages.py --extract-only \
+            "target/flutter-package/mdstream_flutter-${{ needs.validate.outputs.version }}.tar.gz" \
+            target/flutter-publish/flutter
           printf 'name: mdstream_flutter_release_workspace\npublish_to: none\nenvironment:\n  sdk: ^3.8.0\nworkspace:\n  - flutter\n' > target/flutter-publish/pubspec.yaml
+
+      - name: Prove Pub repack preserves verified Flutter content
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/flutter-repacked
+          (
+            cd target/flutter-publish/flutter
+            dart pub publish --skip-validation --to-archive="$GITHUB_WORKSPACE/target/flutter-repacked/mdstream_flutter-$VERSION.tar.gz"
+          )
+          python3 target/release-tools/scripts/verify-packages.py --compare-only \
+            "target/flutter-package/mdstream_flutter-$VERSION.tar.gz" \
+            "target/flutter-repacked/mdstream_flutter-$VERSION.tar.gz"
 
       - name: Publish Flutter package when missing
         env:
@@ -365,11 +464,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if curl --fail --silent --connect-timeout 5 --max-time 20 "https://pub.dev/api/packages/mdstream_flutter/versions/$VERSION" >/dev/null; then
-            echo "mdstream_flutter $VERSION already exists; skipping"
+          if python3 "$GITHUB_WORKSPACE/target/release-tools/scripts/check-registry-version.py" pub.dev mdstream_flutter "$VERSION"; then
+            echo "mdstream_flutter $VERSION already exists; verifying immutable artifact"
           else
+            registry_status=$?
+            if [[ "$registry_status" -ne 1 ]]; then
+              echo "cannot determine whether mdstream_flutter $VERSION exists; refusing to publish" >&2
+              exit "$registry_status"
+            fi
             dart pub publish --force --skip-validation
           fi
+          for _ in $(seq 1 36); do
+            if python3 "$GITHUB_WORKSPACE/target/release-tools/scripts/verify-packages.py" \
+              --compare-registry pub.dev \
+              --package mdstream_flutter \
+              --version "$VERSION" \
+              --archive "$GITHUB_WORKSPACE/target/flutter-package/mdstream_flutter-$VERSION.tar.gz"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "pub.dev mdstream_flutter artifact did not match the producer archive" >&2
+          exit 1
 
   github-release:
     name: Create GitHub release
@@ -378,43 +494,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Extract release notes
-        id: notes
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          python3 - <<'PY'
-          import os
-          import re
-
-          version = os.environ["VERSION"]
-          with open("CHANGELOG.md", encoding="utf-8") as handle:
-              text = handle.read()
-          heading = re.compile(
-              rf"^##\s+(?:{re.escape(version)}|\[{re.escape(version)}\])"
-              rf"(?:\s+-\s+\d{{4}}-\d{{2}}-\d{{2}})?\s*$",
-              flags=re.MULTILINE,
-          )
-          match = heading.search(text)
-          if match is None:
-              raise SystemExit(f"missing CHANGELOG section for {version}")
-          next_heading = re.search(r"^##\s+", text[match.end():], flags=re.MULTILINE)
-          end = match.end() + next_heading.start() if next_heading else len(text)
-          notes = text[match.end():end].strip()
-          if not notes:
-              raise SystemExit(f"empty CHANGELOG section for {version}")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write("release_notes<<RELEASE_NOTES\n")
-              output.write(notes)
-              output.write("\nRELEASE_NOTES\n")
-          PY
+      - name: Download verified release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: mdstream-release-notes
+          path: target/release-notes
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          body: ${{ steps.notes.outputs.release_notes }}
+          body_path: target/release-notes/release-notes.md

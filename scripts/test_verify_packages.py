@@ -4,27 +4,53 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
+import gzip
 import io
 import json
 import re
 import shutil
+import struct
+import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = Path(__file__).with_name("verify-packages.py")
+REGISTRY_CHECKER_PATH = Path(__file__).with_name("check-registry-version.py")
 WORKFLOW_ROOT = ROOT / ".github" / "workflows"
+RELEASE_TOOL_BUNDLE_FILES = (
+    "scripts/archive_policy.py",
+    "scripts/check-registry-version.py",
+    "scripts/release_notes.py",
+    "scripts/verify-packages.py",
+    "bindings/flutter/tool/native_artifact.py",
+)
 SPEC = importlib.util.spec_from_file_location("verify_packages", MODULE_PATH)
 assert SPEC is not None
 verify_packages = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = verify_packages
 SPEC.loader.exec_module(verify_packages)
+import archive_policy  # noqa: E402
+import package_smoke  # noqa: E402
+from native_test_fixture import elf_image  # noqa: E402
+from native_artifact import is_native_like_artifact  # noqa: E402
+
+REGISTRY_SPEC = importlib.util.spec_from_file_location(
+    "check_registry_version", REGISTRY_CHECKER_PATH
+)
+assert REGISTRY_SPEC is not None
+check_registry_version = importlib.util.module_from_spec(REGISTRY_SPEC)
+assert REGISTRY_SPEC.loader is not None
+sys.modules[REGISTRY_SPEC.name] = check_registry_version
+REGISTRY_SPEC.loader.exec_module(check_registry_version)
 
 
 class PackageContractTests(unittest.TestCase):
@@ -39,6 +65,34 @@ class PackageContractTests(unittest.TestCase):
                     "mdstream-tokio": "0.3.0",
                 }
             )
+
+    def test_package_changelog_requires_current_nonempty_first_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            changelog = Path(temporary) / "CHANGELOG.md"
+            changelog.write_text(
+                "# Changelog\n\n## 0.4.0\n\n- Added a contract.\n",
+                encoding="utf-8",
+            )
+            verify_packages.validate_package_changelog(changelog, "0.4.0")
+
+            for text, message in (
+                (
+                    "# Changelog\n\n## 0.3.0\n\n- Old.\n\n"
+                    "## 0.4.0\n\n- New.\n",
+                    "starts at 0.3.0",
+                ),
+                ("# Changelog\n\n## 0.4.0\n", "empty changelog section"),
+            ):
+                with self.subTest(message=message):
+                    changelog.write_text(text, encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        verify_packages.ValidationError,
+                        message,
+                    ):
+                        verify_packages.validate_package_changelog(
+                            changelog,
+                            "0.4.0",
+                        )
 
     def test_flutter_native_metadata_matches_future_release_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -222,6 +276,43 @@ class PackageContractTests(unittest.TestCase):
                 tar_member("pubspec.yaml", b"first"),
                 tar_member("pubspec.yaml", b"second"),
             ],
+            "case collision": [
+                tar_member("lib/A.dart", b"first"),
+                tar_member("lib/a.dart", b"second"),
+            ],
+            "Unicode collision": [
+                tar_member("lib/\u00e9.dart", b"first"),
+                tar_member("lib/e\u0301.dart", b"second"),
+            ],
+            "case-colliding parent directories": [
+                tar_member("Lib/a.dart", b"first"),
+                tar_member("lib/b.dart", b"second"),
+            ],
+            "Unicode-colliding parent directories": [
+                tar_member("lib/caf\u00e9/a.dart", b"first"),
+                tar_member("lib/cafe\u0301/b.dart", b"second"),
+            ],
+            "explicit directory aliases an implicit directory": [
+                tar_member("Lib/a.dart", b"first"),
+                tar_directory("lib"),
+            ],
+            "Windows reserved name": [tar_member("lib/CON.dart", b"payload")],
+            "Windows superscript COM device": [
+                tar_member("lib/COM\u00b9.txt", b"payload")
+            ],
+            "Windows superscript LPT device": [
+                tar_member("lib/LPT\u00b3.txt", b"payload")
+            ],
+            "Windows trailing dot": [tar_member("lib/name.", b"payload")],
+            "Windows invalid character": [tar_member("lib/name:stream", b"payload")],
+            "file before subtree": [
+                tar_member("lib", b"file"),
+                tar_member("lib/a.dart", b"child"),
+            ],
+            "subtree before file": [
+                tar_member("lib/a.dart", b"child"),
+                tar_member("lib", b"file"),
+            ],
         }
         for name, members in cases.items():
             with self.subTest(member=name), tempfile.TemporaryDirectory() as temporary:
@@ -229,7 +320,7 @@ class PackageContractTests(unittest.TestCase):
                 write_tar(archive, members)
                 with self.assertRaisesRegex(
                     verify_packages.ValidationError,
-                    "unsafe|link|duplicate",
+                    "unsafe|link|duplicate|non-portable|path conflict",
                 ):
                     verify_packages._archive_files(archive)
 
@@ -254,6 +345,50 @@ class PackageContractTests(unittest.TestCase):
             self.assertEqual(visited, ["large.bin", "after.txt"])
             self.assertEqual(first_chunk_sizes, [64 * 1024, 5])
 
+        with self.assertRaisesRegex(
+            archive_policy.ArchivePolicyError,
+            "non-portable",
+        ):
+            archive_policy._portable_member_key("lib/bad\udcff.txt")
+
+    def test_archive_reader_rejects_concatenated_gzip_members(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "concatenated.tar.gz"
+            inner = io.BytesIO()
+            with tarfile.open(fileobj=inner, mode="w") as tar:
+                member, payload = tar_member("payload.txt", b"ok")
+                tar.addfile(member, io.BytesIO(payload))
+            archive.write_bytes(
+                gzip.compress(inner.getvalue()) + gzip.compress(b"second member")
+            )
+
+            with self.assertRaisesRegex(
+                archive_policy.ArchivePolicyError,
+                "multiple gzip members",
+            ):
+                verify_packages.visit_archive(
+                    archive,
+                    lambda _member, _chunks: None,
+                )
+
+    def test_archive_reader_rejects_nonzero_data_after_tar_eoa(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "trailing.tar.gz"
+            inner = io.BytesIO()
+            with tarfile.open(fileobj=inner, mode="w") as tar:
+                member, payload = tar_member("payload.txt", b"ok")
+                tar.addfile(member, io.BytesIO(payload))
+            archive.write_bytes(gzip.compress(inner.getvalue() + b"trailing"))
+
+            with self.assertRaisesRegex(
+                archive_policy.ArchivePolicyError,
+                "non-zero data after tar end-of-archive",
+            ):
+                verify_packages.visit_archive(
+                    archive,
+                    lambda _member, _chunks: None,
+                )
+
     def test_archive_reader_accepts_canonical_directory_entries(self) -> None:
         for name in ("lib", "lib/"):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
@@ -270,6 +405,102 @@ class PackageContractTests(unittest.TestCase):
 
                 self.assertEqual(visited, ["lib"])
 
+    def test_extract_only_cli_uses_the_shared_atomic_archive_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "package.tar.gz"
+            destination = root / "package"
+            write_tar(archive, [tar_member("lib/value.txt", b"verified")])
+            stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    str(MODULE_PATH),
+                    "--extract-only",
+                    str(archive),
+                    str(destination),
+                ],
+            ), redirect_stdout(stdout):
+                result = verify_packages.main()
+
+            self.assertEqual(result, 0)
+            self.assertEqual(
+                (destination / "lib" / "value.txt").read_bytes(),
+                b"verified",
+            )
+            self.assertEqual(
+                json.loads(stdout.getvalue())["schema"],
+                "mdstream.archive-extraction/1",
+            )
+
+    def test_release_tool_bundle_runs_archive_modes_without_a_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / "release-tools"
+            for relative in RELEASE_TOOL_BUNDLE_FILES:
+                destination = bundle / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, destination)
+            archive = root / "package.tar.gz"
+            destination = root / "package"
+            write_tar(archive, [tar_member("lib/value.txt", b"verified")])
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(bundle / "scripts" / "verify-packages.py"),
+                    "--extract-only",
+                    str(archive),
+                    str(destination),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                (destination / "lib" / "value.txt").read_bytes(),
+                b"verified",
+            )
+            validate = indented_block(
+                (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8"),
+                "validate:",
+            )
+            for relative in RELEASE_TOOL_BUNDLE_FILES:
+                self.assertIn(relative, validate)
+            self.assertIn(
+                "target/release-tools/scripts/verify-packages.py --help",
+                validate,
+            )
+            self.assertIn("path: target/release-tools/**", validate)
+
+    def test_special_cli_modes_cannot_bypass_each_other(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "package.tar.gz"
+            destination = root / "package"
+            write_tar(archive, [tar_member("value.txt", b"verified")])
+            stderr = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    str(MODULE_PATH),
+                    "--print-rust-order",
+                    "--extract-only",
+                    str(archive),
+                    str(destination),
+                ],
+            ), redirect_stderr(stderr):
+                result = verify_packages.main()
+
+            self.assertEqual(result, 1)
+            self.assertIn("cannot be combined", stderr.getvalue())
+            self.assertFalse(destination.exists())
+
         with tempfile.TemporaryDirectory() as temporary:
             archive = Path(temporary) / "package.tar.gz"
             directories = []
@@ -284,6 +515,24 @@ class PackageContractTests(unittest.TestCase):
                 "duplicate member lib",
             ):
                 verify_packages._archive_files(archive)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "directory-after-child.tar.gz"
+            directory = tarfile.TarInfo("lib")
+            directory.type = tarfile.DIRTYPE
+            write_tar(
+                archive,
+                [tar_member("lib/a.dart", b"child"), (directory, b"")],
+            )
+            visited: list[str] = []
+            verify_packages.visit_archive(
+                archive,
+                lambda member, _chunks: visited.append(member.name),
+            )
+            self.assertEqual(
+                visited,
+                ["lib/a.dart", "lib"],
+            )
 
     def test_existing_ecosystem_archives_are_verified_in_place(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -308,6 +557,87 @@ class PackageContractTests(unittest.TestCase):
                 verify_packages.verify_existing_archive(root, "npm", npm_archive)
                 verify_packages.verify_existing_archive(root, "dart", dart_archive)
                 verify_packages.verify_existing_archive(root, "flutter", flutter_archive)
+
+    def test_existing_archives_bind_manifest_identity_to_the_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_binding_policy(root, npm_ceiling=64_000, dart_ceiling=64_000)
+
+            cases: list[tuple[str, dict[str, bytes], str, str]] = []
+
+            npm_files = valid_npm_files()
+            npm_manifest = json.loads(npm_files["package.json"])
+            npm_manifest["version"] = "9.9.9"
+            npm_files["package.json"] = json.dumps(npm_manifest).encode()
+            cases.append(("npm", npm_files, "package", "npm package version"))
+
+            for field, value, message in (
+                ("name", "other", "Dart package name"),
+                ("version", "9.9.9", "Dart package version"),
+            ):
+                dart_files = valid_dart_files()
+                dart_files["pubspec.yaml"] = re.sub(
+                    rf"(?m)^{field}:.*$",
+                    f"{field}: {value}",
+                    dart_files["pubspec.yaml"].decode(),
+                ).encode()
+                cases.append(("dart", dart_files, "", message))
+
+            for field, value, message in (
+                ("name", "other", "Flutter package name"),
+                ("version", "9.9.9", "Flutter package version"),
+                ("mdstream", "^9.9.9", "Flutter mdstream requirement"),
+            ):
+                flutter_files = valid_flutter_files()
+                pattern = (
+                    rf"(?m)^  mdstream:.*$"
+                    if field == "mdstream"
+                    else rf"(?m)^{field}:.*$"
+                )
+                replacement = (
+                    f"  mdstream: {value}" if field == "mdstream" else f"{field}: {value}"
+                )
+                flutter_files["pubspec.yaml"] = re.sub(
+                    pattern,
+                    replacement,
+                    flutter_files["pubspec.yaml"].decode(),
+                ).encode()
+                cases.append(("flutter", flutter_files, "", message))
+
+            for index, (ecosystem, files, prefix, message) in enumerate(cases):
+                with self.subTest(ecosystem=ecosystem, case=index):
+                    archive = root / f"{ecosystem}-{index}.tar.gz"
+                    write_files_tar(archive, files, prefix=prefix or None)
+                    with self.assertRaisesRegex(
+                        verify_packages.ValidationError,
+                        message,
+                    ):
+                        verify_packages.verify_existing_archive(
+                            root,
+                            ecosystem,
+                            archive,
+                        )
+
+    def test_pub_lock_rejects_non_pub_dev_hosted_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / "bindings" / "pubspec.lock"
+            lock.parent.mkdir(parents=True)
+            lock.write_text(
+                'packages:\n  ffi:\n    description:\n      url: "https://pub.dev"\n',
+                encoding="utf-8",
+            )
+            verify_packages.validate_pub_lock_sources(root)
+
+            lock.write_text(
+                'packages:\n  ffi:\n    description:\n      url: "https://pub.flutter-io.cn"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                verify_packages.ValidationError,
+                "non-pub.dev hosted source",
+            ):
+                verify_packages.validate_pub_lock_sources(root)
 
     def test_existing_archive_enforces_budget_and_dependency_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -380,6 +710,296 @@ class PackageContractTests(unittest.TestCase):
                     "native binary magic",
                 ):
                     verify_packages.verify_existing_archive(root, "dart", archive)
+
+    def test_flutter_archive_rejects_native_files_outside_inventory(self) -> None:
+        cases = {
+            "native-like extension": ("lib/hidden.so", b"not an ELF"),
+            "native-like container": (
+                "lib/Hidden.xcframework/Info.plist",
+                b"not a framework",
+            ),
+            "native binary magic": ("lib/hidden.bin", b"\x7fELFpayload"),
+            "fat Mach-O magic": ("lib/hidden-fat.bin", b"\xca\xfe\xba\xbfpayload"),
+        }
+        for label, (name, data) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_binding_policy(root, npm_ceiling=64_000, dart_ceiling=64_000)
+                files = valid_flutter_files()
+                files[name] = data
+                archive = root / "flutter.tar.gz"
+                write_files_tar(archive, files)
+
+                with self.assertRaisesRegex(
+                    verify_packages.ValidationError,
+                    "outside canonical native inventory",
+                ):
+                    verify_packages.verify_existing_archive(root, "flutter", archive)
+
+    def test_flutter_native_inventory_rejections_match_the_deep_package_smoke(self) -> None:
+        native = elf_image("x86_64")
+        coff_object = struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, 0, 0) + bytes(40)
+        bigobj_class_id = bytes.fromhex("c7a1bad1eebaa94baf20faf66aa4dcb8")
+        coff_bigobj_v2 = (
+            b"\x00\x00\xff\xff\x02\x00\x64\x86"
+            + bytes(4)
+            + bigobj_class_id
+            + bytes(12)
+        )
+        coff_bigobj_v3 = (
+            b"\x00\x00\xff\xff\x03\x00\x64\x86"
+            + bytes(4)
+            + bigobj_class_id
+            + bytes(12)
+        )
+        wrong_bigobj_uuid = (
+            b"\x00\x00\xff\xff\x03\x00\x64\x86"
+            + bytes(4)
+            + bytes(16)
+            + bytes(12)
+        )
+        self.assertTrue(is_native_like_artifact("assets/v2.bin", coff_bigobj_v2))
+        self.assertTrue(is_native_like_artifact("assets/v3.bin", coff_bigobj_v3))
+        self.assertFalse(is_native_like_artifact("assets/wrong.bin", wrong_bigobj_uuid))
+        cases = {
+            "COFF object outside inventory": ("assets/hidden.obj", coff_object),
+            "COFF BigObj v2 under a neutral suffix": (
+                "assets/hidden-bigobj-v2.bin",
+                coff_bigobj_v2,
+            ),
+            "COFF BigObj v3 under a neutral suffix": (
+                "assets/hidden-bigobj-v3.bin",
+                coff_bigobj_v3,
+            ),
+            "PDB magic under a neutral suffix": (
+                "assets/hidden.bin",
+                b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\0\0\0",
+            ),
+            "extra file inside reserved native directory": (
+                "android/src/main/jniLibs/x86_64/README.txt",
+                b"not part of the native inventory",
+            ),
+        }
+
+        for label, (name, data) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_binding_policy(root, npm_ceiling=64_000, dart_ceiling=64_000)
+                files = valid_flutter_files()
+                files["android/src/main/jniLibs/x86_64/libmdstream_ffi.so"] = native
+                files[name] = data
+                archive = root / "flutter.tar.gz"
+                write_files_tar(archive, files)
+
+                with self.assertRaisesRegex(
+                    verify_packages.ValidationError,
+                    "outside canonical native inventory",
+                ):
+                    verify_packages.verify_existing_archive(root, "flutter", archive)
+                with self.assertRaisesRegex(
+                    package_smoke.PackageSmokeError,
+                    "outside canonical native inventory",
+                ):
+                    package_smoke.inspect_package_archive(
+                        archive,
+                        forbidden_terms=set(),
+                        native_ceiling_bytes=len(native),
+                        increment_ceiling_bytes=sum(map(len, files.values())),
+                        require_all_platforms=False,
+                    )
+
+    def test_repacked_archive_comparison_uses_file_content_not_tar_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = root / "expected.tar.gz"
+            candidate = root / "candidate.tar.gz"
+            files = {"pubspec.yaml": b"name: mdstream\n", "lib/a.dart": b"a"}
+            write_files_tar(expected, files)
+            write_files_tar(candidate, dict(reversed(tuple(files.items()))))
+
+            verify_packages.compare_archive_file_contents(expected, candidate)
+
+            changed = dict(files)
+            changed["lib/a.dart"] = b"changed"
+            write_files_tar(candidate, changed)
+            with self.assertRaisesRegex(
+                verify_packages.ValidationError,
+                "changed file content lib/a.dart",
+            ):
+                verify_packages.compare_archive_file_contents(expected, candidate)
+
+            write_files_tar(candidate, {"pubspec.yaml": files["pubspec.yaml"]})
+            with self.assertRaisesRegex(
+                verify_packages.ValidationError,
+                "missing file lib/a.dart",
+            ):
+                verify_packages.compare_archive_file_contents(expected, candidate)
+
+            extra = dict(files)
+            extra["extra.txt"] = b"extra"
+            write_files_tar(candidate, extra)
+            with self.assertRaisesRegex(
+                verify_packages.ValidationError,
+                "extra file extra.txt",
+            ):
+                verify_packages.compare_archive_file_contents(expected, candidate)
+
+    def test_archive_fingerprints_reject_nonzero_data_after_tar_eoa(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = root / "expected.tar.gz"
+            candidate = root / "candidate.tar.gz"
+            files = {"pubspec.yaml": b"name: mdstream\n", "lib/a.dart": b"a"}
+            write_files_tar(expected, files)
+            write_files_tar(candidate, files)
+            raw_tar = gzip.decompress(candidate.read_bytes())
+            candidate.write_bytes(gzip.compress(raw_tar + b"not fingerprinted"))
+
+            with self.assertRaisesRegex(
+                verify_packages.ValidationError,
+                "non-zero data after tar end-of-archive",
+            ):
+                verify_packages.archive_file_fingerprints(candidate)
+            with self.assertRaisesRegex(
+                verify_packages.ValidationError,
+                "non-zero data after tar end-of-archive",
+            ):
+                verify_packages.compare_archive_file_contents(expected, candidate)
+
+    def test_registry_archive_descriptors_bind_identity_and_checksum(self) -> None:
+        checksum = b"x" * 64
+        npm = verify_packages.registry_archive_descriptor(
+            "npm",
+            "@mdstream/core",
+            "0.4.0",
+            {
+                "name": "@mdstream/core",
+                "version": "0.4.0",
+                "dist": {
+                    "tarball": (
+                        "https://registry.npmjs.org/@mdstream/core/-/core-0.4.0.tgz"
+                    ),
+                    "integrity": f"sha512-{base64.b64encode(checksum).decode()}",
+                },
+            },
+        )
+        self.assertEqual(npm.checksum_algorithm, "sha512")
+        self.assertEqual(npm.checksum, checksum)
+
+        pub = verify_packages.registry_archive_descriptor(
+            "pub.dev",
+            "mdstream",
+            "0.4.0",
+            {
+                "version": "0.4.0",
+                "archive_url": "https://pub.dev/api/archives/mdstream-0.4.0.tar.gz",
+                "archive_sha256": "ab" * 32,
+            },
+        )
+        self.assertEqual(pub.checksum_algorithm, "sha256")
+        self.assertEqual(pub.checksum, bytes.fromhex("ab" * 32))
+
+        crates = verify_packages.registry_archive_descriptor(
+            "crates.io",
+            "mdstream",
+            "0.4.0",
+            {
+                "version": {
+                    "crate": "mdstream",
+                    "num": "0.4.0",
+                    "yanked": False,
+                    "checksum": "cd" * 32,
+                }
+            },
+        )
+        self.assertEqual(crates.checksum_algorithm, "sha256")
+        self.assertEqual(crates.checksum, bytes.fromhex("cd" * 32))
+
+        for registry, metadata in (
+            (
+                "pub.dev",
+                {
+                    "version": "0.4.0",
+                    "archive_url": "https://pub.dev/archive.tar.gz",
+                    "retracted": True,
+                },
+            ),
+            (
+                "crates.io",
+                {
+                    "version": {
+                        "crate": "mdstream",
+                        "num": "0.4.0",
+                        "yanked": True,
+                        "checksum": "cd" * 32,
+                    }
+                },
+            ),
+        ):
+            with self.subTest(registry=registry), self.assertRaisesRegex(
+                verify_packages.ValidationError,
+                "retracted|yanked",
+            ):
+                verify_packages.registry_archive_descriptor(
+                    registry,
+                    "mdstream",
+                    "0.4.0",
+                    metadata,
+                )
+
+        with self.assertRaisesRegex(
+            verify_packages.ValidationError,
+            "outside registry.npmjs.org",
+        ):
+            verify_packages.registry_archive_descriptor(
+                "npm",
+                "@mdstream/core",
+                "0.4.0",
+                {
+                    "name": "@mdstream/core",
+                    "version": "0.4.0",
+                    "dist": {
+                        "tarball": "https://example.com/substituted.tgz",
+                        "shasum": "ab" * 20,
+                    },
+                },
+            )
+
+    def test_existing_registry_version_must_match_producer_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = root / "expected.tar.gz"
+            registry = root / "registry.tar.gz"
+            write_files_tar(expected, {"pubspec.yaml": b"expected"})
+            write_files_tar(registry, {"pubspec.yaml": b"different"})
+
+            metadata = {
+                "version": "0.4.0",
+                "archive_url": "https://pub.dev/archive.tar.gz",
+            }
+
+            def download(
+                _url: str,
+                destination: Path,
+                **_kwargs: object,
+            ) -> None:
+                shutil.copyfile(registry, destination)
+
+            with patch.object(
+                verify_packages,
+                "_registry_metadata",
+                return_value=metadata,
+            ), patch.object(verify_packages, "_curl_to_path", side_effect=download):
+                with self.assertRaisesRegex(
+                    verify_packages.ValidationError,
+                    "pub.dev archive changed file content pubspec.yaml",
+                ):
+                    verify_packages.verify_registry_archive(
+                        "pub.dev",
+                        "mdstream",
+                        "0.4.0",
+                        expected,
+                    )
 
     def test_pack_step_must_produce_exactly_one_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -484,7 +1104,8 @@ class PackageContractTests(unittest.TestCase):
             "python3 bindings/flutter/tool/build_native.py macos && "
             "cd bindings/flutter/example && flutter create --empty "
             "--platforms macos --project-name mdstream_flutter_example "
-            "--org io.mdstream.example --no-pub . && flutter run -d macos",
+            "--org io.mdstream.example --no-pub . && "
+            "dart run configure_host.dart macos && flutter run -d macos",
         )
 
         catalog = (ROOT / "docs" / "EXAMPLES.md").read_text(encoding="utf-8")
@@ -495,7 +1116,8 @@ class PackageContractTests(unittest.TestCase):
             "From an extracted published package, start at `cd example && "
             "flutter create --empty --platforms macos --project-name "
             "mdstream_flutter_example --org io.mdstream.example --no-pub . "
-            "&& flutter run -d macos`; its native artifacts are already staged.",
+            "&& dart run configure_host.dart macos && flutter run -d macos`; "
+            "its native artifacts are already staged.",
             section,
         )
 
@@ -526,6 +1148,20 @@ class PackageContractTests(unittest.TestCase):
             line_start = text.index("    needs:", start)
             line_end = text.index("\n", line_start)
             return text[:line_start] + f"    needs: {replacement}" + text[line_end:]
+
+        def replace_job_fragment(
+            text: str,
+            job_name: str,
+            original: str,
+            replacement: str,
+        ) -> str:
+            start = text.index(f"  {job_name}:\n")
+            next_job = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", text[start + 1 :])
+            end = start + 1 + next_job.start() if next_job is not None else len(text)
+            block = text[start:end]
+            if original not in block:
+                raise AssertionError(f"{original!r} not found in {job_name}")
+            return text[:start] + block.replace(original, replacement, 1) + text[end:]
 
         def comment_out_web_test(text: str) -> str:
             return text.replace("run: pnpm -r test", "# run: pnpm -r test", 1)
@@ -734,6 +1370,78 @@ class PackageContractTests(unittest.TestCase):
                     "[validate, publish-dart, flutter-platforms]",
                 ),
             ),
+            (
+                "Rust publish bypasses Flutter native platforms",
+                "release.yml",
+                lambda text: replace_job_needs(
+                    text,
+                    "publish-rust",
+                    "[validate, quality]",
+                ),
+            ),
+            (
+                "Rust publish bypasses producer preflight",
+                "release.yml",
+                lambda text: replace_job_needs(
+                    text,
+                    "publish-rust",
+                    "[validate, quality, flutter-platforms]",
+                ),
+            ),
+            (
+                "npm publish bypasses Flutter native platforms",
+                "release.yml",
+                lambda text: replace_job_needs(
+                    text,
+                    "publish-npm",
+                    "[validate, quality, build-npm]",
+                ),
+            ),
+            (
+                "Dart publish bypasses Flutter native platforms",
+                "release.yml",
+                lambda text: replace_job_needs(
+                    text,
+                    "publish-dart",
+                    "[validate, quality, build-dart]",
+                ),
+            ),
+            (
+                "Flutter publish bypasses Flutter native platforms",
+                "release.yml",
+                lambda text: replace_job_needs(
+                    text,
+                    "publish-flutter",
+                    "[validate, quality, publish-dart]",
+                ),
+            ),
+            (
+                "missing producer preflight",
+                "release.yml",
+                lambda text: text.replace(
+                    "  release-preflight:\n",
+                    "  release-preflight-disabled:\n",
+                    1,
+                ),
+            ),
+            *(
+                (
+                    f"{job_name} publishes after a registry probe error",
+                    "release.yml",
+                    lambda text, job_name=job_name: replace_job_fragment(
+                        text,
+                        job_name,
+                        'if [[ "$registry_status" -ne 1 ]]; then',
+                        'if [[ "$registry_status" -eq 1 ]]; then',
+                    ),
+                )
+                for job_name in (
+                    "publish-rust",
+                    "publish-npm",
+                    "publish-dart",
+                    "publish-flutter",
+                )
+            ),
         )
         for label, filename, mutate in cases:
             with self.subTest(bypass=label), tempfile.TemporaryDirectory() as temporary:
@@ -751,6 +1459,40 @@ class PackageContractTests(unittest.TestCase):
                 ):
                     verify_packages.validate_workflow_contract(root)
 
+    def test_workflow_contract_rejects_conditional_or_ignored_release_gates(self) -> None:
+        release = (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8")
+        mutations = {
+            "dynamic job condition": release.replace(
+                "  publish-npm:\n    name: Publish @mdstream/core",
+                "  publish-npm:\n    if: ${{ false && always() }}\n"
+                "    name: Publish @mdstream/core",
+                1,
+            ),
+            "dynamic step condition": release.replace(
+                "      - name: Publish npm package when missing\n",
+                "      - name: Publish npm package when missing\n"
+                "        if: ${{ false && always() }}\n",
+                1,
+            ),
+            "ignored step failure": release.replace(
+                "      - name: Publish npm package when missing\n",
+                "      - name: Publish npm package when missing\n"
+                "        continue-on-error: true\n",
+                1,
+            ),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(bypass=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                workflows = root / ".github" / "workflows"
+                shutil.copytree(WORKFLOW_ROOT, workflows)
+                (workflows / "release.yml").write_text(mutated, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    verify_packages.ValidationError,
+                    "conditional|continue-on-error",
+                ):
+                    verify_packages.validate_workflow_contract(root)
+
     def test_crates_io_wait_uses_the_cargo_registry_view(self) -> None:
         release = (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8")
         publish = indented_block(release, "publish-rust:")
@@ -759,16 +1501,33 @@ class PackageContractTests(unittest.TestCase):
             'timeout 30s cargo info --registry crates-io "$crate@$VERSION"',
             publish,
         )
+        self.assertIn(
+            "cargo +1.95.0 publish --manifest-path "
+            "mdstream-merman/Cargo.toml --locked --token",
+            publish,
+        )
+        self.assertIn('cargo publish -p "$crate" --locked --token', publish)
+        self.assertIn("--locked", verify_packages._cargo_package_command("mdstream-merman"))
 
     def test_trusted_publish_jobs_only_publish_verified_artifacts(self) -> None:
         release = (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8")
         expected_needs = {
             "build-npm:": "needs: validate",
             "build-dart:": "needs: validate",
-            "publish-npm:": "needs: [validate, quality, build-npm]",
-            "publish-dart:": "needs: [validate, quality, build-dart]",
+            "release-preflight:": (
+                "needs: [validate, quality, flutter-platforms, build-npm, build-dart]"
+            ),
+            "publish-rust:": (
+                "needs: [validate, quality, flutter-platforms, release-preflight]"
+            ),
+            "publish-npm:": (
+                "needs: [validate, quality, build-npm, flutter-platforms, release-preflight]"
+            ),
+            "publish-dart:": (
+                "needs: [validate, quality, build-dart, flutter-platforms, release-preflight]"
+            ),
             "publish-flutter:": (
-                "needs: [validate, quality, publish-dart, flutter-platforms]"
+                "needs: [validate, quality, publish-dart, flutter-platforms, release-preflight]"
             ),
         }
         for marker, needs in expected_needs.items():
@@ -795,6 +1554,12 @@ class PackageContractTests(unittest.TestCase):
                 self.assertIn(publish_command, job)
                 for disallowed in forbidden:
                     self.assertNotIn(disallowed, job)
+
+        for marker in ("publish-dart:", "publish-flutter:"):
+            with self.subTest(safe_extraction=marker):
+                job = indented_block(release, marker)
+                self.assertIn("--extract-only", job)
+                self.assertNotRegex(job, r"\btar\s+-[A-Za-z]*x")
 
     def test_dart_ci_requires_native_for_the_complete_suite(self) -> None:
         workflow = (WORKFLOW_ROOT / "ci.yml").read_text(encoding="utf-8")
@@ -886,6 +1651,44 @@ class PackageContractTests(unittest.TestCase):
         self.assertIn(archive_runtime, smoke)
         self.assertNotIn("--skip-runtime", smoke)
 
+    def test_android_16k_emulator_uses_an_action_that_supports_ps16k(self) -> None:
+        workflow = (WORKFLOW_ROOT / "flutter-platforms.yml").read_text(
+            encoding="utf-8"
+        )
+        android = indented_block(workflow, "android:")
+        self.assertIn(
+            "reactivecircus/android-emulator-runner@v2.38.0",
+            android,
+        )
+        self.assertIn("target: google_apis_ps16k", android)
+
+    def test_flutter_exact_archive_runs_swiftpm_smoke(self) -> None:
+        workflow = (WORKFLOW_ROOT / "flutter-platforms.yml").read_text(
+            encoding="utf-8"
+        )
+        smoke = indented_block(workflow, "package-apple-swiftpm-smoke:")
+        archive_runtime = (
+            'package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" '
+            "--platform macos --skip-native-build"
+        )
+
+        self.assertIn("needs: package", smoke)
+        self.assertIn("name: mdstream-flutter-package", smoke)
+        self.assertIn(archive_runtime, smoke)
+
+    def test_flutter_archive_contract_includes_swiftpm_metadata(self) -> None:
+        required = verify_packages.FLUTTER_REQUIRED_FILES
+        for platform_name in ("ios", "macos"):
+            with self.subTest(platform=platform_name):
+                self.assertIn(
+                    f"{platform_name}/mdstream_flutter/Package.swift", required
+                )
+                self.assertIn(
+                    f"{platform_name}/mdstream_flutter/Sources/"
+                    "mdstream_flutter/MdstreamFlutterPackage.swift",
+                    required,
+                )
+
     def test_ios_runtime_smoke_waits_for_simulator_boot(self) -> None:
         workflow = (WORKFLOW_ROOT / "flutter-platforms.yml").read_text(
             encoding="utf-8"
@@ -900,24 +1703,146 @@ class PackageContractTests(unittest.TestCase):
         self.assertIn(smoke, apple)
         self.assertLess(apple.index(boot), apple.index(ready))
         self.assertLess(apple.index(ready), apple.index(smoke))
+        boot_step = indented_block(
+            apple,
+            "- name: Boot iOS simulator and load bundled library",
+        )
+        self.assertIn("timeout-minutes: 30", boot_step)
 
-    def test_every_pub_dev_request_has_connection_and_total_timeouts(self) -> None:
+    def test_release_notes_are_verified_before_any_registry_publish(self) -> None:
         release = (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8")
-        requests = [
-            line.strip()
-            for line in release.splitlines()
-            if "curl " in line and "https://pub.dev/" in line
-        ]
-        self.assertEqual(len(requests), 3)
-        for request in requests:
-            with self.subTest(request=request):
-                self.assertIn("--connect-timeout", request)
-                self.assertIn("--max-time", request)
+        validate = indented_block(release, "validate:")
+        github_release = indented_block(release, "github-release:")
+
+        self.assertIn("scripts/release_notes.py", validate)
+        self.assertIn("--output target/release-notes.md", validate)
+        self.assertIn("name: mdstream-release-notes", validate)
+        self.assertIn("path: target/release-notes.md", validate)
+        self.assertNotIn("actions/checkout", github_release)
+        self.assertIn("name: mdstream-release-notes", github_release)
+        self.assertIn(
+            "body_path: target/release-notes/release-notes.md",
+            github_release,
+        )
+
+    def test_registry_checks_preserve_request_deadlines(self) -> None:
+        endpoints = check_registry_version.REGISTRIES
+        self.assertEqual(endpoints["crates.io"].max_time, 30)
+        self.assertEqual(endpoints["pub.dev"].connect_timeout, 5)
+        self.assertEqual(endpoints["pub.dev"].max_time, 20)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "download"
+            commands: list[tuple[str, ...]] = []
+
+            def run(command: tuple[str, ...], **_kwargs: object) -> None:
+                commands.append(command)
+                destination.write_bytes(b"payload")
+
+            with patch.object(verify_packages, "_run", side_effect=run):
+                verify_packages._curl_to_path(
+                    "https://pub.dev/archive.tar.gz",
+                    destination,
+                    connect_timeout=5,
+                    max_time=20,
+                    max_bytes=1024,
+                )
+
+            self.assertEqual(len(commands), 1)
+            command = commands[0]
+            self.assertIn("--connect-timeout", command)
+            self.assertIn("5", command)
+            self.assertIn("--max-time", command)
+            self.assertIn("20", command)
+            self.assertIn("--max-filesize", command)
+            self.assertIn("--proto-redir", command)
+            self.assertIn("--user-agent", command)
+            self.assertIn(verify_packages.REGISTRY_USER_AGENT, command)
 
     def test_dead_dart_package_verifier_and_direct_crypto_dependency_are_removed(self) -> None:
         self.assertFalse((ROOT / "bindings/dart/tool/verify_package.dart").exists())
         pubspec = (ROOT / "bindings/dart/pubspec.yaml").read_text(encoding="utf-8")
         self.assertNotRegex(pubspec, r"(?m)^  crypto:")
+
+
+class RegistryVersionCheckTests(unittest.TestCase):
+    def test_http_results_have_explicit_tri_state_classification(self) -> None:
+        cases = (
+            (0, "200", check_registry_version.RegistryStatus.EXISTS),
+            (0, "204", check_registry_version.RegistryStatus.EXISTS),
+            (0, "299", check_registry_version.RegistryStatus.EXISTS),
+            (0, "404", check_registry_version.RegistryStatus.MISSING),
+            (0, "401", check_registry_version.RegistryStatus.ERROR),
+            (0, "403", check_registry_version.RegistryStatus.ERROR),
+            (0, "500", check_registry_version.RegistryStatus.ERROR),
+            (7, "000", check_registry_version.RegistryStatus.ERROR),
+            (0, "", check_registry_version.RegistryStatus.ERROR),
+        )
+        for returncode, http_status, expected in cases:
+            with self.subTest(returncode=returncode, http_status=http_status):
+                self.assertIs(
+                    check_registry_version.classify_response(returncode, http_status),
+                    expected,
+                )
+
+    def test_probe_uses_registry_specific_deadlines_and_urls(self) -> None:
+        calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append((args, kwargs))
+            command = args[0]
+            assert isinstance(command, tuple)
+            return subprocess.CompletedProcess(command, 0, "404", "")
+
+        status = check_registry_version.check_registry_version(
+            "pub.dev",
+            "mdstream_flutter",
+            "0.4.0",
+            runner=runner,
+        )
+
+        self.assertIs(status, check_registry_version.RegistryStatus.MISSING)
+        self.assertEqual(len(calls), 1)
+        command = calls[0][0][0]
+        self.assertIsInstance(command, tuple)
+        assert isinstance(command, tuple)
+        self.assertIn("--connect-timeout", command)
+        self.assertIn("5", command)
+        self.assertIn("--max-time", command)
+        self.assertIn("20", command)
+        self.assertIn(
+            "https://pub.dev/api/packages/mdstream_flutter/versions/0.4.0",
+            command,
+        )
+
+    def test_probe_refuses_to_publish_on_transport_or_authorization_errors(self) -> None:
+        def transport_error(
+            *_args: object,
+            **_kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(("curl",), 28, "000", "timed out")
+
+        def forbidden(
+            *_args: object,
+            **_kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(("curl",), 0, "403", "")
+
+        with patch("sys.stderr", io.StringIO()):
+            transport_status = check_registry_version.check_registry_version(
+                "crates.io",
+                "mdstream",
+                "0.4.0",
+                runner=transport_error,
+            )
+            forbidden_status = check_registry_version.check_registry_version(
+                "npm",
+                "@mdstream/core",
+                "0.4.0",
+                runner=forbidden,
+            )
+        self.assertIs(transport_status, check_registry_version.RegistryStatus.ERROR)
+        self.assertIs(forbidden_status, check_registry_version.RegistryStatus.ERROR)
 
 
 def package(
@@ -947,6 +1872,12 @@ def tar_member(name: str, payload: bytes) -> tuple[tarfile.TarInfo, bytes]:
     member = tarfile.TarInfo(name)
     member.size = len(payload)
     return member, payload
+
+
+def tar_directory(name: str) -> tuple[tarfile.TarInfo, bytes]:
+    member = tarfile.TarInfo(name)
+    member.type = tarfile.DIRTYPE
+    return member, b""
 
 
 def tar_link(name: str, target: str, kind: bytes) -> tuple[tarfile.TarInfo, bytes]:
@@ -1005,6 +1936,12 @@ def write_binding_policy(
         ),
         encoding="utf-8",
     )
+    protocol = root / "mdstream-protocol"
+    protocol.mkdir(exist_ok=True)
+    (protocol / "Cargo.toml").write_text(
+        '[package]\nname = "mdstream-protocol"\nversion = "0.4.0"\n',
+        encoding="utf-8",
+    )
 
 
 def valid_npm_files(
@@ -1025,6 +1962,7 @@ def valid_npm_files(
 
 def valid_dart_files(*, extra_dependency: str | None = None) -> dict[str, bytes]:
     files = {path: b"content" for path in verify_packages.DART_REQUIRED_FILES}
+    files["CHANGELOG.md"] = b"# Changelog\n\n## 0.4.0\n\n- Changed.\n"
     dependencies = "dependencies:\n  ffi: ^2.1.4\n"
     if extra_dependency is not None:
         dependencies += f"  {extra_dependency}\n"
@@ -1036,6 +1974,7 @@ def valid_dart_files(*, extra_dependency: str | None = None) -> dict[str, bytes]
 
 def valid_flutter_files() -> dict[str, bytes]:
     files = {path: b"content" for path in verify_packages.FLUTTER_REQUIRED_FILES}
+    files["CHANGELOG.md"] = b"# Changelog\n\n## 0.4.0\n\n- Changed.\n"
     files["pubspec.yaml"] = (
         "name: mdstream_flutter\n"
         "version: 0.4.0\n"
