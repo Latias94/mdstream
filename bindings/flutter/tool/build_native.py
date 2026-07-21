@@ -66,6 +66,7 @@ MACOS_TARGETS = (
 LINUX_TARGETS = {
     "x86_64-unknown-linux-gnu": "x86_64",
 }
+LINUX_SONAME = "libmdstream_ffi.so"
 WINDOWS_TARGETS = {
     "x86_64-pc-windows-msvc": "x64",
 }
@@ -434,6 +435,17 @@ def _android_build_environment(target: str, linker: Path) -> dict[str, str]:
     return env
 
 
+def _linux_build_environment(target: str) -> dict[str, str]:
+    """Give Linux consumers a stable shared-library identity."""
+    key = target.upper().replace("-", "_")
+    variable = f"CARGO_TARGET_{key}_RUSTFLAGS"
+    env = os.environ.copy()
+    soname_flag = f"-C link-arg=-Wl,-soname,{LINUX_SONAME}"
+    existing = env.get(variable, "").strip()
+    env[variable] = f"{existing} {soname_flag}".strip()
+    return env
+
+
 def maximum_glibc_requirement(path: Path) -> tuple[int, int] | None:
     tool = shutil.which("readelf") or shutil.which("llvm-readelf")
     if tool is None:
@@ -726,9 +738,11 @@ def build_linux(
     with tempfile.TemporaryDirectory(prefix="mdstream-linux-") as temporary:
         staged = Path(temporary) / "lib"
         for target in targets:
+            env = _linux_build_environment(target)
             artifact = _cargo_artifact(
                 target,
                 options,
+                env=env,
                 cargo_subcommand="zigbuild",
                 cargo_target=(
                     f"{target}.{LINUX_GLIBC_BASELINE[0]}."

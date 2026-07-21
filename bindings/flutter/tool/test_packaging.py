@@ -26,6 +26,7 @@ from build_native import (  # noqa: E402
     PackagingError,
     _android_ndk_home,
     _exported_symbols,
+    _linux_build_environment,
     _make_framework,
     atomic_stage,
     validate_native_artifact,
@@ -64,6 +65,20 @@ class BuildNativeContractTest(unittest.TestCase):
                 "armv7-linux-androideabi": "armeabi-v7a",
                 "x86_64-linux-android": "x86_64",
             },
+        )
+
+    def test_linux_build_environment_sets_a_stable_soname(self) -> None:
+        key = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS"
+        with patch.dict(
+            os.environ,
+            {key: "-C opt-level=2"},
+            clear=True,
+        ):
+            environment = _linux_build_environment("x86_64-unknown-linux-gnu")
+
+        self.assertEqual(
+            environment[key],
+            "-C opt-level=2 -C link-arg=-Wl,-soname,libmdstream_ffi.so",
         )
 
     def test_default_android_ndk_matches_the_gradle_pin(self) -> None:
