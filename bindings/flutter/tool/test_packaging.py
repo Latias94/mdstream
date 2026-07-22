@@ -19,6 +19,7 @@ TOOL_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOL_ROOT))
 
 import package_smoke  # noqa: E402
+import android_smoke  # noqa: E402
 
 from build_native import (  # noqa: E402
     ANDROID_TARGETS,
@@ -525,6 +526,471 @@ class PackageSmokeContractTest(unittest.TestCase):
             self.assertIn("testBundledLibraryLoads", tests)
             self.assertFalse((root / "consumer" / "Podfile").exists())
 
+    def test_ios_runtime_smoke_does_not_depend_on_the_vm_debug_log_reader(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "project"
+            (project / "lib").mkdir(parents=True)
+            app = project / "build" / "ios" / "iphonesimulator" / "Runner.app"
+            app.mkdir(parents=True)
+            (app / "Info.plist").write_bytes(
+                plistlib.dumps(
+                    {
+                        "CFBundleIdentifier": (
+                            "io.mdstream.smoke.mdstreamFlutterSmoke"
+                        )
+                    }
+                )
+            )
+            container = root / "container"
+            (container / "tmp").mkdir(parents=True)
+            result_path = (
+                container / "tmp" / package_smoke.IOS_RUNTIME_SMOKE_RESULT
+            )
+            result_path.write_text("stale", encoding="utf-8")
+            commands: list[list[str]] = []
+
+            def fake_run(
+                command: list[str],
+                *,
+                cwd: Path,
+                env: dict[str, str] | None = None,
+                capture: bool = False,
+                timeout: float | None = None,
+            ) -> subprocess.CompletedProcess[str]:
+                del cwd, env
+                commands.append(command)
+                if command[0] == "xcrun":
+                    self.assertIsNotNone(timeout)
+                if command[:3] == ["xcrun", "simctl", "get_app_container"]:
+                    self.assertTrue(capture)
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        stdout=f"{container}\n",
+                        stderr="",
+                    )
+                if command[:3] == ["xcrun", "simctl", "launch"]:
+                    self.assertFalse(result_path.exists())
+                    result_path.write_text(
+                        json.dumps(
+                            {
+                                "schema": "mdstream.flutter-runtime-smoke/1",
+                                "ok": True,
+                                "abi_version": 1,
+                                "package_version": "0.4.0",
+                                "binding_schema": "mdstream.bindings/0.4",
+                                "is_finalized": True,
+                                "has_root_node": True,
+                                "native_allocations_zero": True,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="",
+                    stderr="",
+                )
+
+            with patch.object(
+                package_smoke.tempfile,
+                "mkdtemp",
+                return_value=str(project),
+            ), patch.object(
+                package_smoke,
+                "configure_apple_host_target",
+            ), patch.object(
+                package_smoke,
+                "_restore_macos_frameworks",
+            ), patch.object(
+                package_smoke,
+                "_run",
+                side_effect=fake_run,
+            ):
+                package_smoke.run_runtime_smoke(
+                    platform_name="ios",
+                    device="simulator-id",
+                    plugin_source=TOOL_ROOT.parent,
+                    keep_temporary=True,
+                )
+
+            self.assertIn(
+                ["flutter", "build", "ios", "--simulator", "--debug"],
+                commands,
+            )
+            self.assertTrue(
+                any(
+                    command[:3] == ["xcrun", "simctl", "install"]
+                    for command in commands
+                )
+            )
+            self.assertTrue(
+                any(
+                    command[:3] == ["xcrun", "simctl", "launch"]
+                    for command in commands
+                )
+            )
+            self.assertTrue(
+                any(
+                    command[:3] == ["xcrun", "simctl", "terminate"]
+                    for command in commands
+                )
+            )
+            self.assertFalse(
+                any(command[:2] == ["flutter", "test"] for command in commands)
+            )
+            install = next(
+                index
+                for index, command in enumerate(commands)
+                if command[:3] == ["xcrun", "simctl", "install"]
+            )
+            get_container = next(
+                index
+                for index, command in enumerate(commands)
+                if command[:3] == ["xcrun", "simctl", "get_app_container"]
+            )
+            launch = next(
+                index
+                for index, command in enumerate(commands)
+                if command[:3] == ["xcrun", "simctl", "launch"]
+            )
+            terminate = next(
+                index
+                for index, command in enumerate(commands)
+                if command[:3] == ["xcrun", "simctl", "terminate"]
+            )
+            self.assertLess(install, get_container)
+            self.assertLess(get_container, launch)
+            self.assertLess(launch, terminate)
+            self.assertEqual(
+                (project / "lib" / "main.dart").read_bytes(),
+                package_smoke.IOS_RUNTIME_SMOKE_SOURCE.read_bytes(),
+            )
+            self.assertEqual(
+                (
+                    project
+                    / "lib"
+                    / package_smoke.RUNTIME_SMOKE_PROBE_SOURCE.name
+                ).read_bytes(),
+                package_smoke.RUNTIME_SMOKE_PROBE_SOURCE.read_bytes(),
+            )
+
+    def test_non_ios_runtime_smoke_copies_the_shared_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / "project"
+            project.mkdir()
+            commands: list[list[str]] = []
+
+            def fake_run(
+                command: list[str],
+                *,
+                cwd: Path,
+                env: dict[str, str] | None = None,
+                capture: bool = False,
+            ) -> subprocess.CompletedProcess[str]:
+                del cwd, env, capture
+                commands.append(command)
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="",
+                    stderr="",
+                )
+
+            with patch.object(
+                package_smoke.tempfile,
+                "mkdtemp",
+                return_value=str(project),
+            ), patch.object(
+                package_smoke,
+                "_restore_macos_frameworks",
+            ), patch.object(
+                package_smoke,
+                "_run",
+                side_effect=fake_run,
+            ):
+                package_smoke.run_runtime_smoke(
+                    platform_name="linux",
+                    device="linux",
+                    plugin_source=TOOL_ROOT.parent,
+                    keep_temporary=True,
+                )
+
+            self.assertEqual(
+                (
+                    project
+                    / "integration_test"
+                    / package_smoke.INTEGRATION_TEST.name
+                ).read_bytes(),
+                package_smoke.INTEGRATION_TEST.read_bytes(),
+            )
+            self.assertEqual(
+                (
+                    project
+                    / "tool"
+                    / package_smoke.RUNTIME_SMOKE_PROBE_SOURCE.name
+                ).read_bytes(),
+                package_smoke.RUNTIME_SMOKE_PROBE_SOURCE.read_bytes(),
+            )
+            self.assertTrue(
+                any(command[:2] == ["flutter", "test"] for command in commands)
+            )
+
+    def test_ios_runtime_smoke_terminates_after_probe_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            (project / "lib").mkdir()
+            app = project / "build" / "ios" / "iphonesimulator" / "Runner.app"
+            app.mkdir(parents=True)
+            (app / "Info.plist").write_bytes(
+                plistlib.dumps({"CFBundleIdentifier": "io.mdstream.smoke.failure"})
+            )
+            container = project / "container"
+            (container / "tmp").mkdir(parents=True)
+            commands: list[list[str]] = []
+
+            def fake_run(
+                command: list[str],
+                *,
+                cwd: Path,
+                env: dict[str, str] | None = None,
+                capture: bool = False,
+                timeout: float | None = None,
+            ) -> subprocess.CompletedProcess[str]:
+                del cwd, env
+                commands.append(command)
+                if command[0] == "xcrun":
+                    self.assertIsNotNone(timeout)
+                if command[:3] == ["xcrun", "simctl", "get_app_container"]:
+                    self.assertTrue(capture)
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        stdout=f"{container}\n",
+                        stderr="",
+                    )
+                if command[:3] == ["xcrun", "simctl", "launch"]:
+                    result = (
+                        container
+                        / "tmp"
+                        / package_smoke.IOS_RUNTIME_SMOKE_RESULT
+                    )
+                    result.write_text(
+                        json.dumps(
+                            {
+                                "schema": package_smoke.IOS_RUNTIME_SMOKE_SCHEMA,
+                                "ok": False,
+                                "error": "probe failed",
+                                "stack_trace": "runtime_smoke_probe.dart:42",
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                if command[:3] == ["xcrun", "simctl", "terminate"]:
+                    raise PackageSmokeError("simulator cleanup failed")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="",
+                    stderr="",
+                )
+
+            with patch.object(
+                package_smoke,
+                "_run",
+                side_effect=fake_run,
+            ), patch("builtins.print"):
+                with self.assertRaisesRegex(
+                    PackageSmokeError,
+                    "probe failed\\nruntime_smoke_probe.dart:42",
+                ):
+                    package_smoke._run_ios_runtime_smoke(
+                        project_root=project,
+                        device="simulator-id",
+                        env={},
+                    )
+
+            self.assertTrue(
+                any(
+                    command[:3] == ["xcrun", "simctl", "terminate"]
+                    for command in commands
+                )
+            )
+
+    def test_ios_runtime_smoke_collects_bounded_launch_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stdout = root / "stdout"
+            stderr = root / "stderr"
+            stdout.write_text("application output", encoding="utf-8")
+            stderr.write_text("dyld failure", encoding="utf-8")
+            commands: list[list[str]] = []
+
+            def fake_run(
+                command: list[str],
+                *,
+                cwd: Path,
+                env: dict[str, str] | None = None,
+                capture: bool = False,
+                timeout: float | None = None,
+            ) -> subprocess.CompletedProcess[str]:
+                del cwd, env
+                self.assertTrue(capture)
+                self.assertEqual(
+                    timeout,
+                    package_smoke.IOS_RUNTIME_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS,
+                )
+                commands.append(command)
+                output = (
+                    "service = io.mdstream.smoke.failure\n"
+                    if "launchctl" in command
+                    else "Runner crashed before publishing its result\n"
+                )
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=output,
+                    stderr="",
+                )
+
+            with patch.object(package_smoke, "_run", side_effect=fake_run):
+                diagnostics = package_smoke._collect_ios_runtime_diagnostics(
+                    project_root=root,
+                    device="simulator-id",
+                    bundle_identifier="io.mdstream.smoke.failure",
+                    stdout_path=stdout,
+                    stderr_path=stderr,
+                )
+
+            self.assertIn("Runner stdout:\napplication output", diagnostics)
+            self.assertIn("Runner stderr:\ndyld failure", diagnostics)
+            self.assertIn("service = io.mdstream.smoke.failure", diagnostics)
+            self.assertIn("Runner crashed before publishing", diagnostics)
+            self.assertLessEqual(
+                len(diagnostics),
+                package_smoke.IOS_RUNTIME_SMOKE_DIAGNOSTIC_CHARS
+                + len("[truncated]\n"),
+            )
+            self.assertEqual(len(commands), 2)
+
+    def test_command_timeout_becomes_a_package_smoke_error(self) -> None:
+        with patch.object(
+            package_smoke.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(["xcrun", "simctl"], 10),
+        ), patch("builtins.print"):
+            with self.assertRaisesRegex(
+                PackageSmokeError,
+                "command timed out after 10 seconds: xcrun simctl",
+            ):
+                package_smoke._run(
+                    ["xcrun", "simctl"],
+                    cwd=TOOL_ROOT,
+                    timeout=10,
+                )
+
+    def test_ios_runtime_smoke_rejects_an_application_failure(self) -> None:
+        with self.assertRaisesRegex(
+            PackageSmokeError,
+            "iOS runtime smoke failed: native library could not be opened",
+        ):
+            package_smoke._validate_ios_runtime_smoke_payload(
+                {
+                    "schema": package_smoke.IOS_RUNTIME_SMOKE_SCHEMA,
+                    "ok": False,
+                    "error": "native library could not be opened",
+                    "stack_trace": "runtime_smoke_probe.dart:42",
+                }
+            )
+
+    def test_ios_runtime_smoke_rejects_incomplete_success_payload(self) -> None:
+        with self.assertRaisesRegex(
+            PackageSmokeError,
+            "native_allocations_zero=None",
+        ):
+            package_smoke._validate_ios_runtime_smoke_payload(
+                {
+                    "schema": package_smoke.IOS_RUNTIME_SMOKE_SCHEMA,
+                    "ok": True,
+                    "abi_version": 1,
+                    "package_version": "0.4.0",
+                    "binding_schema": "mdstream.bindings/0.4",
+                    "is_finalized": True,
+                    "has_root_node": True,
+                }
+            )
+
+    def test_ios_runtime_smoke_rejects_json_type_coercion(self) -> None:
+        payload = {
+            "schema": package_smoke.IOS_RUNTIME_SMOKE_SCHEMA,
+            "ok": True,
+            **package_smoke.IOS_RUNTIME_SMOKE_EXPECTED,
+        }
+        payload["abi_version"] = True
+
+        with self.assertRaisesRegex(
+            PackageSmokeError,
+            r"abi_version=True \(expected 1\)",
+        ):
+            package_smoke._validate_ios_runtime_smoke_payload(payload)
+
+    def test_ios_runtime_smoke_timeout_includes_launch_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            package_smoke.time,
+            "monotonic",
+            side_effect=(0.0, 61.0),
+        ):
+            result = Path(temporary) / "missing.json"
+            with self.assertRaisesRegex(
+                PackageSmokeError,
+                "Runner stderr:\\ndyld: Library not loaded",
+            ):
+                package_smoke._wait_for_ios_runtime_smoke_result(
+                    result,
+                    diagnostics=lambda: (
+                        "Runner stderr:\ndyld: Library not loaded"
+                    ),
+                )
+
+    def test_runtime_smoke_entries_share_one_dart_probe_contract(self) -> None:
+        probe_path = TOOL_ROOT / "runtime_smoke_probe.dart"
+        probe = probe_path.read_text(encoding="utf-8")
+        ios = (TOOL_ROOT / "ios_runtime_smoke.dart").read_text(encoding="utf-8")
+        integration = (
+            TOOL_ROOT.parent / "integration_test" / "native_load_test.dart"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            f"const runtimeSmokeResultName = '{package_smoke.IOS_RUNTIME_SMOKE_RESULT}';",
+            probe,
+        )
+        self.assertIn(
+            f"const runtimeSmokeSchema = '{package_smoke.IOS_RUNTIME_SMOKE_SCHEMA}';",
+            probe,
+        )
+        self.assertIn(
+            f"const runtimeSmokePackageVersion = '{package_version()}';",
+            probe,
+        )
+        for adapter in (ios, integration):
+            self.assertIn("runtime_smoke_probe.dart", adapter)
+            self.assertIn("runBundledRuntimeSmoke()", adapter)
+            self.assertNotIn("controller.append", adapter)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            main = Path(temporary) / "lib" / "main.dart"
+            main.parent.mkdir()
+            android_smoke._write_smoke_main(main)
+            self.assertIn("runBundledRuntimeSmoke()", main.read_text(encoding="utf-8"))
+            self.assertEqual(
+                (main.parent / probe_path.name).read_bytes(),
+                probe_path.read_bytes(),
+            )
+
     def test_swiftpm_manifest_contract_covers_binary_target_and_wrapper(self) -> None:
         manifest = {
             "name": "mdstream_flutter",
@@ -610,15 +1076,38 @@ class PackageSmokeContractTest(unittest.TestCase):
         self.assertLess(apple.index(macos_pods), apple.index(macos_swiftpm))
         self.assertLess(apple.index(ios_pods), apple.index(ios_swiftpm))
 
-        exact_archive_job = workflow[
+        exact_ios_job = workflow[
+            workflow.index("  package-ios-smoke:\n") : workflow.index(
+                "  package-apple-swiftpm-smoke:\n"
+            )
+        ]
+        self.assertIn("needs: package", exact_ios_job)
+        self.assertIn("name: mdstream-flutter-package", exact_ios_job)
+        self.assertIn('xcrun simctl bootstatus "$DEVICE_ID" -b', exact_ios_job)
+        exact_ios_pods = (
+            'package_smoke.py --archive "$FLUTTER_ARCHIVE" '
+            '--platform ios --device "$DEVICE_ID" --skip-native-build'
+        )
+        exact_ios_swiftpm = (
+            'package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" '
+            '--platform ios --device "$DEVICE_ID" --skip-native-build'
+        )
+        self.assertIn(exact_ios_pods, exact_ios_job)
+        self.assertIn(exact_ios_swiftpm, exact_ios_job)
+        self.assertLess(
+            exact_ios_job.index(exact_ios_pods),
+            exact_ios_job.index(exact_ios_swiftpm),
+        )
+
+        exact_macos_job = workflow[
             workflow.index("  package-apple-swiftpm-smoke:\n") :
         ]
-        self.assertIn("needs: package", exact_archive_job)
-        self.assertIn("name: mdstream-flutter-package", exact_archive_job)
+        self.assertIn("needs: package", exact_macos_job)
+        self.assertIn("name: mdstream-flutter-package", exact_macos_job)
         self.assertIn(
             'package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" '
             "--platform macos --skip-native-build",
-            exact_archive_job,
+            exact_macos_job,
         )
 
     def test_apple_smoke_host_matches_plugin_deployment_targets(self) -> None:

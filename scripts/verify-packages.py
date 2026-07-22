@@ -448,6 +448,28 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
             ),
             required_needs=frozenset(("package",)),
         ),
+        ("flutter-platforms.yml", "package-ios-smoke"): WorkflowJobContract(
+            run_markers=(
+                'xcrun simctl bootstatus "$DEVICE_ID" -b',
+                'package_smoke.py --archive "$FLUTTER_ARCHIVE" '
+                '--platform ios --device "$DEVICE_ID" --skip-native-build',
+                'package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" '
+                '--platform ios --device "$DEVICE_ID" --skip-native-build',
+            ),
+            job_markers=(
+                "name: mdstream-flutter-package",
+                "flutter-version: 3.32.1",
+                "timeout-minutes: 30",
+            ),
+            marker_order=(
+                'xcrun simctl bootstatus "$DEVICE_ID" -b',
+                'package_smoke.py --archive "$FLUTTER_ARCHIVE" '
+                '--platform ios --device "$DEVICE_ID" --skip-native-build',
+                'package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" '
+                '--platform ios --device "$DEVICE_ID" --skip-native-build',
+            ),
+            required_needs=frozenset(("package",)),
+        ),
         ("release.yml", "publish-rust"): WorkflowJobContract(
             run_markers=(
                 "scripts/verify-packages.py --print-rust-order",

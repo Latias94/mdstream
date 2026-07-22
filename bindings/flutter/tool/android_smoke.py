@@ -13,8 +13,6 @@ import time
 import zipfile
 from pathlib import Path
 
-from package_metadata import package_version
-
 from build_native import PLUGIN_ROOT, REPOSITORY_ROOT
 from package_smoke import PackageSmokeError
 
@@ -28,6 +26,7 @@ ANDROID_BUILD_TOOLS_VERSION = "35.0.0"
 APPLICATION_ID = "io.mdstream.smoke.mdstream_flutter_android_smoke"
 SMOKE_OK = "MDSTREAM_FLUTTER_SMOKE_OK"
 SMOKE_ERROR = "MDSTREAM_FLUTTER_SMOKE_ERROR"
+RUNTIME_SMOKE_PROBE = Path(__file__).with_name("runtime_smoke_probe.dart")
 
 
 def _run(
@@ -72,34 +71,21 @@ def _zipalign_tool() -> Path:
 
 
 def _write_smoke_main(path: Path) -> None:
+    if not RUNTIME_SMOKE_PROBE.is_file():
+        raise PackageSmokeError(
+            f"runtime smoke probe does not exist: {RUNTIME_SMOKE_PROBE}"
+        )
+    shutil.copy2(RUNTIME_SMOKE_PROBE, path.parent / RUNTIME_SMOKE_PROBE.name)
     source = """import 'package:flutter/material.dart';
-import 'package:mdstream_flutter/mdstream_flutter.dart';
+
+import 'runtime_smoke_probe.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
-    final runtime = MdstreamFlutterRuntime.open();
-    if (runtime.abiVersion != 1 ||
-        runtime.packageVersion != '@PACKAGE_VERSION@' ||
-        runtime.bindingSchema != 'mdstream.bindings/0.4') {
-      throw StateError('unexpected mdstream runtime metadata');
-    }
-    final controller = MdstreamController.fromRuntime(runtime);
-    try {
-      controller.append('# Bundled runtime\\n\\nstreamed content');
-      controller.finish();
-      if (!controller.value.isFinalized ||
-          controller.value.document?.roots?.children.isEmpty != false) {
-        throw StateError('shared mdstream smoke trace did not finalize');
-      }
-    } finally {
-      controller.dispose();
-    }
-    if (!runtime.nativeAllocations.isZero) {
-      throw StateError('native allocations remain after controller disposal');
-    }
-    debugPrint('MDSTREAM_FLUTTER_SMOKE_OK abi=${runtime.abiVersion} '
-        'version=${runtime.packageVersion}');
+    final report = runBundledRuntimeSmoke();
+    debugPrint('MDSTREAM_FLUTTER_SMOKE_OK abi=${report.abiVersion} '
+        'version=${report.packageVersion}');
     runApp(const MaterialApp(home: Text('mdstream smoke passed')));
   } catch (error, stackTrace) {
     debugPrint('MDSTREAM_FLUTTER_SMOKE_ERROR $error');
@@ -108,10 +94,7 @@ Future<void> main() async {
   }
 }
 """
-    path.write_text(
-        source.replace("@PACKAGE_VERSION@", package_version()),
-        encoding="utf-8",
-    )
+    path.write_text(source, encoding="utf-8")
 
 
 def _configure_uncompressed_native_libraries(project: Path) -> None:

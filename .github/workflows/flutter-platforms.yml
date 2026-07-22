@@ -425,6 +425,42 @@ jobs:
             -v "$PWD/target/flutter-linux-legacy-smoke/c-consumer:/mdstream/c-consumer:ro" \
             debian:10.13-slim /mdstream/c-consumer
 
+  package-ios-smoke:
+    name: Load exact Flutter archive / iOS
+    needs: package
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Flutter 3.32.1
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.32.1
+          cache: true
+
+      - name: Download exact Flutter publish archive
+        uses: actions/download-artifact@v4
+        with:
+          name: mdstream-flutter-package
+          path: target/flutter-package
+
+      - name: Resolve Flutter archive path
+        shell: bash
+        run: echo "FLUTTER_ARCHIVE=$(python3 bindings/flutter/tool/package_smoke.py --print-archive-path)" >> "$GITHUB_ENV"
+
+      - name: Boot iOS simulator and load exact archive
+        shell: bash
+        run: |
+          DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(device["udid"] for devices in data["devices"].values() for device in devices if "iPhone" in device["name"]))')"
+          xcrun simctl boot "$DEVICE_ID" || true
+          open -a Simulator --args -CurrentDeviceUDID "$DEVICE_ID"
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          python3 bindings/flutter/tool/package_smoke.py --archive "$FLUTTER_ARCHIVE" --platform ios --device "$DEVICE_ID" --skip-native-build
+          python3 bindings/flutter/tool/package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" --platform ios --device "$DEVICE_ID" --skip-native-build
+
   package-apple-swiftpm-smoke:
     name: Load exact Flutter archive / SwiftPM macOS
     needs: package

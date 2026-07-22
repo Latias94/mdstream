@@ -6,11 +6,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -36,7 +39,7 @@ from native_artifact import (
     is_reserved_flutter_native_path,
     validate_native_image,
 )
-from package_metadata import PackageMetadataError, package_archive_path
+from package_metadata import PackageMetadataError, package_archive_path, package_version
 
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
 
@@ -50,6 +53,22 @@ from archive_policy import (  # noqa: E402
 
 BUDGET_PATH = REPOSITORY_ROOT / "bindings" / "budgets.json"
 INTEGRATION_TEST = PLUGIN_ROOT / "integration_test" / "native_load_test.dart"
+IOS_RUNTIME_SMOKE_SOURCE = PLUGIN_ROOT / "tool" / "ios_runtime_smoke.dart"
+RUNTIME_SMOKE_PROBE_SOURCE = PLUGIN_ROOT / "tool" / "runtime_smoke_probe.dart"
+IOS_RUNTIME_SMOKE_RESULT = "mdstream-flutter-runtime-smoke.json"
+IOS_RUNTIME_SMOKE_SCHEMA = "mdstream.flutter-runtime-smoke/1"
+IOS_RUNTIME_SMOKE_TIMEOUT_SECONDS = 60.0
+IOS_RUNTIME_SMOKE_SIMCTL_TIMEOUT_SECONDS = 30.0
+IOS_RUNTIME_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS = 10.0
+IOS_RUNTIME_SMOKE_DIAGNOSTIC_CHARS = 8_000
+IOS_RUNTIME_SMOKE_EXPECTED = {
+    "abi_version": 1,
+    "package_version": package_version(),
+    "binding_schema": "mdstream.bindings/0.4",
+    "is_finalized": True,
+    "has_root_node": True,
+    "native_allocations_zero": True,
+}
 TEXT_IMPORT_PATTERN = re.compile(
     rb"(?:import|export)\s+['\"]package:([a-zA-Z0-9_]+)(?:/[^'\"]*)?['\"]"
 )
@@ -404,6 +423,7 @@ def _run(
     cwd: Path,
     env: dict[str, str] | None = None,
     capture: bool = False,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(command), flush=True)
     try:
@@ -414,9 +434,15 @@ def _run(
             check=True,
             text=True,
             capture_output=capture,
+            timeout=timeout,
         )
     except FileNotFoundError as error:
         raise PackageSmokeError(f"required tool not found: {command[0]}") from error
+    except subprocess.TimeoutExpired as error:
+        duration = timeout if timeout is not None else error.timeout
+        raise PackageSmokeError(
+            f"command timed out after {duration:g} seconds: {' '.join(command)}"
+        ) from error
     except subprocess.CalledProcessError as error:
         detail = (error.stderr or error.stdout or "").strip()
         suffix = f": {detail}" if detail else ""
@@ -755,6 +781,268 @@ def configure_apple_host_target(project_root: Path, platform_name: str) -> None:
         ) from error
 
 
+def _ios_bundle_identifier(app: Path) -> str:
+    info_path = app / "Info.plist"
+    try:
+        with info_path.open("rb") as handle:
+            info = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException) as error:
+        raise PackageSmokeError(
+            f"failed to read built iOS application metadata: {error}"
+        ) from error
+    if not isinstance(info, dict):
+        raise PackageSmokeError(
+            f"built iOS application metadata is not a dictionary: {info_path}"
+        )
+    bundle_identifier = info.get("CFBundleIdentifier")
+    if not isinstance(bundle_identifier, str) or not bundle_identifier:
+        raise PackageSmokeError(
+            f"built iOS application has no bundle identifier: {info_path}"
+        )
+    return bundle_identifier
+
+
+def _validate_ios_runtime_smoke_payload(payload: object) -> None:
+    if not isinstance(payload, dict):
+        raise PackageSmokeError("iOS runtime smoke result must be a JSON object")
+    schema = payload.get("schema")
+    if type(schema) is not str or schema != IOS_RUNTIME_SMOKE_SCHEMA:
+        raise PackageSmokeError("iOS runtime smoke returned an unexpected schema")
+    ok = payload.get("ok")
+    if type(ok) is not bool:
+        raise PackageSmokeError("iOS runtime smoke result field ok must be a boolean")
+    if not ok:
+        detail = payload.get("error")
+        stack_trace = payload.get("stack_trace")
+        if type(detail) is not str or not detail:
+            raise PackageSmokeError(
+                "iOS runtime smoke failure must include a non-empty error"
+            )
+        if stack_trace is not None and type(stack_trace) is not str:
+            raise PackageSmokeError(
+                "iOS runtime smoke failure stack_trace must be a string"
+            )
+        suffix = f": {detail}"
+        if stack_trace:
+            suffix += "\n" + stack_trace
+        suffix = suffix[:IOS_RUNTIME_SMOKE_DIAGNOSTIC_CHARS]
+        raise PackageSmokeError(f"iOS runtime smoke failed{suffix}")
+    mismatches = [
+        f"{name}={payload.get(name)!r} (expected {expected!r})"
+        for name, expected in IOS_RUNTIME_SMOKE_EXPECTED.items()
+        if type(payload.get(name)) is not type(expected)
+        or payload.get(name) != expected
+    ]
+    if mismatches:
+        raise PackageSmokeError(
+            "iOS runtime smoke returned invalid values: " + ", ".join(mismatches)
+        )
+
+
+def _wait_for_ios_runtime_smoke_result(
+    result_path: Path,
+    *,
+    diagnostics: Callable[[], str] | None = None,
+) -> None:
+    deadline = time.monotonic() + IOS_RUNTIME_SMOKE_TIMEOUT_SECONDS
+    while not result_path.is_file():
+        if time.monotonic() >= deadline:
+            detail = diagnostics() if diagnostics is not None else ""
+            suffix = f"\n{detail}" if detail else ""
+            raise PackageSmokeError(
+                "iOS runtime smoke did not publish a result within "
+                f"{IOS_RUNTIME_SMOKE_TIMEOUT_SECONDS:g} seconds: {result_path}"
+                f"{suffix}"
+            )
+        time.sleep(0.25)
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise PackageSmokeError(
+            f"failed to read iOS runtime smoke result: {error}"
+        ) from error
+    _validate_ios_runtime_smoke_payload(payload)
+
+
+def _diagnostic_tail(text: str) -> str:
+    if len(text) <= IOS_RUNTIME_SMOKE_DIAGNOSTIC_CHARS:
+        return text
+    return "[truncated]\n" + text[-IOS_RUNTIME_SMOKE_DIAGNOSTIC_CHARS:]
+
+
+def _collect_ios_runtime_diagnostics(
+    *,
+    project_root: Path,
+    device: str,
+    bundle_identifier: str,
+    stdout_path: Path,
+    stderr_path: Path,
+) -> str:
+    sections: list[str] = []
+    for label, path in (
+        ("Runner stdout", stdout_path),
+        ("Runner stderr", stderr_path),
+    ):
+        try:
+            value = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as error:
+            sections.append(f"{label}: unavailable ({error})")
+        else:
+            sections.append(f"{label}:\n{_diagnostic_tail(value) if value else '[empty]'}")
+
+    try:
+        state = _run(
+            ["xcrun", "simctl", "spawn", device, "launchctl", "print", "system"],
+            cwd=project_root,
+            capture=True,
+            timeout=IOS_RUNTIME_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS,
+        ).stdout
+        matches = [
+            line
+            for line in state.splitlines()
+            if bundle_identifier.lower() in line.lower() or "Runner" in line
+        ]
+        sections.append(
+            "Runner process state:\n"
+            + (_diagnostic_tail("\n".join(matches)) if matches else "[not running]")
+        )
+    except PackageSmokeError as error:
+        sections.append(f"Runner process state: unavailable ({error})")
+
+    predicate = (
+        f'process == "Runner" OR eventMessage CONTAINS[c] "{bundle_identifier}"'
+    )
+    try:
+        logs = _run(
+            [
+                "xcrun",
+                "simctl",
+                "spawn",
+                device,
+                "log",
+                "show",
+                "--last",
+                "2m",
+                "--style",
+                "compact",
+                "--predicate",
+                predicate,
+            ],
+            cwd=project_root,
+            capture=True,
+            timeout=IOS_RUNTIME_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS,
+        ).stdout
+        sections.append(
+            "Runner unified log:\n" + (_diagnostic_tail(logs) if logs else "[empty]")
+        )
+    except PackageSmokeError as error:
+        sections.append(f"Runner unified log: unavailable ({error})")
+    return _diagnostic_tail("\n".join(sections))
+
+
+def _terminate_ios_runtime_smoke(
+    *, project_root: Path, device: str, bundle_identifier: str
+) -> None:
+    try:
+        _run(
+            ["xcrun", "simctl", "terminate", device, bundle_identifier],
+            cwd=project_root,
+            capture=True,
+            timeout=IOS_RUNTIME_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS,
+        )
+    except PackageSmokeError as error:
+        print(f"warning: failed to terminate iOS runtime smoke: {error}", file=sys.stderr)
+
+
+def _run_ios_runtime_smoke(
+    *,
+    project_root: Path,
+    device: str,
+    env: dict[str, str],
+) -> None:
+    if not IOS_RUNTIME_SMOKE_SOURCE.is_file():
+        raise PackageSmokeError(
+            f"iOS runtime smoke source does not exist: {IOS_RUNTIME_SMOKE_SOURCE}"
+        )
+    shutil.copy2(IOS_RUNTIME_SMOKE_SOURCE, project_root / "lib" / "main.dart")
+    shutil.copy2(
+        RUNTIME_SMOKE_PROBE_SOURCE,
+        project_root / "lib" / RUNTIME_SMOKE_PROBE_SOURCE.name,
+    )
+    _run(
+        [_flutter_tool(), "build", "ios", "--simulator", "--debug"],
+        cwd=project_root,
+        env=env,
+    )
+
+    app = project_root / "build" / "ios" / "iphonesimulator" / "Runner.app"
+    if not app.is_dir():
+        raise PackageSmokeError(f"Flutter did not produce an iOS application: {app}")
+    bundle_identifier = _ios_bundle_identifier(app)
+    _run(
+        ["xcrun", "simctl", "install", device, str(app)],
+        cwd=project_root,
+        timeout=IOS_RUNTIME_SMOKE_SIMCTL_TIMEOUT_SECONDS,
+    )
+    container_result = _run(
+        [
+            "xcrun",
+            "simctl",
+            "get_app_container",
+            device,
+            bundle_identifier,
+            "data",
+        ],
+        cwd=project_root,
+        capture=True,
+        timeout=IOS_RUNTIME_SMOKE_SIMCTL_TIMEOUT_SECONDS,
+    )
+    container_text = container_result.stdout.strip()
+    container = Path(container_text) if container_text else None
+    if container is None or not container.is_absolute() or not container.is_dir():
+        raise PackageSmokeError(
+            "simulator returned an invalid application container: "
+            f"{container_text!r}"
+        )
+    result_path = container / "tmp" / IOS_RUNTIME_SMOKE_RESULT
+    stdout_path = container / "tmp" / "mdstream-flutter-runtime-smoke.stdout"
+    stderr_path = container / "tmp" / "mdstream-flutter-runtime-smoke.stderr"
+    for stale_path in (result_path, stdout_path, stderr_path):
+        stale_path.unlink(missing_ok=True)
+    try:
+        _run(
+            [
+                "xcrun",
+                "simctl",
+                "launch",
+                "--terminate-running-process",
+                f"--stdout={stdout_path}",
+                f"--stderr={stderr_path}",
+                device,
+                bundle_identifier,
+            ],
+            cwd=project_root,
+            env=env,
+            timeout=IOS_RUNTIME_SMOKE_SIMCTL_TIMEOUT_SECONDS,
+        )
+        _wait_for_ios_runtime_smoke_result(
+            result_path,
+            diagnostics=lambda: _collect_ios_runtime_diagnostics(
+                project_root=project_root,
+                device=device,
+                bundle_identifier=bundle_identifier,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+            ),
+        )
+    finally:
+        _terminate_ios_runtime_smoke(
+            project_root=project_root,
+            device=device,
+            bundle_identifier=bundle_identifier,
+        )
+
+
 def run_runtime_smoke(
     *,
     platform_name: str,
@@ -762,7 +1050,11 @@ def run_runtime_smoke(
     plugin_source: Path,
     keep_temporary: bool,
 ) -> None:
-    if not INTEGRATION_TEST.is_file():
+    if not RUNTIME_SMOKE_PROBE_SOURCE.is_file():
+        raise PackageSmokeError(
+            f"runtime smoke probe does not exist: {RUNTIME_SMOKE_PROBE_SOURCE}"
+        )
+    if platform_name != "ios" and not INTEGRATION_TEST.is_file():
         raise PackageSmokeError(f"integration test does not exist: {INTEGRATION_TEST}")
     temporary = Path(
         tempfile.mkdtemp(prefix=f"mdstream-flutter-{platform_name}-")
@@ -782,35 +1074,49 @@ def run_runtime_smoke(
             ],
             cwd=PLUGIN_ROOT,
         )
-        _run(
-            [
-                _flutter_tool(),
-                "pub",
-                "add",
-                f"mdstream_flutter:{{path: {plugin_source.as_posix()}}}",
-                f"override:mdstream:{{path: {(REPOSITORY_ROOT / 'bindings' / 'dart').as_posix()}}}",
-                "dev:integration_test:{sdk: flutter}",
-            ],
-            cwd=temporary,
-        )
+        dependencies = [
+            _flutter_tool(),
+            "pub",
+            "add",
+            f"mdstream_flutter:{{path: {plugin_source.as_posix()}}}",
+            f"override:mdstream:{{path: {(REPOSITORY_ROOT / 'bindings' / 'dart').as_posix()}}}",
+        ]
+        if platform_name != "ios":
+            dependencies.append("dev:integration_test:{sdk: flutter}")
+        _run(dependencies, cwd=temporary)
         configure_apple_host_target(temporary, platform_name)
-        target = temporary / "integration_test" / INTEGRATION_TEST.name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(INTEGRATION_TEST, target)
         env = os.environ.copy()
-        env.pop("MDSTREAM_NATIVE_LIBRARY", None)
-        env.pop("MDSTREAM_FFI_LIBRARY", None)
-        _run(
-            [
-                _flutter_tool(),
-                "test",
-                str(target.relative_to(temporary)),
-                "-d",
-                device,
-            ],
-            cwd=temporary,
-            env=env,
-        )
+        for name in (
+            "MDSTREAM_NATIVE_LIBRARY",
+            "MDSTREAM_FFI_LIBRARY",
+            "SIMCTL_CHILD_MDSTREAM_NATIVE_LIBRARY",
+            "SIMCTL_CHILD_MDSTREAM_FFI_LIBRARY",
+        ):
+            env.pop(name, None)
+        if platform_name == "ios":
+            _run_ios_runtime_smoke(
+                project_root=temporary,
+                device=device,
+                env=env,
+            )
+        else:
+            target = temporary / "integration_test" / INTEGRATION_TEST.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(INTEGRATION_TEST, target)
+            probe_target = temporary / "tool" / RUNTIME_SMOKE_PROBE_SOURCE.name
+            probe_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(RUNTIME_SMOKE_PROBE_SOURCE, probe_target)
+            _run(
+                [
+                    _flutter_tool(),
+                    "test",
+                    str(target.relative_to(temporary)),
+                    "-d",
+                    device,
+                ],
+                cwd=temporary,
+                env=env,
+            )
     finally:
         _restore_macos_frameworks(plugin_source)
         if keep_temporary:

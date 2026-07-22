@@ -1651,6 +1651,27 @@ class PackageContractTests(unittest.TestCase):
         self.assertIn(archive_runtime, smoke)
         self.assertNotIn("--skip-runtime", smoke)
 
+    def test_flutter_exact_archive_runs_ios_runtime_and_swiftpm_smokes(self) -> None:
+        workflow = (WORKFLOW_ROOT / "flutter-platforms.yml").read_text(
+            encoding="utf-8"
+        )
+        smoke = indented_block(workflow, "package-ios-smoke:")
+        pods = (
+            'package_smoke.py --archive "$FLUTTER_ARCHIVE" '
+            '--platform ios --device "$DEVICE_ID" --skip-native-build'
+        )
+        swiftpm = (
+            'package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" '
+            '--platform ios --device "$DEVICE_ID" --skip-native-build'
+        )
+
+        self.assertIn("needs: package", smoke)
+        self.assertIn("name: mdstream-flutter-package", smoke)
+        self.assertIn('xcrun simctl bootstatus "$DEVICE_ID" -b', smoke)
+        self.assertIn(pods, smoke)
+        self.assertIn(swiftpm, smoke)
+        self.assertLess(smoke.index(pods), smoke.index(swiftpm))
+
     def test_android_16k_emulator_uses_an_action_that_supports_ps16k(self) -> None:
         workflow = (WORKFLOW_ROOT / "flutter-platforms.yml").read_text(
             encoding="utf-8"
