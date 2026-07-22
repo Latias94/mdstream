@@ -180,6 +180,16 @@ describe("framework-neutral package boundaries", () => {
       "processors.ts:ProcessorSchedulerLimits",
     ]);
   });
+
+  it("keeps blocked processor retry promotion constant-time", () => {
+    const processors = readFileSync(
+      resolve(process.cwd(), "src/processors.ts"),
+      "utf8",
+    );
+
+    expect(processors).not.toContain("this.#candidateQueue.splice");
+    expect(processors).toContain("#retryCandidate");
+  });
 });
 
 interface SourceAnalysis {

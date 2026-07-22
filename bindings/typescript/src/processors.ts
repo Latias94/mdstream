@@ -186,6 +186,7 @@ export class ProcessorScheduler {
   readonly #errorListeners = new Set<ProcessorErrorListener>();
   readonly #maxInFlightJobs: number;
   readonly #maxCandidates: number;
+  #retryCandidate: ProcessorCandidate | undefined;
   #candidateHead = 0;
   #candidateCount = 0;
   #candidateQueueSaturated = false;
@@ -778,7 +779,6 @@ export class ProcessorScheduler {
     expectedEpoch: Epoch,
     nodeId: NodeId,
     expectedInputVersion: ProcessorInputVersion,
-    front = false,
   ): boolean {
     if (!registration.active || this.#closed) {
       return true;
@@ -828,11 +828,7 @@ export class ProcessorScheduler {
       queued: true,
     };
     registrationCandidates.set(nodeId, candidate);
-    if (front) {
-      this.#candidateQueue.splice(this.#candidateHead, 0, candidate);
-    } else {
-      this.#candidateQueue.push(candidate);
-    }
+    this.#candidateQueue.push(candidate);
     this.#candidateCount += 1;
     return true;
   }
@@ -844,6 +840,10 @@ export class ProcessorScheduler {
       return;
     }
     candidate.queued = false;
+    if (this.#retryCandidate === candidate) {
+      this.#retryCandidate = undefined;
+      this.#dispatchBlocked = false;
+    }
     registrationCandidates!.delete(nodeId);
     this.#candidateCount -= 1;
     this.#markCandidateCapacityAvailable();
@@ -867,6 +867,10 @@ export class ProcessorScheduler {
     for (const candidate of candidates.values()) {
       candidate.queued = false;
       this.#candidateCount -= 1;
+    }
+    if (this.#retryCandidate?.registration === registration) {
+      this.#retryCandidate = undefined;
+      this.#dispatchBlocked = false;
     }
     this.#markCandidateCapacityAvailable();
     this.#candidates.delete(registration);
@@ -914,6 +918,7 @@ export class ProcessorScheduler {
     }
     this.#candidates.clear();
     this.#candidateQueue.length = 0;
+    this.#retryCandidate = undefined;
     this.#candidateHead = 0;
     this.#candidateCount = 0;
     this.#candidateQueueSaturated = false;
@@ -921,11 +926,20 @@ export class ProcessorScheduler {
   }
 
   #takeCandidate(): ProcessorCandidate | null | undefined {
+    const retryCandidate = this.#retryCandidate;
+    if (retryCandidate !== undefined) {
+      this.#retryCandidate = undefined;
+      return this.#consumeCandidate(retryCandidate);
+    }
     if (this.#candidateHead >= this.#candidateQueue.length) {
       this.#compactCandidateQueue();
       return undefined;
     }
     const candidate = this.#candidateQueue[this.#candidateHead++]!;
+    return this.#consumeCandidate(candidate);
+  }
+
+  #consumeCandidate(candidate: ProcessorCandidate): ProcessorCandidate | null {
     if (!candidate.queued) {
       this.#compactCandidateQueue();
       return null;
@@ -937,13 +951,39 @@ export class ProcessorScheduler {
       this.#candidates.delete(candidate.registration);
     }
     this.#candidateCount -= 1;
-    this.#markCandidateCapacityAvailable();
     this.#compactCandidateQueue();
     return candidate;
   }
 
+  #restoreBlockedCandidate(candidate: ProcessorCandidate): boolean {
+    if (this.#closed || !candidate.registration.active) {
+      return false;
+    }
+    if (this.#retryCandidate !== undefined) {
+      throw new Error("processor scheduler retry slot is already occupied");
+    }
+    if (this.#candidateCount >= this.#maxCandidates) {
+      throw new Error("processor scheduler retry exceeds candidate capacity");
+    }
+    let registrationCandidates = this.#candidates.get(candidate.registration);
+    if (registrationCandidates?.has(candidate.nodeId)) {
+      throw new Error("processor scheduler restored a duplicate retry candidate");
+    }
+    if (registrationCandidates === undefined) {
+      registrationCandidates = new Map<NodeId, ProcessorCandidate>();
+      this.#candidates.set(candidate.registration, registrationCandidates);
+    }
+    candidate.queued = true;
+    registrationCandidates.set(candidate.nodeId, candidate);
+    this.#retryCandidate = candidate;
+    this.#candidateCount += 1;
+    return true;
+  }
+
   #compactCandidateQueue(): void {
-    if (this.#candidateCount === 0) {
+    const queuedCandidateCount = this.#candidateCount -
+      (this.#retryCandidate === undefined ? 0 : 1);
+    if (queuedCandidateCount === 0) {
       this.#candidateQueue.length = 0;
       this.#candidateHead = 0;
       return;
@@ -951,7 +991,7 @@ export class ProcessorScheduler {
     if (
       this.#candidateQueue.length <= candidateQueueCompactionFloor ||
       this.#candidateQueue.length <=
-        this.#candidateCount * candidateQueueCompactionRatio
+        queuedCandidateCount * candidateQueueCompactionRatio
     ) {
       return;
     }
@@ -997,12 +1037,18 @@ export class ProcessorScheduler {
           continue;
         }
         if (!candidate.registration.active) {
+          this.#markCandidateCapacityAvailable();
           continue;
         }
         if (this.#begin(candidate) === "blocked") {
-          this.#dispatchBlocked = true;
-          break;
+          if (this.#restoreBlockedCandidate(candidate)) {
+            this.#dispatchBlocked = true;
+            break;
+          }
+          this.#markCandidateCapacityAvailable();
+          continue;
         }
+        this.#markCandidateCapacityAvailable();
       }
     } finally {
       this.#dispatching = false;
@@ -1101,13 +1147,6 @@ export class ProcessorScheduler {
         retryableResourceLimitDetailCodes.has(normalized.detailCode) &&
         this.#inFlight.size > 0
       ) {
-        this.#enqueueCandidate(
-          registration,
-          expectedEpoch,
-          nodeId,
-          expectedInputVersion,
-          true,
-        );
         return "blocked";
       }
       this.#emitError({

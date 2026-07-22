@@ -1020,8 +1020,11 @@ describe("host-side processor scheduling", () => {
     const beginProcessor = vi.spyOn(RustBackedStore.prototype, "beginProcessor");
     const requests: ProcessorRequestView[] = [];
     let releaseFirst: (() => void) | undefined;
-    const body = "x".repeat(512);
-    engine.append(Array.from({ length: candidateCount }, () => body).join("\n\n"));
+    const bodies = Array.from({ length: candidateCount }, (_, index) => {
+      const prefix = `${index.toString().padStart(3, "0")}:`;
+      return prefix + "x".repeat(512 - prefix.length);
+    });
+    engine.append(bodies.join("\n\n"));
     engine.finish();
     try {
       engine.registerProcessor({
@@ -1055,9 +1058,64 @@ describe("host-side processor scheduling", () => {
       await engine.whenProcessorsIdle();
 
       expect(requests).toHaveLength(candidateCount);
+      expect(requests.map((request) => request.input.body)).toEqual(bodies);
     } finally {
       releaseFirst?.();
       beginProcessor.mockRestore();
+      engine.close();
+    }
+  });
+
+  it("drops a blocked retry when reset replaces the document", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine({
+      processor: {
+        maxInputBytes: 2048n,
+        maxInFlightJobs: 2n,
+        maxInFlightInputBytes: 1536n,
+        maxSlots: 3n,
+      },
+    });
+    const oldBodies = ["a".repeat(512), "b".repeat(512)];
+    const replacement = "replacement";
+    const processedBodies: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    engine.append(oldBodies.join("\n\n"));
+    engine.finish();
+    try {
+      engine.registerProcessor({
+        descriptor: { id: "test.ts.input-credit-reset", version: "v1" },
+        configurationVersion: "test.ts.input-credit-reset.default",
+        matches: (node) => node.content.kind === "paragraph",
+        process(request) {
+          processedBodies.push(request.input.body);
+          const output: ProcessorOutput = {
+            kind: "text",
+            protocol: "test.ts.input-credit-reset/1",
+            mediaType: "text/plain",
+            text: request.input.body,
+          };
+          if (processedBodies.length !== 1) {
+            return output;
+          }
+          return new Promise<ProcessorOutput>((resolve) => {
+            releaseFirst = () => resolve(output);
+          });
+        },
+      });
+
+      await vi.waitFor(() => expect(releaseFirst).toBeDefined());
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+      engine.reset();
+      engine.append(replacement);
+      engine.finish();
+      releaseFirst?.();
+      await engine.whenProcessorsIdle();
+
+      expect(processedBodies).toEqual([oldBodies[0], replacement]);
+    } finally {
+      releaseFirst?.();
       engine.close();
     }
   });
