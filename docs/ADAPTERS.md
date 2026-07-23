@@ -103,10 +103,12 @@ They do not need an mdstream-specific renderer.
 ## Tokio
 
 `mdstream-tokio` optionally owns a `StreamEngine` behind bounded channels. Its
-actor accepts `ActorCommand` and returns lossless `ActorResult` change batches.
-Blocking and local coalescing preserve canonical input; lossy status signals
-belong on a separate channel. Run the [Tokio actor host](EXAMPLES.md#tokio-actor)
-in `--smoke` mode before adapting the same actor path to an application loop.
+actor accepts `ActorCommand`, publishes committed `ActorBatch` values, and
+returns engine, pending input, unexecuted commands, and deterministic counters
+through its terminal `ActorExit`. Blocking and local coalescing preserve
+canonical input; lossy status signals belong on a separate channel. Run the
+[Tokio actor host](EXAMPLES.md#tokio-actor) in `--smoke` mode before adapting the
+same actor path to an application loop.
 
 ## TypeScript and WASM
 

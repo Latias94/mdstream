@@ -1049,6 +1049,7 @@ dependencies = [
  "mdstream",
  "mdstream-protocol",
  "ratatui",
+ "serde_json",
  "tokio",
 ]
 

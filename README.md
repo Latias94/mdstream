@@ -176,10 +176,10 @@ There are no deprecated aliases for the removed 0.3 surface.
 | `AnalyzedStream` / `BlockAnalyzer` | Read typed Content IR or use a versioned processor whose artifact remains derived host state. |
 | `BoundaryPlugin` / runtime grammar mutation | Register setup-only `CustomBlockSpec` values before accepting input. |
 | `TerminatorOptions` / `terminate_markdown` / pending transformers | Read bounded pending source on demand and keep incomplete-source presentation in host policy. |
-| `spawn_mdstream_actor` | Use `spawn_stream_engine_actor`, send `ActorCommand`, receive `ActorResult`, and drain with `join`. |
+| `spawn_mdstream_actor` | Use `spawn_stream_engine_actor`, send `ActorCommand`, receive success-only `ActorBatch` values, and await borrowed, retryable `join` or `cancel` to handle the owned `ActorExit`. |
 | `BackpressurePolicy::DropNew` / `SendOutcome::Dropped` | Use `Block` or `CoalesceLocal`; canonical input is never intentionally dropped. |
 
-For `CoalesceLocal`, await fallible policy changes and call `flush().await` before dropping a sender after any buffered result.
+Construct bounded policies with `CoalesceOptions::new(max_delay, max_bytes, max_pending_chunks)`; presets are no longer exported. Construct `DeltaSender` with explicit local byte and constituent limits. For `CoalesceLocal`, await fallible policy changes and call `flush().await` or `take_pending()` before dropping a sender after any buffered result.
 
 ## Verification and limits
 

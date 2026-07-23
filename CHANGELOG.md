@@ -22,8 +22,22 @@ Version 0.4 rebuilds mdstream as a headless, cross-framework streaming rich-cont
 
 - Removed the complete 0.3 block/update/analyzer surface, including `MdStream`, `MdStreamBuilder`, `Options`, `Block`, `BlockStatus`, `Update`, `UpdateRef`, `PendingBlockRef`, `DocumentState`, `AnalyzedStream`, and `BlockAnalyzer`, without deprecated aliases.
 - Removed runtime boundary plugins, pending transformers, mutable committed/cache access, pending-repair and public syntax helpers, the Pulldown adapter, and the `pulldown`/`sync` Cargo features; `pulldown-cmark` is now an internal, non-optional compiler dependency.
-- Replaced `mdstream-tokio::spawn_mdstream_actor` and owned `Update` output with `spawn_stream_engine_actor`, `ActorCommand`, `StreamEngineActor`, and fallible `ActorResult` change-set batches.
-- Removed lossy canonical-input behavior from `mdstream-tokio`: `BackpressurePolicy::DropNew` and `SendOutcome::Dropped` no longer exist, `DeltaSender::set_policy` is now async and fallible, and buffered senders must be flushed before they are dropped.
+- Replaced `mdstream-tokio::spawn_mdstream_actor` and owned `Update` output with `spawn_stream_engine_actor`, `ActorCommand`, `ActorBatch`, `StreamEngineActor`, and owned `ActorExit` completion, failure, or cancellation state. Engine failures terminate intake and return the engine, completed constituent results, unresolved chunks, unexecuted commands, and the closed command receiver instead of crossing a barrier. Borrowed `join` and `cancel` waits can be cancelled and retried without losing those ownership planes.
+- Removed lossy canonical-input behavior from `mdstream-tokio`: `BackpressurePolicy::DropNew` and `SendOutcome::Dropped` no longer exist, `DeltaSender::set_policy` is now async and fallible, and buffered senders must be flushed or recovered with `take_pending` before they are dropped.
+- Replaced public-field `CoalesceOptions` literals with bounded constructors and modifiers, removed `CoalescePreset`, added a hard `max_pending_chunks` boundary budget, and made receiver/sender statistics report deterministic input, scan, copy, pending-byte, pending-constituent, and logical boundary-record work.
+- Made `DeltaSender::new` require explicit local byte and constituent limits; threshold-crossing input remains caller-owned until prior pending data flushes, and a closed-channel error never accepts the new borrowed delta.
+
+#### Tokio semantic-join value gate
+
+The reproducible Rust 1.88 workload evaluator selected constituent-first canonical appends inside one atomic actor publication. Joined-first reduced append attempts and encoded result bytes, but copied every source byte while constituent-first copied none, so joined-first failed the per-workload 20% copy-work ceiling and was deleted from the production actor path. Both candidates produced equal final source, lifecycle, stable Content IR, and resources; deterministic scan work was equal between candidates.
+
+| Workload | Joined attempts / encoded bytes / copy bytes | Constituent attempts / encoded bytes / copy bytes | Shared scan bytes | Decision |
+| --- | ---: | ---: | ---: | --- |
+| One-byte | 1 / 3,867 / 35 | 35 / 28,351 / 0 | 35 | Constituent-first |
+| Bursty | 1 / 3,871 / 45 | 5 / 5,548 / 0 | 44 | Constituent-first |
+| Unicode | 1 / 2,637 / 22 | 5 / 6,421 / 0 | 22 | Constituent-first |
+| CRLF | 1 / 5,465 / 19 | 5 / 5,908 / 0 | 17 | Constituent-first |
+| Golden AI Stream | 1 / 7,810 / 372 | 9 / 13,444 / 0 | 113 | Constituent-first |
 
 ### Migration
 
@@ -39,10 +53,14 @@ Add a direct `mdstream-protocol = "0.4"` dependency wherever the application own
 | `AnalyzedStream` / `BlockAnalyzer` | Consume typed Content IR directly or run a versioned `mdstream-processors` processor and keep its artifact as derived state. |
 | `BoundaryPlugin` / runtime grammar mutation | Register setup-only `CustomBlockSpec` values through `StreamEngine::builder()` before accepting input. |
 | `TerminatorOptions` / `terminate_markdown` / pending transformers | Read bounded pending source on demand and keep incomplete-Markdown display repair in host rendering policy. |
-| `spawn_mdstream_actor` | Send `ActorCommand` values to `spawn_stream_engine_actor`, receive `ActorResult` batches through `StreamEngineActor::recv`, and use `join` to drain unread output. |
+| `spawn_mdstream_actor` | Send `ActorCommand` values to `spawn_stream_engine_actor`, receive committed `ActorBatch` values through `StreamEngineActor::recv`, and await borrowed `join` or `cancel` to obtain `ActorJoinOutcome { unread, exit }`. Handle `ActorExit::Failed` or `Cancelled` explicitly before retrying or discarding returned input. |
+| `ActorResult` / `close_output` | Consume success-only `ActorBatch` output. Engine errors live only in terminal `ActorExit::Failed`; call `begin_cancel` for synchronous cancellation initiation or await the retryable borrowed `cancel` operation. |
+| `CoalesceOptions { ... }` | Use `CoalesceOptions::new(max_delay, max_bytes, max_pending_chunks)` and `with_newline_flush`, `with_max_delay`, `with_max_bytes`, or `with_max_pending_chunks`. |
+| `CoalescePreset` | Delete the preset and construct the exact `CoalesceOptions` policy the application owns. |
+| `DeltaSender::new(sender, policy)` / mutable local-limit setters | Call `DeltaSender::new(sender, policy, max_bytes, max_pending_chunks)` once. On a closed-channel error, recover previously accepted constituents with `take_pending`; the borrowed delta was not accepted. |
 | `BackpressurePolicy::DropNew` / `SendOutcome::Dropped` | Use `BackpressurePolicy::Block` or `BackpressurePolicy::CoalesceLocal` for canonical input and place replaceable status signals on a separate lossy channel. |
 
-Await `DeltaSender::set_policy(...)`, handle its `SendError`, and call `flush().await` before dropping a sender after any `SendOutcome::Buffered` result.
+Await `DeltaSender::set_policy(...)`, handle its `SendError`, and call `flush().await` or `take_pending()` before dropping a sender after any `SendOutcome::Buffered` result.
 
 ## 0.3.0 - 2026-07-07
 

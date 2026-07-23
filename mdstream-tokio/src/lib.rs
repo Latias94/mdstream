@@ -11,14 +11,22 @@
 //! For a full TUI example, see `cargo run -p mdstream-tokio --example agent_tui`.
 
 mod actor;
+mod coalesce;
 mod options;
 mod receiver;
 mod sender;
+mod stats;
 
-pub use actor::{ActorCommand, ActorResult, StreamEngineActor, spawn_stream_engine_actor};
-pub use options::{CoalesceOptions, CoalescePreset};
-pub use receiver::{CoalesceStats, CoalescedChunk, CoalescingReceiver, FlushReason};
+pub use actor::{
+    ActorBatch, ActorCancellation, ActorCommand, ActorCommandDrain, ActorCompletion,
+    ActorDrainBatch, ActorDrainState, ActorExit, ActorFailure, ActorJoinError, ActorJoinOutcome,
+    StreamEngineActor, spawn_stream_engine_actor,
+};
+pub use coalesce::PendingInput;
+pub use options::CoalesceOptions;
+pub use receiver::{CoalescedChunk, CoalescingReceiver};
 pub use sender::{BackpressurePolicy, DeltaSender, SendError, SendOutcome};
+pub use stats::{ActorStats, CoalesceStats, FlushReason};
 
 #[cfg(test)]
 mod tests {
@@ -41,8 +49,8 @@ mod tests {
         assert_eq!(got.merged_messages, 3);
 
         let stats = cr.stats();
-        assert_eq!(stats.total_in_messages, 3);
-        assert_eq!(stats.total_out_chunks, 1);
+        assert_eq!(stats.input_attempts, 3);
+        assert_eq!(stats.output_chunks, 1);
         assert_eq!(stats.last_reason, Some(FlushReason::Newline));
     }
 }

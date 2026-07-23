@@ -8,7 +8,8 @@ use crossterm::terminal::{
 use mdstream::StreamEngine;
 use mdstream_protocol::{DocumentLifecycle, Reducer};
 use mdstream_tokio::{
-    ActorCommand, ActorResult, CoalescePreset, StreamEngineActor, spawn_stream_engine_actor,
+    ActorBatch, ActorCommand, ActorExit, CoalesceOptions, StreamEngineActor,
+    spawn_stream_engine_actor,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -61,22 +62,14 @@ impl Default for App {
 }
 
 impl App {
-    fn apply_actor_result(&mut self, result: ActorResult) {
-        match result {
-            Ok(batch) => {
-                self.batches = self.batches.saturating_add(1);
-                self.changes = self.changes.saturating_add(batch.len() as u64);
-                for change in batch {
-                    if let Err(error) = self.reducer.apply(change) {
-                        self.errors = self.errors.saturating_add(1);
-                        self.last_error = Some(error.to_string());
-                        break;
-                    }
-                }
-            }
-            Err(error) => {
+    fn apply_actor_batch(&mut self, batch: ActorBatch) {
+        self.batches = self.batches.saturating_add(1);
+        self.changes = self.changes.saturating_add(batch.change_count() as u64);
+        for change in batch.changes().cloned() {
+            if let Err(error) = self.reducer.apply(change) {
                 self.errors = self.errors.saturating_add(1);
                 self.last_error = Some(error.to_string());
+                break;
             }
         }
     }
@@ -216,10 +209,12 @@ async fn run_interactive() -> io::Result<()> {
         &mut event_rx,
     )
     .await;
-    actor.close_output();
-    if let Ok(Ok(unread)) = tokio::time::timeout(Duration::from_secs(1), actor.join()).await {
-        drop(unread);
+    actor.begin_cancel();
+    let actor_result = match tokio::time::timeout(Duration::from_secs(1), actor.join()).await {
+        Ok(result) => result,
+        Err(_) => actor.join().await,
     }
+    .map_err(|error| io::Error::other(format!("actor task failed: {error}")));
     let producer_result = producer
         .await
         .map_err(|error| io::Error::other(format!("demo producer failed: {error}")));
@@ -228,20 +223,24 @@ async fn run_interactive() -> io::Result<()> {
     crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     producer_result?;
+    drop(actor_result?);
     result
 }
 
 pub(crate) async fn run_smoke() -> io::Result<SmokeSummary> {
     let (mut actor, producer) = spawn_demo(Duration::ZERO);
     let mut app = App::default();
-    while let Some(result) = actor.recv().await {
-        app.apply_actor_result(result);
+    while let Some(batch) = actor.recv().await {
+        app.apply_actor_batch(batch);
     }
     let unread = actor
         .join()
         .await
         .map_err(|error| io::Error::other(format!("actor task failed: {error}")))?;
-    assert!(unread.is_empty());
+    assert!(unread.unread.is_empty());
+    if !matches!(unread.exit, ActorExit::Completed(_)) {
+        return Err(io::Error::other("actor did not complete normally"));
+    }
     let producer = producer
         .await
         .map_err(|error| io::Error::other(format!("demo producer failed: {error}")))?;
@@ -266,7 +265,7 @@ fn spawn_demo(delay: Duration) -> (StreamEngineActor, JoinHandle<ProducerCounter
     let actor = spawn_stream_engine_actor(
         StreamEngine::new(),
         input_rx,
-        CoalescePreset::Balanced.options(),
+        CoalesceOptions::new(Duration::from_millis(80), 16 * 1024, 2048),
     );
     let producer = tokio::spawn(demo_stream(input, delay));
     (actor, producer)
@@ -318,9 +317,9 @@ where
                     return Ok(());
                 }
             }
-            result = actor.recv(), if app.actor_open => {
-                match result {
-                    Some(result) => app.apply_actor_result(result),
+            batch = actor.recv(), if app.actor_open => {
+                match batch {
+                    Some(batch) => app.apply_actor_batch(batch),
                     None => app.actor_open = false,
                 }
             }
