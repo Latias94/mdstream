@@ -245,12 +245,18 @@ REGISTRY_STATUS_GUARD_MARKERS = (
     'if [[ "$registry_status" -ne 1 ]]; then',
     'exit "$registry_status"',
 )
+EXACT_ARCHIVE_CONSUMER_FORBIDDEN_MARKERS = (
+    "dtolnay/rust-toolchain",
+    "build_native.py",
+    "--skip-archive",
+)
 
 
 @dataclass(frozen=True)
 class WorkflowJobContract:
     run_markers: tuple[str, ...] = ()
     job_markers: tuple[str, ...] = ()
+    forbidden_markers: tuple[str, ...] = ()
     step_marker_groups: tuple[tuple[str, ...], ...] = ()
     marker_order: tuple[str, ...] | None = None
     required_needs: frozenset[str] | None = None
@@ -423,6 +429,48 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 '--ecosystem flutter --archive "$FLUTTER_ARCHIVE"',
             ),
         ),
+        ("flutter-platforms.yml", "package-android-smoke"): WorkflowJobContract(
+            job_markers=(
+                "name: mdstream-flutter-package",
+                "flutter-version: 3.32.1",
+                "reactivecircus/android-emulator-runner@v2.38.0",
+                "target: google_apis_ps16k",
+                "timeout-minutes: 60",
+                'android_smoke.py --archive "$FLUTTER_ARCHIVE" '
+                "--skip-native-build --device emulator-5554",
+            ),
+            forbidden_markers=EXACT_ARCHIVE_CONSUMER_FORBIDDEN_MARKERS,
+            required_needs=frozenset(("package",)),
+        ),
+        ("flutter-platforms.yml", "package-windows-smoke"): WorkflowJobContract(
+            run_markers=(
+                'package_smoke.py --archive "$env:FLUTTER_ARCHIVE" '
+                "--platform windows --device windows --skip-native-build",
+            ),
+            job_markers=(
+                "name: mdstream-flutter-package",
+                "flutter-version: 3.32.1",
+                "runs-on: windows-2022",
+            ),
+            forbidden_markers=EXACT_ARCHIVE_CONSUMER_FORBIDDEN_MARKERS,
+            required_needs=frozenset(("package",)),
+        ),
+        (
+            "flutter-platforms.yml",
+            "package-macos-cocoapods-smoke",
+        ): WorkflowJobContract(
+            run_markers=(
+                'package_smoke.py --archive "$FLUTTER_ARCHIVE" '
+                "--platform macos --device macos --skip-native-build",
+            ),
+            job_markers=(
+                "name: mdstream-flutter-package",
+                "flutter-version: 3.32.1",
+                "runs-on: macos-14",
+            ),
+            forbidden_markers=EXACT_ARCHIVE_CONSUMER_FORBIDDEN_MARKERS,
+            required_needs=frozenset(("package",)),
+        ),
         ("flutter-platforms.yml", "package-linux-smoke"): WorkflowJobContract(
             run_markers=(
                 'package_smoke.py --archive "$FLUTTER_ARCHIVE" '
@@ -432,6 +480,7 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 "name: mdstream-flutter-package",
                 "flutter-version: 3.32.1",
             ),
+            forbidden_markers=EXACT_ARCHIVE_CONSUMER_FORBIDDEN_MARKERS,
             required_needs=frozenset(("package",)),
         ),
         ("flutter-platforms.yml", "package-linux-legacy-smoke"): WorkflowJobContract(
@@ -446,6 +495,7 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 "uses: mlugg/setup-zig@v2",
                 "version: 0.15.2",
             ),
+            forbidden_markers=EXACT_ARCHIVE_CONSUMER_FORBIDDEN_MARKERS,
             required_needs=frozenset(("package",)),
         ),
         ("flutter-platforms.yml", "package-ios-smoke"): WorkflowJobContract(
@@ -468,6 +518,22 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 'package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" '
                 '--platform ios --device "$DEVICE_ID" --skip-native-build',
             ),
+            forbidden_markers=EXACT_ARCHIVE_CONSUMER_FORBIDDEN_MARKERS,
+            required_needs=frozenset(("package",)),
+        ),
+        (
+            "flutter-platforms.yml",
+            "package-apple-swiftpm-smoke",
+        ): WorkflowJobContract(
+            run_markers=(
+                'package_smoke.py --swiftpm --archive "$FLUTTER_ARCHIVE" '
+                "--platform macos --skip-native-build",
+            ),
+            job_markers=(
+                "name: mdstream-flutter-package",
+                "runs-on: macos-14",
+            ),
+            forbidden_markers=EXACT_ARCHIVE_CONSUMER_FORBIDDEN_MARKERS,
             required_needs=frozenset(("package",)),
         ),
         ("release.yml", "publish-rust"): WorkflowJobContract(
@@ -1353,6 +1419,21 @@ def validate_workflow_contract(root: Path) -> None:
         if missing:
             raise ValidationError(
                 f"workflow {filename} job {job_name} is missing configuration gate(s): {missing}"
+            )
+
+    for (filename, job_name), contract in WORKFLOW_JOB_CONTRACTS.items():
+        markers = contract.forbidden_markers
+        if not markers:
+            continue
+        job = jobs_by_workflow[filename].get(job_name)
+        if job is None:
+            raise ValidationError(f"workflow {filename} is missing job {job_name}")
+        active = _enabled_workflow_job_text(job)
+        present = [marker for marker in markers if marker in active]
+        if present:
+            raise ValidationError(
+                f"workflow {filename} job {job_name} contains forbidden "
+                f"configuration gate(s): {present}"
             )
 
     for (filename, job_name), contract in WORKFLOW_JOB_CONTRACTS.items():

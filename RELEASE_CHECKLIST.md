@@ -75,6 +75,10 @@ Canonical crates.io order:
   pinned legacy-runtime smoke image.
 - [ ] The assembled `mdstream_flutter` archive contains every declared native
   slice and passes absolute native-library and per-platform package ceilings.
+- [ ] Android 16 KiB, Windows x64, macOS CocoaPods, Apple SwiftPM, iOS, and
+  Linux consumers all download and load the producer's exact archive; none of
+  those consumer jobs installs Rust, rebuilds native code, or falls back to the
+  repository-local Flutter plugin.
 - [ ] Refresh the checked-in `platform_package_increment` measurement from the
   exact clean-CI five-platform archive; do not retain a partial local archive
   fingerprint in a release commit.

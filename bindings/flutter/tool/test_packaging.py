@@ -11,7 +11,9 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -52,6 +54,7 @@ from package_smoke import (  # noqa: E402
     _write_swiftpm_consumer,
     _extract_archive,
     inspect_package_archive,
+    plugin_source_context,
     validate_dependency_graph,
 )
 from package_metadata import package_archive_path, package_version  # noqa: E402
@@ -1204,6 +1207,70 @@ class PackageSmokeContractTest(unittest.TestCase):
 
             self.assertEqual(_swiftpm_manifest_root("macos", plugin), root)
 
+    def test_plugin_source_context_extracts_and_cleans_the_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "mdstream_flutter.tar.gz"
+            _write_archive(
+                archive,
+                {
+                    "pubspec.yaml": b"name: mdstream_flutter\n",
+                    "lib/mdstream_flutter.dart": b"library mdstream_flutter;\n",
+                },
+            )
+
+            with plugin_source_context(archive) as plugin_source:
+                extracted = plugin_source
+                self.assertNotEqual(extracted, TOOL_ROOT.parent)
+                self.assertEqual(
+                    (extracted / "pubspec.yaml").read_bytes(),
+                    b"name: mdstream_flutter\n",
+                )
+
+            self.assertFalse(extracted.exists())
+
+    def test_android_archive_mode_uses_only_the_extracted_plugin(self) -> None:
+        archive = Path("target/flutter-package/mdstream_flutter.tar.gz")
+        extracted = Path("/temporary/extracted/plugin")
+        args = SimpleNamespace(
+            archive=archive,
+            skip_native_build=True,
+            keep_temporary=False,
+            build_only=True,
+            device="emulator-5554",
+        )
+        with patch.object(android_smoke, "_parse_args", return_value=args), patch.object(
+            android_smoke, "validate_package_archive"
+        ) as validate, patch.object(
+            android_smoke,
+            "plugin_source_context",
+            return_value=nullcontext(extracted),
+        ), patch.object(
+            android_smoke, "_build_and_inspect_apk"
+        ) as build, patch.object(
+            android_smoke, "_run"
+        ) as run:
+            self.assertEqual(android_smoke.main(), 0)
+
+        validate.assert_called_once_with(archive)
+        build.assert_called_once_with(
+            False,
+            None,
+            plugin_source=extracted,
+        )
+        run.assert_not_called()
+
+    def test_package_archive_mode_rejects_a_native_rebuild(self) -> None:
+        args = SimpleNamespace(
+            archive=Path("target/flutter-package/mdstream_flutter.tar.gz"),
+            skip_native_build=False,
+        )
+        with patch.object(package_smoke, "_parse_args", return_value=args), patch.object(
+            package_smoke, "_run"
+        ) as run:
+            self.assertEqual(package_smoke.main(), 1)
+
+        run.assert_not_called()
+
     def test_swiftpm_smoke_rejects_non_macos_hosts(self) -> None:
         with patch.object(package_smoke.sys, "platform", "linux"):
             with self.assertRaisesRegex(PackageSmokeError, "requires a macOS runner"):
@@ -1279,6 +1346,52 @@ class PackageSmokeContractTest(unittest.TestCase):
             "--platform macos --skip-native-build",
             exact_macos_job,
         )
+
+    def test_remaining_platforms_consume_the_exact_producer_archive(self) -> None:
+        workflow = (
+            TOOL_ROOT.parents[2]
+            / ".github"
+            / "workflows"
+            / "flutter-platforms.yml"
+        ).read_text(encoding="utf-8")
+        jobs = {
+            "android": workflow[
+                workflow.index("  package-android-smoke:\n") : workflow.index(
+                    "  package-windows-smoke:\n"
+                )
+            ],
+            "windows": workflow[
+                workflow.index("  package-windows-smoke:\n") : workflow.index(
+                    "  package-macos-cocoapods-smoke:\n"
+                )
+            ],
+            "macos": workflow[
+                workflow.index("  package-macos-cocoapods-smoke:\n") : workflow.index(
+                    "  package-linux-smoke:\n"
+                )
+            ],
+        }
+        commands = {
+            "android": 'android_smoke.py --archive "$FLUTTER_ARCHIVE" '
+            "--skip-native-build --device emulator-5554",
+            "windows": 'package_smoke.py --archive "$env:FLUTTER_ARCHIVE" '
+            "--platform windows --device windows --skip-native-build",
+            "macos": 'package_smoke.py --archive "$FLUTTER_ARCHIVE" '
+            "--platform macos --device macos --skip-native-build",
+        }
+
+        for platform_name, job in jobs.items():
+            with self.subTest(platform=platform_name):
+                self.assertIn("needs: package", job)
+                self.assertIn("name: mdstream-flutter-package", job)
+                self.assertIn(commands[platform_name], job)
+                self.assertNotIn("dtolnay/rust-toolchain", job)
+                self.assertNotIn("build_native.py", job)
+                self.assertNotIn("--skip-archive", job)
+
+        self.assertIn("target: google_apis_ps16k", jobs["android"])
+        self.assertIn("runs-on: windows-2022", jobs["windows"])
+        self.assertIn("runs-on: macos-14", jobs["macos"])
 
     def test_apple_smoke_host_matches_plugin_deployment_targets(self) -> None:
         cases = {

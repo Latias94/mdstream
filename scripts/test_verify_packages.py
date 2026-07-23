@@ -1303,6 +1303,51 @@ class PackageContractTests(unittest.TestCase):
                 ),
             ),
             (
+                "exact Android consumer rebuilds native code",
+                "flutter-platforms.yml",
+                lambda text: replace_job_fragment(
+                    text,
+                    "package-android-smoke",
+                    "      - name: Load Android plugin from exact publish archive\n",
+                    "      - name: Rebuild forbidden native code\n"
+                    "        run: python3 bindings/flutter/tool/build_native.py android\n\n"
+                    "      - name: Load Android plugin from exact publish archive\n",
+                ),
+            ),
+            (
+                "exact Windows consumer omits archive input",
+                "flutter-platforms.yml",
+                lambda text: replace_job_fragment(
+                    text,
+                    "package-windows-smoke",
+                    'package_smoke.py --archive "$env:FLUTTER_ARCHIVE"',
+                    "package_smoke.py --skip-archive",
+                ),
+            ),
+            (
+                "exact Linux consumer rebuilds native code",
+                "flutter-platforms.yml",
+                lambda text: replace_job_fragment(
+                    text,
+                    "package-linux-smoke",
+                    "      - name: Load Linux plugin from exact publish archive\n",
+                    "      - name: Rebuild forbidden native code\n"
+                    "        run: python3 bindings/flutter/tool/build_native.py linux\n\n"
+                    "      - name: Load Linux plugin from exact publish archive\n",
+                ),
+            ),
+            (
+                "exact iOS consumer rebuilds native code",
+                "flutter-platforms.yml",
+                lambda text: replace_job_fragment(
+                    text,
+                    "package-ios-smoke",
+                    '          xcrun simctl bootstatus "$DEVICE_ID" -b\n',
+                    '          xcrun simctl bootstatus "$DEVICE_ID" -b\n'
+                    "          python3 bindings/flutter/tool/build_native.py ios\n",
+                ),
+            ),
+            (
                 "missing workflow call trigger",
                 "ci.yml",
                 lambda text: text.replace("  workflow_call:\n", "", 1),
@@ -1672,6 +1717,39 @@ class PackageContractTests(unittest.TestCase):
         self.assertIn(swiftpm, smoke)
         self.assertLess(smoke.index(pods), smoke.index(swiftpm))
 
+    def test_flutter_exact_archive_runs_remaining_platform_consumers(self) -> None:
+        workflow = (WORKFLOW_ROOT / "flutter-platforms.yml").read_text(
+            encoding="utf-8"
+        )
+        cases = {
+            "package-android-smoke:": (
+                'android_smoke.py --archive "$FLUTTER_ARCHIVE" '
+                "--skip-native-build --device emulator-5554",
+                "target: google_apis_ps16k",
+            ),
+            "package-windows-smoke:": (
+                'package_smoke.py --archive "$env:FLUTTER_ARCHIVE" '
+                "--platform windows --device windows --skip-native-build",
+                "runs-on: windows-2022",
+            ),
+            "package-macos-cocoapods-smoke:": (
+                'package_smoke.py --archive "$FLUTTER_ARCHIVE" '
+                "--platform macos --device macos --skip-native-build",
+                "runs-on: macos-14",
+            ),
+        }
+
+        for marker, (command, platform_gate) in cases.items():
+            with self.subTest(job=marker):
+                smoke = indented_block(workflow, marker)
+                self.assertIn("needs: package", smoke)
+                self.assertIn("name: mdstream-flutter-package", smoke)
+                self.assertIn(command, smoke)
+                self.assertIn(platform_gate, smoke)
+                self.assertNotIn("dtolnay/rust-toolchain", smoke)
+                self.assertNotIn("build_native.py", smoke)
+                self.assertNotIn("--skip-archive", smoke)
+
     def test_android_16k_emulator_uses_an_action_that_supports_ps16k(self) -> None:
         workflow = (WORKFLOW_ROOT / "flutter-platforms.yml").read_text(
             encoding="utf-8"
@@ -1864,6 +1942,215 @@ class RegistryVersionCheckTests(unittest.TestCase):
             )
         self.assertIs(transport_status, check_registry_version.RegistryStatus.ERROR)
         self.assertIs(forbidden_status, check_registry_version.RegistryStatus.ERROR)
+
+    def test_workspace_audit_uses_the_package_contract_inventory(self) -> None:
+        targets = check_registry_version.workspace_registry_targets(ROOT, "0.4.0")
+        rust_count = len(verify_packages.RUST_PUBLISH_ORDER)
+        self.assertEqual(
+            [target.package for target in targets[:rust_count]],
+            list(verify_packages.RUST_PUBLISH_ORDER),
+        )
+        self.assertTrue(
+            all(target.registry == "crates.io" for target in targets[:rust_count])
+        )
+        self.assertEqual(
+            [(target.registry, target.package, target.version) for target in targets[rust_count:]],
+            [
+                ("npm", "@mdstream/core", "0.4.0"),
+                ("pub.dev", "mdstream", "0.4.0"),
+                ("pub.dev", "mdstream_flutter", "0.4.0"),
+            ],
+        )
+
+    def test_workspace_audit_handles_shallow_local_tags_and_remote_presence(self) -> None:
+        targets = (
+            check_registry_version.RegistryTarget("npm", "@mdstream/core", "0.4.0"),
+        )
+
+        def registry_runner(
+            command: tuple[str, ...], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(command, 0, "404", "")
+
+        def git_runner(
+            command: tuple[str, ...], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            if command[1] == "show-ref":
+                return subprocess.CompletedProcess(command, 1, "", "")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "0123456789abcdef\trefs/tags/v0.4.0\n",
+                "",
+            )
+
+        with patch.object(
+            check_registry_version,
+            "workspace_registry_targets",
+            return_value=targets,
+        ):
+            report = check_registry_version.audit_workspace(
+                "0.4.0",
+                root=ROOT,
+                remote="origin",
+                registry_runner=registry_runner,
+                git_runner=git_runner,
+            )
+
+        evidence = {entry.tag: entry for entry in report.tags}
+        self.assertTrue(report.workspace_verified)
+        self.assertFalse(report.indeterminate)
+        self.assertEqual(evidence["0.4.0"].local, check_registry_version.RegistryStatus.MISSING)
+        self.assertEqual(evidence["0.4.0"].remote, check_registry_version.RegistryStatus.MISSING)
+        self.assertEqual(evidence["v0.4.0"].local, check_registry_version.RegistryStatus.MISSING)
+        self.assertEqual(evidence["v0.4.0"].remote, check_registry_version.RegistryStatus.EXISTS)
+
+    def test_workspace_audit_records_local_tag_probe_errors_without_blocking_remote_evidence(self) -> None:
+        targets = (
+            check_registry_version.RegistryTarget("npm", "@mdstream/core", "0.4.0"),
+        )
+
+        def registry_runner(
+            command: tuple[str, ...], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(command, 0, "404", "")
+
+        def git_runner(
+            command: tuple[str, ...], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            if command[1] == "show-ref":
+                return subprocess.CompletedProcess(command, 128, "", "local unavailable")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch.object(
+            check_registry_version,
+            "workspace_registry_targets",
+            return_value=targets,
+        ), redirect_stderr(io.StringIO()):
+            report = check_registry_version.audit_workspace(
+                "0.4.0",
+                root=ROOT,
+                remote="origin",
+                registry_runner=registry_runner,
+                git_runner=git_runner,
+            )
+
+        self.assertFalse(report.indeterminate)
+        self.assertEqual(
+            [entry.local for entry in report.tags],
+            [
+                check_registry_version.RegistryStatus.ERROR,
+                check_registry_version.RegistryStatus.ERROR,
+            ],
+        )
+        self.assertEqual(
+            [entry.remote for entry in report.tags],
+            [
+                check_registry_version.RegistryStatus.MISSING,
+                check_registry_version.RegistryStatus.MISSING,
+            ],
+        )
+
+    def test_workspace_audit_completes_every_probe_after_a_remote_failure(self) -> None:
+        targets = (
+            check_registry_version.RegistryTarget("crates.io", "mdstream", "0.4.0"),
+            check_registry_version.RegistryTarget("pub.dev", "mdstream", "0.4.0"),
+        )
+        registry_calls: list[tuple[str, ...]] = []
+        git_calls: list[tuple[str, ...]] = []
+
+        def registry_runner(
+            command: tuple[str, ...], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            registry_calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "404", "")
+
+        def git_runner(
+            command: tuple[str, ...], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            git_calls.append(command)
+            if command[1] == "show-ref":
+                return subprocess.CompletedProcess(command, 1, "", "")
+            return subprocess.CompletedProcess(command, 128, "", "remote unavailable")
+
+        with patch.object(
+            check_registry_version,
+            "workspace_registry_targets",
+            return_value=targets,
+        ), redirect_stderr(io.StringIO()):
+            report = check_registry_version.audit_workspace(
+                "0.4.0",
+                root=ROOT,
+                remote="origin",
+                registry_runner=registry_runner,
+                git_runner=git_runner,
+            )
+
+        self.assertTrue(report.indeterminate)
+        self.assertEqual(len(report.packages), len(targets))
+        self.assertEqual(len(registry_calls), len(targets))
+        self.assertEqual(sum(command[1] == "show-ref" for command in git_calls), 2)
+        self.assertEqual(sum(command[1] == "ls-remote" for command in git_calls), 1)
+        self.assertEqual(
+            [entry["package"] for entry in report.as_json()["packages"]],
+            ["mdstream", "mdstream"],
+        )
+        self.assertEqual(
+            [entry["remote"] for entry in report.as_json()["tags"]],
+            ["indeterminate", "indeterminate"],
+        )
+
+    def test_workspace_audit_cli_emits_one_complete_json_report(self) -> None:
+        report = check_registry_version.WorkspaceAuditReport(
+            version="0.4.0",
+            workspace_verified=True,
+            packages=((
+                check_registry_version.RegistryTarget(
+                    "npm", "@mdstream/core", "0.4.0"
+                ),
+                check_registry_version.RegistryStatus.MISSING,
+            ),),
+            tags=(
+                check_registry_version.TagEvidence(
+                    "0.4.0",
+                    check_registry_version.RegistryStatus.MISSING,
+                    check_registry_version.RegistryStatus.MISSING,
+                ),
+                check_registry_version.TagEvidence(
+                    "v0.4.0",
+                    check_registry_version.RegistryStatus.MISSING,
+                    check_registry_version.RegistryStatus.MISSING,
+                ),
+            ),
+        )
+        output = io.StringIO()
+        with patch.object(
+            check_registry_version,
+            "audit_workspace",
+            return_value=report,
+        ), redirect_stdout(output):
+            status = check_registry_version.main(
+                ["audit-workspace", "0.4.0", "--root", ".", "--remote", "origin"]
+            )
+
+        self.assertEqual(status, 0)
+        parsed = json.loads(output.getvalue())
+        self.assertEqual(parsed["schema"], "mdstream.release-version-audit/1")
+        self.assertEqual(parsed["workspace"], "verified")
+        self.assertEqual(parsed["packages"][0]["status"], "missing")
+        self.assertEqual([entry["tag"] for entry in parsed["tags"]], ["0.4.0", "v0.4.0"])
+
+    def test_legacy_registry_cli_keeps_tri_state_exit_codes(self) -> None:
+        for status in check_registry_version.RegistryStatus:
+            with self.subTest(status=status), patch.object(
+                check_registry_version,
+                "check_registry_version",
+                return_value=status,
+            ), redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    check_registry_version.main(["npm", "@mdstream/core", "0.4.0"]),
+                    int(status),
+                )
 
 
 def package(

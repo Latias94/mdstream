@@ -26,6 +26,7 @@ Version 0.4 rebuilds mdstream as a headless, cross-framework streaming rich-cont
 - Removed lossy canonical-input behavior from `mdstream-tokio`: `BackpressurePolicy::DropNew` and `SendOutcome::Dropped` no longer exist, `DeltaSender::set_policy` is now async and fallible, and buffered senders must be flushed or recovered with `take_pending` before they are dropped.
 - Replaced public-field `CoalesceOptions` literals with bounded constructors and modifiers, removed `CoalescePreset`, added a hard `max_pending_chunks` boundary budget, and made receiver/sender statistics report deterministic input, scan, copy, pending-byte, pending-constituent, and logical boundary-record work.
 - Made `DeltaSender::new` require explicit local byte and constituent limits; threshold-crossing input remains caller-owned until prior pending data flushes, and a closed-channel error never accepts the new borrowed delta.
+- Replaced optional single-result TypeScript and Dart batching with engine-owned exclusive leases, ordered result collections, byte plus constituent bounds, explicit pending inspection/retry/transfer/discard, and composite partial-failure evidence. Direct engine mutation remains blocked until an empty batcher is explicitly released.
 
 #### Tokio semantic-join value gate
 
@@ -38,6 +39,41 @@ The reproducible Rust 1.88 workload evaluator selected constituent-first canonic
 | Unicode | 1 / 2,637 / 22 | 5 / 6,421 / 0 | 22 | Constituent-first |
 | CRLF | 1 / 5,465 / 19 | 5 / 5,908 / 0 | 17 | Constituent-first |
 | Golden AI Stream | 1 / 7,810 / 372 | 9 / 13,444 / 0 | 113 | Constituent-first |
+
+#### TypeScript and Dart semantic-join value gates
+
+The reproducible TypeScript and Dart evaluators independently selected constituent-first canonical appends inside one coherent host operation. Both bindings produced the same deterministic measurements and equal final source, lifecycle, roots, nodes, resources, and stable Content IR. Joined-first improved append attempts and encoded result bytes, but copied every source byte while constituent-first copied none, so it failed the per-workload 20% copy-work ceiling and was deleted from both production paths.
+
+| Workload | Joined attempts / encoded bytes / scan bytes / copy bytes | Constituent attempts / encoded bytes / scan bytes / copy bytes | TypeScript decision | Dart decision |
+| --- | ---: | ---: | --- | --- |
+| One-byte | 1 / 5,693 / 35 / 35 | 35 / 55,320 / 35 / 0 | Constituent-first | Constituent-first |
+| Bursty | 1 / 5,695 / 45 / 45 | 5 / 10,289 / 45 / 0 | Constituent-first | Constituent-first |
+| Unicode | 1 / 4,341 / 22 / 22 | 5 / 11,136 / 22 / 0 | Constituent-first | Constituent-first |
+| CRLF | 1 / 7,503 / 19 / 19 | 5 / 10,541 / 19 / 0 | Constituent-first | Constituent-first |
+| Golden AI Stream | 1 / 10,016 / 372 / 372 | 9 / 22,114 / 372 / 0 | Constituent-first | Constituent-first |
+
+#### 0.4 version-freeze evidence
+
+On 2026-07-23, `python3 scripts/check-registry-version.py audit-workspace 0.4.0 --root . --remote origin` completed with the repository's release-network configuration. The package contract and all registry and tag probes were definitive:
+
+| Evidence | Result |
+| --- | --- |
+| `mdstream-protocol`, `mdstream-processors`, `mdstream`, `mdstream-bindings-core`, `mdstream-tokio`, `mdstream-ffi`, `mdstream-wasm`, and `mdstream-merman` on crates.io | Missing |
+| `@mdstream/core` on npm; `mdstream` and `mdstream_flutter` on pub.dev | Missing |
+| Local and `origin` tags `0.4.0` and `v0.4.0` | Missing |
+
+Decision: retain `0.4.0`; no published package or tag requires a further version advance before freezing the 0.4 schemas, fixtures, and migration table.
+
+#### 0.4 pre-release batching migration
+
+| Removed or changed 0.4 pre-release surface | Replacement |
+| --- | --- |
+| TypeScript `engine.createBatcher(maxBatchBytes)` | Call `engine.createBatcher({ maxBatchBytes, maxPendingChunks })`. The returned public interface cannot be constructed independently of its engine lease. |
+| Dart public generic `LosslessInputBatcher<Result>` | Call `engine.createBatcher(maxBatchBytes: ..., maxPendingChunks: ...)`; the package-internal queue cannot bypass engine ownership. |
+| Nullable `flush()` / lifecycle result | Consume the ordered result collection returned by `push`, `flush`, `retryPending`, `finish`, `reset`, and batched recovery. Empty work returns an empty collection. |
+| Implicit batch abandonment during finish, reset, recovery, or close | Resolve retained input with `retryPending()`, `takePending()`, or explicit `discardPending()`, then call `release()`. Direct engine mutation remains rejected for the full lease lifetime. |
+| `BatchOperationError(completedResults, cause)` and the equivalent Dart exception | Read `completedResults`, `cause`, `operation`, immutable `pending`, and push-only `newInputAccepted` before choosing the next ownership action. |
+| `BatchMetrics.inputChunks`, `forwardedBytes`, `batchCount`, and append-call aliases | Use the aligned input/append attempt, successful append, committed/pending byte, pending constituent, boundary metadata, scan/copy/replay, output byte, and published-result counters. |
 
 ### Migration
 

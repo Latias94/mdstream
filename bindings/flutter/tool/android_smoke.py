@@ -14,7 +14,11 @@ import zipfile
 from pathlib import Path
 
 from build_native import PLUGIN_ROOT, REPOSITORY_ROOT
-from package_smoke import PackageSmokeError
+from package_smoke import (
+    PackageSmokeError,
+    plugin_source_context,
+    validate_package_archive,
+)
 
 
 EXPECTED_APK_LIBRARIES = {
@@ -258,7 +262,12 @@ def _run_on_device(apk: Path, device: str) -> None:
                 )
 
 
-def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
+def _build_and_inspect_apk(
+    keep_temporary: bool,
+    device: str | None,
+    *,
+    plugin_source: Path = PLUGIN_ROOT,
+) -> None:
     temporary = Path(tempfile.mkdtemp(prefix="mdstream-flutter-android-apk-"))
     try:
         _run(
@@ -273,7 +282,7 @@ def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
                 "io.mdstream.smoke",
                 str(temporary),
             ],
-            cwd=PLUGIN_ROOT,
+            cwd=plugin_source,
             phase="flutter-create",
         )
         _configure_uncompressed_native_libraries(temporary)
@@ -282,7 +291,7 @@ def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
                 "flutter",
                 "pub",
                 "add",
-                f"mdstream_flutter:{{path: {PLUGIN_ROOT.as_posix()}}}",
+                f"mdstream_flutter:{{path: {plugin_source.as_posix()}}}",
                 f"override:mdstream:{{path: {(REPOSITORY_ROOT / 'bindings' / 'dart').as_posix()}}}",
             ],
             cwd=temporary,
@@ -338,6 +347,11 @@ def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--archive",
+        type=Path,
+        help="Use this exact publish archive as the plugin source",
+    )
     parser.add_argument("--device", default="emulator-5554")
     parser.add_argument("--skip-native-build", action="store_true")
     parser.add_argument("--build-only", action="store_true")
@@ -348,6 +362,11 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     try:
+        if args.archive is not None and not args.skip_native_build:
+            raise PackageSmokeError(
+                "--archive requires --skip-native-build; exact archive consumers "
+                "must not rebuild native libraries"
+            )
         if not args.skip_native_build:
             _run(
                 [
@@ -358,10 +377,14 @@ def main() -> int:
                 cwd=REPOSITORY_ROOT,
                 phase="native-build",
             )
-        _build_and_inspect_apk(
-            args.keep_temporary,
-            None if args.build_only else args.device,
-        )
+        if args.archive is not None:
+            validate_package_archive(args.archive)
+        with plugin_source_context(args.archive) as plugin_source:
+            _build_and_inspect_apk(
+                args.keep_temporary,
+                None if args.build_only else args.device,
+                plugin_source=plugin_source,
+            )
     except PackageSmokeError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

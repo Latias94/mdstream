@@ -14,8 +14,10 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Iterator
 
 from build_native import (
     HEADER_PATH,
@@ -483,6 +485,36 @@ def _extract_archive(archive: Path, destination: Path) -> None:
         extract_archive(archive, destination)
     except ArchivePolicyError as error:
         raise PackageSmokeError(str(error)) from error
+
+
+@contextmanager
+def plugin_source_context(archive: Path | None) -> Iterator[Path]:
+    """Yield repository source or a safely extracted, short-lived archive tree."""
+
+    if archive is None:
+        yield PLUGIN_ROOT
+        return
+    with tempfile.TemporaryDirectory(
+        prefix="mdstream-flutter-archive-source-"
+    ) as temporary:
+        extracted = Path(temporary) / "plugin"
+        _extract_archive(archive, extracted)
+        yield extracted
+
+
+def validate_package_archive(
+    archive: Path, *, require_all_platforms: bool = False
+) -> ArchiveReport:
+    budget = _load_budget()
+    return inspect_package_archive(
+        archive,
+        forbidden_terms=_forbidden_dependencies(budget),
+        native_ceiling_bytes=_budget_ceiling(budget, "flutter_native_library"),
+        increment_ceiling_bytes=_budget_ceiling(
+            budget, "platform_package_increment"
+        ),
+        require_all_platforms=require_all_platforms,
+    )
 
 
 def _restore_macos_frameworks(plugin_source: Path) -> None:
@@ -1162,6 +1194,12 @@ def _host_platform() -> str:
 
 def main() -> int:
     args = _parse_args()
+    if args.archive is not None and not args.skip_native_build:
+        print(
+            "error: --archive requires --skip-native-build to preserve exact producer bytes",
+            file=sys.stderr,
+        )
+        return 1
     if args.swiftpm:
         try:
             if args.platform not in SWIFTPM_PLATFORMS:
@@ -1194,16 +1232,12 @@ def main() -> int:
                         sort_keys=True,
                     )
                 )
-                with tempfile.TemporaryDirectory(
-                    prefix="mdstream-flutter-swiftpm-archive-"
-                ) as temporary:
-                    extracted = Path(temporary) / "plugin"
-                    _extract_archive(args.archive, extracted)
+                with plugin_source_context(args.archive) as plugin_source:
                     run_swiftpm_smoke(
                         platform_name=args.platform,
                         device=args.device,
                         keep_temporary=args.keep_temporary,
-                        plugin_source=extracted,
+                        plugin_source=plugin_source,
                     )
                 return 0
             if not args.skip_native_build:
@@ -1246,8 +1280,9 @@ def main() -> int:
                 [sys.executable, str(Path(__file__).with_name("build_native.py")), build_platform],
                 cwd=REPOSITORY_ROOT,
             )
-        _run([_flutter_tool(), "pub", "get"], cwd=REPOSITORY_ROOT / "bindings")
-        validate_dependency_graph(_dependency_graph(), forbidden)
+        if archive is None:
+            _run([_flutter_tool(), "pub", "get"], cwd=REPOSITORY_ROOT / "bindings")
+            validate_dependency_graph(_dependency_graph(), forbidden)
 
         if archive is None and not args.skip_archive:
             archive = default_archive
@@ -1285,23 +1320,11 @@ def main() -> int:
 
         if platform_name is not None and not args.skip_runtime:
             device = args.device or platform_name
-            if archive is not None:
-                with tempfile.TemporaryDirectory(
-                    prefix="mdstream-flutter-archive-"
-                ) as temporary:
-                    extracted = Path(temporary) / "plugin"
-                    _extract_archive(archive, extracted)
-                    run_runtime_smoke(
-                        platform_name=platform_name,
-                        device=device,
-                        plugin_source=extracted,
-                        keep_temporary=args.keep_temporary,
-                    )
-            else:
+            with plugin_source_context(archive) as plugin_source:
                 run_runtime_smoke(
                     platform_name=platform_name,
                     device=device,
-                    plugin_source=PLUGIN_ROOT,
+                    plugin_source=plugin_source,
                     keep_temporary=args.keep_temporary,
                 )
     except PackageSmokeError as error:
