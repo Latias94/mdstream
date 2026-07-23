@@ -5,7 +5,7 @@ use mdstream_protocol::{
     SourceDelta,
 };
 
-use crate::compiler::CompilerError;
+use crate::{AppendLimitKind, SplitSafety, compiler::CompilerError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineError {
@@ -14,8 +14,8 @@ pub enum EngineError {
     SequenceOverflow,
     CursorOverflow,
     MetricsOverflow(&'static str),
-    LimitExceeded {
-        field: &'static str,
+    AppendLimitExceeded {
+        kind: AppendLimitKind,
         limit: usize,
         actual: usize,
     },
@@ -32,13 +32,14 @@ impl fmt::Display for EngineError {
             Self::SequenceOverflow => formatter.write_str("stream engine sequence overflowed"),
             Self::CursorOverflow => formatter.write_str("stream engine source cursor overflowed"),
             Self::MetricsOverflow(field) => write!(formatter, "stream engine {field} overflowed"),
-            Self::LimitExceeded {
-                field,
+            Self::AppendLimitExceeded {
+                kind,
                 limit,
                 actual,
             } => write!(
                 formatter,
-                "stream engine {field} {actual} exceeds the configured limit of {limit}"
+                "stream engine {} {actual} exceeds the configured limit of {limit}",
+                kind.field()
             ),
             Self::Compiler(error) => {
                 write!(formatter, "stream content compilation failed: {error}")
@@ -55,6 +56,63 @@ impl fmt::Display for EngineError {
 }
 
 impl std::error::Error for EngineError {}
+
+impl EngineError {
+    /// Returns the only failures for which original chunk boundaries can be
+    /// replayed without changing the canonical document contract.
+    pub const fn split_safety(&self) -> SplitSafety {
+        match self {
+            Self::AppendLimitExceeded { .. } => SplitSafety::RetryAtOriginalBoundaries,
+            Self::Compiler(error) => error.split_safety(),
+            Self::Protocol(error) => protocol_split_safety(error),
+            Self::Finished
+            | Self::EpochOverflow
+            | Self::SequenceOverflow
+            | Self::CursorOverflow
+            | Self::MetricsOverflow(_)
+            | Self::InternalInvariant(_) => SplitSafety::NotSafe,
+        }
+    }
+
+    pub const fn resource_limit(&self) -> Option<(&'static str, usize, usize)> {
+        match self {
+            Self::AppendLimitExceeded {
+                kind,
+                limit,
+                actual,
+            } => Some((kind.field(), *limit, *actual)),
+            Self::Compiler(error) => error.resource_limit(),
+            _ => None,
+        }
+    }
+}
+
+const fn protocol_split_safety(error: &ProtocolError) -> SplitSafety {
+    match error {
+        ProtocolError::UnsupportedSchema(_)
+        | ProtocolError::InvalidChange(_)
+        | ProtocolError::InvalidSnapshot(_)
+        | ProtocolError::InvalidRange { .. }
+        | ProtocolError::CursorOverflow
+        | ProtocolError::MetadataOverflow
+        | ProtocolError::SequenceOverflow
+        | ProtocolError::SourceTooLarge { .. }
+        | ProtocolError::TooManyNodes { .. }
+        | ProtocolError::TooManyOperations { .. }
+        | ProtocolError::ValueTooLarge { .. }
+        | ProtocolError::MissingNode(_)
+        | ProtocolError::MissingResource(_)
+        | ProtocolError::DuplicateNode(_)
+        | ProtocolError::DuplicateResource(_)
+        | ProtocolError::VersionMismatch(_)
+        | ProtocolError::ResourceVersionMismatch(_)
+        | ProtocolError::IllegalLifecycle(_)
+        | ProtocolError::NeedsSnapshot
+        | ProtocolError::SnapshotNotAllowed
+        | ProtocolError::InvalidEpochStart { .. }
+        | ProtocolError::StaleSnapshot { .. } => SplitSafety::NotSafe,
+    }
+}
 
 impl From<CompilerError> for EngineError {
     fn from(error: CompilerError) -> Self {

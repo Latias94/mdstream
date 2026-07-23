@@ -22,9 +22,9 @@ pub use errors::{MdstreamCallResult, MdstreamEngineResult, MdstreamReducerResult
 pub use handles::{
     MdstreamEngine, MdstreamProcessorSchedulerLimits, MdstreamReducer, mdstream_engine_append,
     mdstream_engine_execute, mdstream_engine_free, mdstream_engine_new,
-    mdstream_reducer_apply_change, mdstream_reducer_execute, mdstream_reducer_free,
-    mdstream_reducer_new, mdstream_reducer_processor_scheduler_limits,
-    mdstream_reducer_recover_snapshot,
+    mdstream_engine_raw_append_byte_ceiling, mdstream_reducer_apply_change,
+    mdstream_reducer_execute, mdstream_reducer_free, mdstream_reducer_new,
+    mdstream_reducer_processor_scheduler_limits, mdstream_reducer_recover_snapshot,
 };
 
 pub const MDSTREAM_ABI_VERSION: u32 = 1;

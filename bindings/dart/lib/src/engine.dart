@@ -201,7 +201,15 @@ final class MdstreamEngine {
 
   /// Appends one UTF-8 source chunk and applies every emitted change.
   EngineResult append(String chunk) {
-    utf8ByteLength(chunk);
+    final ceiling = _engine.rawAppendByteCeiling;
+    if (ceiling != null && !utf8ByteLengthAtMost(chunk, ceiling)) {
+      throw MdstreamException(
+        'raw append input exceeds the current native source admission ceiling',
+        status: BindingStatus.resourceLimitExceeded.value,
+        statusName: BindingStatus.resourceLimitExceeded.statusName,
+        detailCode: 'bindings.resource_limit',
+      );
+    }
     _commands += 1;
     return _consume(_engine.append(Uint8List.fromList(utf8.encode(chunk))));
   }

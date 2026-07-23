@@ -22,6 +22,7 @@ export interface WasmOutput {
 
 export interface WasmEngineSession {
   append(chunk: string): WasmOutput;
+  rawAppendByteCeiling(): number;
   finish(): WasmOutput;
   reset(): WasmOutput;
   snapshot(): WasmOutput;
@@ -233,6 +234,13 @@ export async function loadWasmBindings(
     throw new WasmContractError(
       `unsupported mdstream transition schema ${transitionSchema}; expected ${TRANSITION_SCHEMA}`,
       transitionSchema,
+    );
+  }
+  const enginePrototype = asModuleRecord(candidate.MdstreamEngineSession.prototype);
+  if (typeof enginePrototype.rawAppendByteCeiling !== "function") {
+    throw new WasmContractError(
+      "mdstream WASM engine is missing required rawAppendByteCeiling capability",
+      bindingSchema,
     );
   }
   const reducerPrototype = asModuleRecord(candidate.MdstreamReducerSession.prototype);

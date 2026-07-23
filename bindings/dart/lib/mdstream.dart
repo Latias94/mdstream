@@ -6,7 +6,8 @@ export 'src/batching.dart'
         BatchMetrics,
         BatchOperationException,
         LosslessInputBatcher,
-        utf8ByteLength;
+        utf8ByteLength,
+        utf8ByteLengthAtMost;
 export 'src/engine.dart'
     show
         BatchedRecoverySnapshot,

@@ -162,6 +162,10 @@ describe("framework-neutral transition feed", () => {
     let reducerUpdates = 0;
     let materializedViews = 0;
     class EngineSession {
+      rawAppendByteCeiling(): number {
+        return Number.MAX_SAFE_INTEGER;
+      }
+
       append(): WasmOutput {
         return fakeOutput([
           [BindingPayloadKind.Change, new Uint8Array([1])],

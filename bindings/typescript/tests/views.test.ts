@@ -35,6 +35,17 @@ const fixture = JSON.parse(
 const encoder = new TextEncoder();
 
 describe("typed Content IR binding views", () => {
+  it("preserves Rust split safety and treats unknown wire values conservatively", () => {
+    expect(MdstreamError.from({
+      status: 11,
+      status_name: "MDSTREAM_RESOURCE_LIMIT_EXCEEDED",
+      detail_code: "engine.change_bytes",
+      message: "append limit exceeded",
+      split_safety: "retry_at_original_boundaries",
+    }).splitSafety).toBe("retry_at_original_boundaries");
+    expect(MdstreamError.from({ split_safety: "future_value" }).splitSafety).toBe("not_safe");
+  });
+
   it("decodes every Rust ContentKind and SemanticResourceKind variant", () => {
     const contentKinds = fixture.content_kinds.map(decodeContent);
     const resourceKinds = fixture.semantic_resource_kinds.map(decodeResource);

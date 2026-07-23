@@ -10,13 +10,14 @@ use mdstream_ffi::{
     mdstream_allocation_metrics_struct_size, mdstream_binding_options_schema,
     mdstream_binding_schema, mdstream_buffer_free, mdstream_buffer_struct_size,
     mdstream_call_result_struct_size, mdstream_engine_append, mdstream_engine_execute,
-    mdstream_engine_free, mdstream_engine_new, mdstream_engine_result_struct_size,
-    mdstream_output_free, mdstream_output_len, mdstream_output_remaining, mdstream_output_take,
-    mdstream_package_version, mdstream_payload_result_struct_size,
-    mdstream_processor_scheduler_limits_struct_size, mdstream_reducer_apply_change,
-    mdstream_reducer_execute, mdstream_reducer_free, mdstream_reducer_new,
-    mdstream_reducer_processor_scheduler_limits, mdstream_reducer_recover_snapshot,
-    mdstream_reducer_result_struct_size, mdstream_transition_schema,
+    mdstream_engine_free, mdstream_engine_new, mdstream_engine_raw_append_byte_ceiling,
+    mdstream_engine_result_struct_size, mdstream_output_free, mdstream_output_len,
+    mdstream_output_remaining, mdstream_output_take, mdstream_package_version,
+    mdstream_payload_result_struct_size, mdstream_processor_scheduler_limits_struct_size,
+    mdstream_reducer_apply_change, mdstream_reducer_execute, mdstream_reducer_free,
+    mdstream_reducer_new, mdstream_reducer_processor_scheduler_limits,
+    mdstream_reducer_recover_snapshot, mdstream_reducer_result_struct_size,
+    mdstream_transition_schema,
 };
 use mdstream_protocol::{
     ChangeId, ChangeSet, Epoch, ProtocolLimits, SourceCursor, SourceDelta, TransitionFacts,
@@ -341,10 +342,15 @@ fn c_abi_metadata_errors_outputs_and_stateful_roundtrip_match_the_frozen_contrac
 
     let bounded_options = br#"{
         "schema":"mdstream.bindings-options/0.4",
+        "protocol":{"max_source_bytes":"2"},
         "wire":{"max_command_bytes":"4"}
     }"#;
     let bounded = unsafe { mdstream_engine_new(bounded_options.as_ptr(), bounded_options.len()) };
     assert_eq!(bounded.status, BindingStatus::Ok.code());
+    assert_eq!(
+        unsafe { mdstream_engine_raw_append_byte_ceiling(bounded.engine) },
+        4
+    );
     let oversized = unsafe { mdstream_engine_append(bounded.engine, b"12345".as_ptr(), 5) };
     assert_eq!(oversized.status, BindingStatus::ResourceLimit.code());
     assert_error(
@@ -354,6 +360,10 @@ fn c_abi_metadata_errors_outputs_and_stateful_roundtrip_match_the_frozen_contrac
     );
     let retry = unsafe { mdstream_engine_append(bounded.engine, b"ok".as_ptr(), 2) };
     assert_eq!(retry.status, BindingStatus::Ok.code());
+    assert_eq!(
+        unsafe { mdstream_engine_raw_append_byte_ceiling(bounded.engine) },
+        0
+    );
     assert!(unsafe { mdstream_output_len(retry.output) } > 0);
     let first = unsafe { mdstream_output_take(retry.output, 0) };
     assert_eq!(first.status, BindingStatus::Ok.code());

@@ -208,6 +208,22 @@ int main(void) {
     }
     mdstream_reducer_free(custom.reducer);
 
+    static const uint8_t invalid_utf8[] = {0xff};
+    MdstreamCallResult error = mdstream_engine_append(
+        engine.engine,
+        invalid_utf8,
+        sizeof(invalid_utf8)
+    );
+    if (
+        error.status != MDSTREAM_UTF8_ERROR ||
+        error.output != NULL ||
+        !contains(error.error, "MDSTREAM_UTF8_ERROR")
+    ) {
+        mdstream_buffer_free(error.error);
+        return 30;
+    }
+    mdstream_buffer_free(error.error);
+
     int rc = apply_changes(
         reducer.reducer,
         mdstream_engine_append(engine.engine, source, sizeof(source) - 1)
@@ -227,21 +243,21 @@ int main(void) {
         return rc;
     }
 
-    static const uint8_t invalid_utf8[] = {0xff};
-    MdstreamCallResult error = mdstream_engine_append(
+    MdstreamCallResult terminal = mdstream_engine_append(
         engine.engine,
         invalid_utf8,
         sizeof(invalid_utf8)
     );
     if (
-        error.status != MDSTREAM_UTF8_ERROR ||
-        error.output != NULL ||
-        !contains(error.error, "MDSTREAM_UTF8_ERROR")
+        terminal.status != MDSTREAM_TERMINAL ||
+        terminal.output != NULL ||
+        !contains(terminal.error, "MDSTREAM_TERMINAL") ||
+        mdstream_engine_raw_append_byte_ceiling(engine.engine) != SIZE_MAX
     ) {
-        mdstream_buffer_free(error.error);
-        return 30;
+        mdstream_buffer_free(terminal.error);
+        return 32;
     }
-    mdstream_buffer_free(error.error);
+    mdstream_buffer_free(terminal.error);
 
     mdstream_reducer_free(reducer.reducer);
     mdstream_engine_free(engine.engine);

@@ -22,8 +22,10 @@ panic-containment contract and is rejected at compile time.
   result-structure sizes before creating sessions.
 - `mdstream_engine_append`, `mdstream_reducer_apply_change`, and
   `mdstream_reducer_recover_snapshot` are unwrapped byte hot paths.
-- `mdstream_engine_execute` carries finish, reset, snapshot, and cold append
-  commands using `mdstream.bindings/0.4`.
+- `mdstream_engine_raw_append_byte_ceiling` exposes the engine-owned,
+  source-aware pre-decode admission ceiling for native hosts.
+- `mdstream_engine_execute` carries only finish, reset, and snapshot commands
+  using `mdstream.bindings/0.4`; streaming content has one append path.
 - `mdstream_reducer_execute` carries snapshot, view, and processor lifecycle
   commands using the same versioned schema.
 - `mdstream_reducer_processor_scheduler_limits` exposes the effective native

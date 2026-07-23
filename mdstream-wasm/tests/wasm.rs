@@ -667,3 +667,24 @@ fn invalid_options_and_oversized_input_fail_without_engine_mutation() {
     let retry = engine.append("ok").unwrap();
     assert_eq!(retry.count(MdstreamPayloadKind::Change), 1);
 }
+
+#[wasm_bindgen_test]
+fn raw_admission_ceiling_tracks_newline_normalization_without_mutation() {
+    let options = format!(
+        r#"{{"schema":"{}","protocol":{{"max_source_bytes":"2"}}}}"#,
+        binding_options_schema()
+    );
+    let mut engine = MdstreamEngineSession::new(Some(options)).unwrap();
+
+    assert_eq!(engine.raw_append_byte_ceiling(), 4);
+    assert!(engine.append("\r").unwrap().remaining() == 0);
+    assert_eq!(engine.raw_append_byte_ceiling(), 3);
+
+    let error = engine.append("1234").unwrap_err();
+    assert_eq!(error_status(&error), 11.0);
+    assert!(engine.snapshot().unwrap().remaining() == 0);
+
+    let resolved = engine.append("\n").unwrap();
+    assert_eq!(resolved.count(MdstreamPayloadKind::Change), 1);
+    assert_eq!(engine.raw_append_byte_ceiling(), 2);
+}

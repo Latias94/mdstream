@@ -93,7 +93,9 @@ impl fmt::Display for ReconcileError {
             Self::OperationLimit(error) => write!(
                 formatter,
                 "{} {} exceeds the configured limit of {}",
-                error.field, error.actual, error.limit
+                error.kind.field(),
+                error.actual,
+                error.limit
             ),
             Self::InvalidPayload(message) => {
                 write!(formatter, "candidate payload is invalid: {message}")

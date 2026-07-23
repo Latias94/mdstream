@@ -1,6 +1,7 @@
 use mdstream_protocol::{ChangePayloadCost, ChangeSet};
 
 use super::{EngineError, EngineLimits};
+use crate::AppendLimitKind;
 
 const CHANGE_ENVELOPE_BYTES: usize = 512;
 const OPERATION_ENVELOPE_BYTES: usize = 128;
@@ -32,7 +33,7 @@ impl EngineWorkMetrics {
             .and_then(|bytes| bytes.checked_add(suffix_bytes))
             .ok_or(EngineError::MetricsOverflow("transaction bytes"))?;
         check_limit(
-            "engine.transaction_bytes",
+            AppendLimitKind::TransactionBytes,
             engine_limits.max_transaction_bytes,
             transaction_bytes,
         )
@@ -62,7 +63,7 @@ impl EngineWorkMetrics {
             .and_then(|bytes| bytes.checked_add(structural_bytes))
             .ok_or(EngineError::MetricsOverflow("change bytes"))?;
         check_limit(
-            "engine.change_bytes",
+            AppendLimitKind::ChangeBytes,
             engine_limits.max_change_bytes,
             change_bytes,
         )?;
@@ -75,7 +76,7 @@ impl EngineWorkMetrics {
             .and_then(|bytes| bytes.checked_add(change.source().suffix.len()))
             .ok_or(EngineError::MetricsOverflow("transaction bytes"))?;
         check_limit(
-            "engine.transaction_bytes",
+            AppendLimitKind::TransactionBytes,
             engine_limits.max_transaction_bytes,
             transaction_bytes,
         )?;
@@ -136,10 +137,10 @@ fn checked_add_usize(current: u64, value: usize, field: &'static str) -> Result<
         .ok_or(EngineError::MetricsOverflow(field))
 }
 
-fn check_limit(field: &'static str, limit: usize, actual: usize) -> Result<(), EngineError> {
+fn check_limit(kind: AppendLimitKind, limit: usize, actual: usize) -> Result<(), EngineError> {
     if actual > limit {
-        Err(EngineError::LimitExceeded {
-            field,
+        Err(EngineError::AppendLimitExceeded {
+            kind,
             limit,
             actual,
         })

@@ -6,10 +6,11 @@ use mdstream_protocol::{
 };
 
 use super::{identity::MaterializedForest, types::CompilerError};
+use crate::AppendLimitKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OperationLimitError {
-    pub(super) field: &'static str,
+    pub(super) kind: AppendLimitKind,
     pub(super) limit: usize,
     pub(super) actual: usize,
 }
@@ -34,7 +35,7 @@ impl OperationSink {
     ) -> Result<Self, OperationLimitError> {
         if reserved_tail > limits.max_operations {
             return Err(OperationLimitError {
-                field: "change.operations",
+                kind: AppendLimitKind::ChangeOperations,
                 limit: limits.max_operations,
                 actual: reserved_tail,
             });
@@ -59,7 +60,7 @@ impl OperationSink {
             .unwrap_or(usize::MAX);
         if actual > self.limits.max_operations {
             return Err(OperationLimitError {
-                field: "change.operations",
+                kind: AppendLimitKind::ChangeOperations,
                 limit: self.limits.max_operations,
                 actual,
             });
@@ -70,7 +71,7 @@ impl OperationSink {
             .saturating_add(cost.structural_items);
         if structural_items > self.limits.max_change_structural_items {
             return Err(OperationLimitError {
-                field: "change.structural_items",
+                kind: AppendLimitKind::ChangeStructuralItems,
                 limit: self.limits.max_change_structural_items,
                 actual: structural_items,
             });
@@ -81,7 +82,7 @@ impl OperationSink {
             .saturating_add(cost.metadata_bytes);
         if metadata_bytes > self.limits.max_change_metadata_bytes {
             return Err(OperationLimitError {
-                field: "change.metadata",
+                kind: AppendLimitKind::ChangeMetadataBytes,
                 limit: self.limits.max_change_metadata_bytes,
                 actual: metadata_bytes,
             });
@@ -299,7 +300,7 @@ mod tests {
                 ProjectionOp::FinishDocument
             }),
             Err(OperationLimitError {
-                field: "change.operations",
+                kind: AppendLimitKind::ChangeOperations,
                 limit: 1,
                 actual: 2,
             })
@@ -341,7 +342,7 @@ mod tests {
                 },
             ),
             Err(OperationLimitError {
-                field: "change.structural_items",
+                kind: AppendLimitKind::ChangeStructuralItems,
                 limit: 1,
                 actual: 2,
             })
@@ -367,7 +368,7 @@ mod tests {
                 },
             ),
             Err(OperationLimitError {
-                field: "change.metadata",
+                kind: AppendLimitKind::ChangeMetadataBytes,
                 limit: 1,
                 actual: 2,
             })

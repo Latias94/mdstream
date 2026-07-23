@@ -267,7 +267,7 @@ export class MdstreamEngine {
   append(chunk: string): EngineResult {
     return this.#rustStore.runDocumentOperation(() => {
       this.#assertOpen();
-      utf8ByteLength(chunk);
+      assertRawAppendAdmission(this.#engine, chunk);
       return this.#consume(() => this.#engine.append(chunk));
     });
   }
@@ -562,7 +562,41 @@ export class LosslessInputBatcher {
 }
 
 export function utf8ByteLength(value: string): number {
+  const bytes = scanUtf8ByteLength(value);
+  if (bytes === undefined) {
+    throw new RangeError("input UTF-8 byte length exceeds the JavaScript safe integer range");
+  }
+  return bytes;
+}
+
+function assertRawAppendAdmission(engine: WasmEngineSession, chunk: string): void {
+  let ceiling: unknown;
+  try {
+    ceiling = engine.rawAppendByteCeiling();
+  } catch (error) {
+    throw MdstreamError.from(error);
+  }
+  if (!Number.isSafeInteger(ceiling) || (ceiling as number) < 0) {
+    throw new TypeError(
+      "mdstream WASM rawAppendByteCeiling must return a non-negative safe integer",
+    );
+  }
+  const limit = ceiling as number;
+  if (chunk.length > limit || scanUtf8ByteLength(chunk, limit) === undefined) {
+    throw new MdstreamError(
+      "raw append input exceeds the current native source admission ceiling",
+      {
+        status: 11,
+        statusName: "MDSTREAM_RESOURCE_LIMIT_EXCEEDED",
+        detailCode: "bindings.resource_limit",
+      },
+    );
+  }
+}
+
+function scanUtf8ByteLength(value: string, limit?: number): number | undefined {
   let bytes = 0;
+  const maxBytes = limit ?? Number.MAX_SAFE_INTEGER;
   for (let index = 0; index < value.length; index += 1) {
     const unit = value.charCodeAt(index);
     if (unit <= 0x7f) {
@@ -581,8 +615,8 @@ export function utf8ByteLength(value: string): number {
     } else {
       bytes += 3;
     }
-    if (!Number.isSafeInteger(bytes)) {
-      throw new RangeError("input UTF-8 byte length exceeds the JavaScript safe integer range");
+    if (bytes > maxBytes) {
+      return undefined;
     }
   }
   return bytes;

@@ -11,7 +11,11 @@ describe("custom WASM loader contract", () => {
       options: 0,
       transition: 0,
     };
-    class EngineSession {}
+    class EngineSession {
+      rawAppendByteCeiling(): number {
+        return 0;
+      }
+    }
     class ReducerSession {
       pendingSourceView(): never {
         throw new Error("not used");
@@ -160,7 +164,11 @@ describe("custom WASM loader contract", () => {
     "processorMaxQueuedCandidates",
   ])("rejects a reducer missing the %s capability before sessions", async (capability) => {
     let constructedSessions = 0;
-    class EngineSession {}
+    class EngineSession {
+      rawAppendByteCeiling(): number {
+        return 0;
+      }
+    }
     class ReducerSession {
       constructor() {
         constructedSessions += 1;
@@ -214,6 +222,10 @@ describe("custom WASM loader contract", () => {
     let freedEngines = 0;
     let freedReducers = 0;
     class EngineSession {
+      rawAppendByteCeiling(): number {
+        return 0;
+      }
+
       free(): void {
         freedEngines += 1;
       }
@@ -256,6 +268,103 @@ describe("custom WASM loader contract", () => {
       freedEngines: 1,
       freedReducers: 1,
     });
+  });
+
+  it("rejects an engine missing raw append admission before sessions", async () => {
+    let constructedSessions = 0;
+    class EngineSession {}
+    class ReducerSession {
+      constructor() {
+        constructedSessions += 1;
+      }
+
+      pendingSourceView(): never {
+        throw new Error("session construction must not be reached");
+      }
+
+      beginProcessorIfCurrent(): never {
+        throw new Error("session construction must not be reached");
+      }
+
+      processorMaxInFlightJobs(): number {
+        return 1;
+      }
+
+      processorMaxQueuedCandidates(): number {
+        return 1;
+      }
+    }
+
+    await expect(initMdstream({
+      loader: () => ({
+        MdstreamEngineSession: EngineSession,
+        MdstreamReducerSession: ReducerSession,
+        abiVersion: () => 1,
+        packageVersion: () => "0.4.0",
+        bindingSchema: () => "mdstream.bindings/0.4",
+        bindingOptionsSchema: () => "mdstream.bindings-options/0.4",
+        transitionSchema: () => "mdstream.transitions/1",
+      }),
+    })).rejects.toThrow("rawAppendByteCeiling");
+    expect(constructedSessions).toBe(0);
+  });
+
+  it("rejects oversized raw input before calling WASM append", async () => {
+    let appendCalls = 0;
+    class EngineSession {
+      rawAppendByteCeiling(): number {
+        return 3;
+      }
+
+      append(): never {
+        appendCalls += 1;
+        throw new Error("WASM append must not be reached");
+      }
+
+      free(): void {}
+    }
+    class ReducerSession {
+      pendingSourceView(): never {
+        throw new Error("not used");
+      }
+
+      beginProcessorIfCurrent(): never {
+        throw new Error("not used");
+      }
+
+      processorMaxInFlightJobs(): number {
+        return 1;
+      }
+
+      processorMaxQueuedCandidates(): number {
+        return 1;
+      }
+
+      free(): void {}
+    }
+    const runtime = await initMdstream({
+      loader: () => ({
+        MdstreamEngineSession: EngineSession,
+        MdstreamReducerSession: ReducerSession,
+        abiVersion: () => 1,
+        packageVersion: () => "0.4.0",
+        bindingSchema: () => "mdstream.bindings/0.4",
+        bindingOptionsSchema: () => "mdstream.bindings-options/0.4",
+        transitionSchema: () => "mdstream.transitions/1",
+      }),
+    });
+    const engine = runtime.createEngine();
+
+    for (const chunk of ["abcd", "éé"]) {
+      expect(() => engine.append(chunk)).toThrowError(
+        expect.objectContaining({
+          status: 11,
+          detailCode: "bindings.resource_limit",
+        }),
+      );
+    }
+    expect(appendCalls).toBe(0);
+    engine.close();
   });
 
 });

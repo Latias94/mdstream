@@ -489,11 +489,15 @@ export type DecodedBindingView =
   | ArtifactChangeView
   | ArtifactView;
 
+/** Whether replaying a rejected joined append at retained input boundaries is safe. */
+export type SplitSafety = "retry_at_original_boundaries" | "not_safe";
+
 export class MdstreamError extends Error {
   readonly status: number;
   readonly statusName: string;
   readonly detailCode: string;
   readonly schema: string | undefined;
+  readonly splitSafety: SplitSafety;
 
   constructor(
     message: string,
@@ -502,6 +506,7 @@ export class MdstreamError extends Error {
       readonly statusName: string;
       readonly detailCode: string;
       readonly schema?: string;
+      readonly splitSafety?: SplitSafety;
       readonly cause?: unknown;
     },
   ) {
@@ -511,6 +516,7 @@ export class MdstreamError extends Error {
     this.statusName = options.statusName;
     this.detailCode = options.detailCode;
     this.schema = options.schema;
+    this.splitSafety = options.splitSafety ?? "not_safe";
   }
 
   static from(value: unknown): MdstreamError {
@@ -523,11 +529,15 @@ export class MdstreamError extends Error {
       const statusName = optionalString(value.status_name) ?? "MDSTREAM_INTERNAL_ERROR";
       const detailCode = optionalString(value.detail_code) ?? "bindings.javascript_error";
       const schema = optionalString(value.schema);
+      const splitSafety = value.split_safety === "retry_at_original_boundaries"
+        ? "retry_at_original_boundaries"
+        : "not_safe";
       return new MdstreamError(message, {
         status,
         statusName,
         detailCode,
         ...(schema === undefined ? {} : { schema }),
+        splitSafety,
         cause: value,
       });
     }

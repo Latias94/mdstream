@@ -9,7 +9,7 @@ use super::{
     operations::OperationLimitError,
     reconcile::ReconcileError,
 };
-use crate::syntax::containers::parse_tag_name;
+use crate::{AppendLimitKind, SplitSafety, syntax::containers::parse_tag_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -144,6 +144,11 @@ pub enum CompilerError {
     CursorOverflow,
     InvalidSourceBoundary(SourceCursor),
     InvalidConfiguration(String),
+    AppendLimitExceeded {
+        kind: AppendLimitKind,
+        limit: usize,
+        actual: usize,
+    },
     LimitExceeded {
         field: &'static str,
         limit: usize,
@@ -170,6 +175,15 @@ impl fmt::Display for CompilerError {
             Self::InvalidConfiguration(message) => {
                 write!(formatter, "invalid compiler configuration: {message}")
             }
+            Self::AppendLimitExceeded {
+                kind,
+                limit,
+                actual,
+            } => write!(
+                formatter,
+                "compiler {} {actual} exceeds the configured limit of {limit}",
+                kind.field()
+            ),
             Self::LimitExceeded {
                 field,
                 limit,
@@ -199,6 +213,42 @@ impl fmt::Display for CompilerError {
 }
 
 impl std::error::Error for CompilerError {}
+
+impl CompilerError {
+    /// Classifies whether retained caller chunk boundaries can make a rejected
+    /// compiler transition admissible without changing canonical semantics.
+    pub const fn split_safety(&self) -> SplitSafety {
+        match self {
+            Self::AppendLimitExceeded { .. } => SplitSafety::RetryAtOriginalBoundaries,
+            Self::CursorOverflow
+            | Self::InvalidSourceBoundary(_)
+            | Self::InvalidConfiguration(_)
+            | Self::LimitExceeded { .. }
+            | Self::Markdown(_)
+            | Self::NodeIdentityCollision(_)
+            | Self::ResourceIdentityCollision(_)
+            | Self::InvalidIdentity(_)
+            | Self::InvalidReconciliation(_)
+            | Self::MetricsOverflow(_) => SplitSafety::NotSafe,
+        }
+    }
+
+    pub const fn resource_limit(&self) -> Option<(&'static str, usize, usize)> {
+        match self {
+            Self::AppendLimitExceeded {
+                kind,
+                limit,
+                actual,
+            } => Some((kind.field(), *limit, *actual)),
+            Self::LimitExceeded {
+                field,
+                limit,
+                actual,
+            } => Some((*field, *limit, *actual)),
+            _ => None,
+        }
+    }
+}
 
 impl From<MarkdownError> for CompilerError {
     fn from(error: MarkdownError) -> Self {
@@ -242,8 +292,8 @@ impl From<ReconcileError> for CompilerError {
 
 impl From<OperationLimitError> for CompilerError {
     fn from(error: OperationLimitError) -> Self {
-        Self::LimitExceeded {
-            field: error.field,
+        Self::AppendLimitExceeded {
+            kind: error.kind,
             limit: error.limit,
             actual: error.actual,
         }

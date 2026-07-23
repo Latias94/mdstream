@@ -121,7 +121,35 @@ pub unsafe extern "C" fn mdstream_engine_append(
     })
 }
 
-/// Executes a versioned engine command for finish, reset, snapshot, or cold append paths.
+/// Returns the largest raw append input that might fit after newline
+/// normalization.
+///
+/// A finalized engine and a null, poisoned, or panicking handle return
+/// `usize::MAX`, meaning no useful local bound is available. Callers must fall
+/// through to the ordinary structured append path, which always repeats the
+/// authoritative admission check and reports the structured result.
+///
+/// # Safety
+///
+/// A non-null pointer must be a live handle returned by `mdstream_engine_new`
+/// for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mdstream_engine_raw_append_byte_ceiling(
+    engine: *const MdstreamEngine,
+) -> usize {
+    std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let Some(engine) = (unsafe { engine.as_ref() }) else {
+            return usize::MAX;
+        };
+        engine
+            .inner
+            .lock()
+            .map_or(usize::MAX, |session| session.raw_append_byte_ceiling())
+    }))
+    .unwrap_or(usize::MAX)
+}
+
+/// Executes a versioned engine command for finish, reset, or snapshot paths.
 ///
 /// # Safety
 ///

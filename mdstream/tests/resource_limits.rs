@@ -1,5 +1,10 @@
-use mdstream::{EngineError, EngineLimits, StreamEngine};
-use mdstream_protocol::{ProtocolLimits, encode_change_json};
+use mdstream::{
+    AppendBytesError, AppendLimitKind, CompilerError, EngineError, EngineLimits, SplitSafety,
+    StreamEngine,
+};
+use mdstream_protocol::{
+    NodeId, ProtocolError, ProtocolLimits, ResourceId, SourceCursor, encode_change_json,
+};
 
 fn configured(limits: EngineLimits) -> StreamEngine {
     StreamEngine::builder()
@@ -39,8 +44,8 @@ fn change_budget_accepts_exact_and_rejects_plus_one_atomically() {
     let before_metrics = rejected.metrics();
     assert!(matches!(
         rejected.append(suffix),
-        Err(EngineError::LimitExceeded {
-            field: "engine.change_bytes",
+        Err(EngineError::AppendLimitExceeded {
+            kind: AppendLimitKind::ChangeBytes,
             limit,
             actual,
         }) if limit == CHANGE_BYTES - 1 && actual == CHANGE_BYTES
@@ -80,8 +85,8 @@ fn transaction_budget_counts_a_consumed_frontier_atomically() {
     let before_metrics = rejected.metrics();
     assert!(matches!(
         rejected.append("\n\n"),
-        Err(EngineError::LimitExceeded {
-            field: "engine.transaction_bytes",
+        Err(EngineError::AppendLimitExceeded {
+            kind: AppendLimitKind::TransactionBytes,
             limit,
             actual,
         }) if limit == TRANSACTION_BYTES - 1 && actual == TRANSACTION_BYTES
@@ -189,4 +194,116 @@ fn reset_clears_pending_cr_debt() {
     assert_eq!(engine.metrics().storage.normalized_input_debt_bytes, 0);
     engine.finish().unwrap();
     assert_eq!(engine.snapshot().unwrap().source(), "");
+}
+
+#[test]
+fn only_typed_append_local_limits_are_split_safe() {
+    for kind in [
+        AppendLimitKind::ChangeOperations,
+        AppendLimitKind::ChangeStructuralItems,
+        AppendLimitKind::ChangeMetadataBytes,
+        AppendLimitKind::ChangeBytes,
+        AppendLimitKind::TransactionBytes,
+    ] {
+        let error = match kind {
+            AppendLimitKind::ChangeBytes | AppendLimitKind::TransactionBytes => {
+                EngineError::AppendLimitExceeded {
+                    kind,
+                    limit: 1,
+                    actual: 2,
+                }
+            }
+            _ => EngineError::Compiler(CompilerError::AppendLimitExceeded {
+                kind,
+                limit: 1,
+                actual: 2,
+            }),
+        };
+        assert_eq!(error.split_safety(), SplitSafety::RetryAtOriginalBoundaries);
+    }
+
+    let compiler_errors = [
+        CompilerError::CursorOverflow,
+        CompilerError::InvalidSourceBoundary(SourceCursor::new(0)),
+        CompilerError::InvalidConfiguration("invalid".to_string()),
+        CompilerError::LimitExceeded {
+            field: "markdown.events",
+            limit: 1,
+            actual: 2,
+        },
+        CompilerError::Markdown(mdstream::MarkdownDiagnostic::Unsupported("test")),
+        CompilerError::NodeIdentityCollision(NodeId::from(1_u64)),
+        CompilerError::ResourceIdentityCollision(ResourceId::from(1_u64)),
+        CompilerError::InvalidIdentity("invalid".to_string()),
+        CompilerError::InvalidReconciliation("invalid".to_string()),
+        CompilerError::MetricsOverflow("metrics"),
+    ];
+    for error in compiler_errors {
+        assert_eq!(error.split_safety(), SplitSafety::NotSafe);
+        assert_eq!(
+            EngineError::Compiler(error).split_safety(),
+            SplitSafety::NotSafe
+        );
+    }
+
+    let mut source_limited = configured_protocol(ProtocolLimits {
+        max_source_bytes: 1,
+        ..ProtocolLimits::default()
+    });
+    let source_error = source_limited.append("too large").unwrap_err();
+    assert_eq!(source_error.split_safety(), SplitSafety::NotSafe);
+
+    let protocol_error = EngineError::Protocol(ProtocolError::SourceTooLarge {
+        limit: 1,
+        actual: 2,
+    });
+    assert_eq!(protocol_error.split_safety(), SplitSafety::NotSafe);
+    assert_eq!(
+        EngineError::Finished.split_safety(),
+        SplitSafety::NotSafe,
+        "lifecycle failures must never invite input replay"
+    );
+}
+
+#[test]
+fn raw_byte_admission_rejects_before_utf8_and_keeps_crlf_exact() {
+    let mut engine = configured_protocol(ProtocolLimits {
+        max_source_bytes: 4,
+        ..ProtocolLimits::default()
+    });
+    assert_eq!(engine.raw_append_byte_ceiling(), 8);
+    engine.append_bytes(b"\r\n\r\n\r\n\r\n").unwrap();
+    assert_eq!(engine.snapshot().unwrap().source(), "\n\n\n\n");
+
+    let mut rejected = configured_protocol(ProtocolLimits {
+        max_source_bytes: 2,
+        ..ProtocolLimits::default()
+    });
+    assert_eq!(rejected.raw_append_byte_ceiling(), 4);
+    assert!(matches!(
+        rejected.append_bytes(&[0xff; 5]),
+        Err(AppendBytesError::RawInputTooLarge {
+            limit: 4,
+            actual: 5,
+        })
+    ));
+    assert!(rejected.snapshot().is_none());
+    assert!(matches!(
+        rejected.append_bytes(&[0xff]),
+        Err(AppendBytesError::InvalidUtf8(_))
+    ));
+    rejected.append_bytes(b"ok").unwrap();
+    assert_eq!(rejected.snapshot().unwrap().source(), "ok");
+}
+
+#[test]
+fn raw_ceiling_accounts_for_a_cross_chunk_trailing_cr() {
+    let mut engine = configured_protocol(ProtocolLimits {
+        max_source_bytes: 4,
+        ..ProtocolLimits::default()
+    });
+    engine.append("a\r").unwrap();
+    assert_eq!(engine.raw_append_byte_ceiling(), 5);
+    engine.append_bytes(b"\n\r\n\r\n").unwrap();
+    assert_eq!(engine.snapshot().unwrap().source(), "a\n\n\n");
 }

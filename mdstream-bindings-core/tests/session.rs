@@ -350,9 +350,12 @@ fn command_and_error_envelopes_are_versioned_and_transport_neutral() {
         "kind": "append",
         "chunk": "command path"
     });
-    let changes = engine
+    let append_error = engine
         .execute(&serde_json::to_vec(&append).unwrap())
-        .unwrap();
+        .unwrap_err();
+    assert_eq!(append_error.status(), BindingStatus::Command);
+
+    let changes = engine.append(b"native append path").unwrap();
     let change: serde_json::Value =
         serde_json::from_slice(payload(&changes, BindingPayloadKind::Change)).unwrap();
 
@@ -394,6 +397,49 @@ fn command_and_error_envelopes_are_versioned_and_transport_neutral() {
             .status(),
         BindingStatus::UnsupportedSchema
     );
+}
+
+#[test]
+fn native_append_checks_the_source_aware_raw_ceiling_before_utf8() {
+    let options =
+        format!(r#"{{"schema":"{BINDING_OPTIONS_SCHEMA}","protocol":{{"max_source_bytes":"2"}}}}"#);
+    let mut engine = EngineSession::new(options.as_bytes()).unwrap();
+    assert_eq!(engine.raw_append_byte_ceiling(), 4);
+
+    let overflow = engine.append(&[0xff; 5]).unwrap_err();
+    assert_eq!(overflow.status(), BindingStatus::ResourceLimit);
+    assert_eq!(overflow.detail_code(), "bindings.resource_limit");
+    assert!(engine.snapshot().unwrap().is_empty());
+
+    assert_eq!(
+        engine.append(&[0xff]).unwrap_err().status(),
+        BindingStatus::Utf8
+    );
+    assert!(engine.snapshot().unwrap().is_empty());
+    engine.append(b"\r\n").unwrap();
+    assert_eq!(engine.raw_append_byte_ceiling(), 2);
+}
+
+#[test]
+fn wire_append_limit_is_split_safe_without_masking_terminal_state() {
+    let options = format!(
+        r#"{{"schema":"{BINDING_OPTIONS_SCHEMA}","protocol":{{"max_source_bytes":"2"}},"wire":{{"max_command_bytes":"3"}}}}"#
+    );
+    let mut engine = EngineSession::new(options.as_bytes()).unwrap();
+    assert_eq!(engine.raw_append_byte_ceiling(), 4);
+
+    let overflow = engine.append(b"1234").unwrap_err();
+    assert_eq!(overflow.status(), BindingStatus::ResourceLimit);
+    assert_eq!(
+        overflow.split_safety(),
+        mdstream::SplitSafety::RetryAtOriginalBoundaries
+    );
+    assert!(engine.snapshot().unwrap().is_empty());
+
+    engine.finish().unwrap();
+    assert_eq!(engine.raw_append_byte_ceiling(), usize::MAX);
+    let terminal = engine.append(b"too large").unwrap_err();
+    assert_eq!(terminal.status(), BindingStatus::Terminal);
 }
 
 #[test]

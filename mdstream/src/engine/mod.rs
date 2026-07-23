@@ -11,6 +11,7 @@ pub use crate::compiler::{
 };
 pub use builder::StreamEngineBuilder;
 pub use effects::EngineOutput;
+pub use input::AppendBytesError;
 pub use lifecycle::EngineError;
 pub use limits::EngineLimits;
 pub use storage::EngineStorageMetrics;
@@ -95,6 +96,37 @@ impl StreamEngine {
 
     pub fn append(&mut self, chunk: &str) -> Result<EngineOutput, EngineError> {
         self.append_transition(chunk)
+    }
+
+    /// Appends native UTF-8 bytes after a conservative, allocation-free source
+    /// admission check.
+    pub fn append_bytes(&mut self, chunk: &[u8]) -> Result<EngineOutput, AppendBytesError> {
+        if self.lifecycle() == DocumentLifecycle::Finalized {
+            return Err(AppendBytesError::Engine(EngineError::Finished));
+        }
+        self.check_raw_append_len(chunk.len())?;
+        let chunk = std::str::from_utf8(chunk).map_err(AppendBytesError::InvalidUtf8)?;
+        self.append(chunk).map_err(AppendBytesError::Engine)
+    }
+
+    /// Returns the largest raw byte input that might fit after CRLF
+    /// normalization. Inputs at or below this value still require exact UTF-8
+    /// and source preflight; inputs above it cannot be admitted. A finalized
+    /// engine returns `usize::MAX` so append can report its terminal state.
+    pub fn raw_append_byte_ceiling(&self) -> usize {
+        if self.lifecycle() == DocumentLifecycle::Finalized {
+            return usize::MAX;
+        }
+        self.normalizer
+            .raw_append_byte_ceiling(self.remaining_source_bytes())
+    }
+
+    pub fn check_raw_append_len(&self, actual: usize) -> Result<(), AppendBytesError> {
+        let limit = self.raw_append_byte_ceiling();
+        if actual > limit {
+            return Err(AppendBytesError::RawInputTooLarge { limit, actual });
+        }
+        Ok(())
     }
 
     pub fn finish(&mut self) -> Result<EngineOutput, EngineError> {
@@ -215,6 +247,16 @@ impl StreamEngine {
         Ok(())
     }
 
+    fn remaining_source_bytes(&self) -> usize {
+        let retained_source_bytes = self
+            .producer
+            .document()
+            .map_or(0, |document| document.source().len());
+        self.protocol_limits
+            .max_source_bytes
+            .saturating_sub(retained_source_bytes)
+    }
+
     fn apply_compiler_transition(
         &mut self,
         normalizer: NewlineNormalizer,
@@ -307,8 +349,8 @@ mod tests {
 
         assert!(matches!(
             engine.append("hello"),
-            Err(EngineError::Compiler(CompilerError::LimitExceeded {
-                field: "change.operations",
+            Err(EngineError::Compiler(CompilerError::AppendLimitExceeded {
+                kind: crate::AppendLimitKind::ChangeOperations,
                 limit: 0,
                 ..
             }))
@@ -335,8 +377,8 @@ mod tests {
 
         assert!(matches!(
             engine.append(&oversized),
-            Err(EngineError::Compiler(CompilerError::LimitExceeded {
-                field: "change.operations",
+            Err(EngineError::Compiler(CompilerError::AppendLimitExceeded {
+                kind: crate::AppendLimitKind::ChangeOperations,
                 limit: 10,
                 actual: 11,
             }))
@@ -715,8 +757,8 @@ mod tests {
         });
         assert!(matches!(
             structural.append("hello"),
-            Err(EngineError::Compiler(CompilerError::LimitExceeded {
-                field: "change.structural_items",
+            Err(EngineError::Compiler(CompilerError::AppendLimitExceeded {
+                kind: crate::AppendLimitKind::ChangeStructuralItems,
                 limit: 1,
                 actual: 2,
             }))
@@ -734,8 +776,8 @@ mod tests {
             .unwrap();
         assert!(matches!(
             metadata.append("<thinking a=1>\nbody\n</thinking>"),
-            Err(EngineError::Compiler(CompilerError::LimitExceeded {
-                field: "change.metadata",
+            Err(EngineError::Compiler(CompilerError::AppendLimitExceeded {
+                kind: crate::AppendLimitKind::ChangeMetadataBytes,
                 limit: 10,
                 actual: 11,
             }))

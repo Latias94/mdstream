@@ -1,3 +1,39 @@
+use std::fmt;
+
+use crate::SplitSafety;
+
+/// Error returned by [`crate::StreamEngine::append_bytes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppendBytesError {
+    RawInputTooLarge { limit: usize, actual: usize },
+    InvalidUtf8(std::str::Utf8Error),
+    Engine(super::EngineError),
+}
+
+impl AppendBytesError {
+    pub const fn split_safety(&self) -> SplitSafety {
+        match self {
+            Self::Engine(error) => error.split_safety(),
+            Self::RawInputTooLarge { .. } | Self::InvalidUtf8(_) => SplitSafety::NotSafe,
+        }
+    }
+}
+
+impl fmt::Display for AppendBytesError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RawInputTooLarge { limit, actual } => write!(
+                formatter,
+                "raw append input uses {actual} bytes, conservative limit is {limit}"
+            ),
+            Self::InvalidUtf8(error) => write!(formatter, "append input is not UTF-8: {error}"),
+            Self::Engine(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for AppendBytesError {}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct NewlineNormalizer {
     pending_cr: bool,
@@ -35,6 +71,15 @@ impl NewlineNormalizer {
 
     pub(super) fn pending_bytes(self) -> usize {
         usize::from(self.pending_cr)
+    }
+
+    pub(super) fn raw_append_byte_ceiling(self, remaining_source_bytes: usize) -> usize {
+        let ceiling = remaining_source_bytes.saturating_mul(2);
+        if self.pending_cr {
+            ceiling.saturating_sub(1)
+        } else {
+            ceiling
+        }
     }
 
     pub(super) fn append(self, chunk: &str) -> (Self, String) {
@@ -113,6 +158,17 @@ mod tests {
         let (next, suffix) = normalizer.append("\r\n\rX\r");
         assert_eq!(suffix, "\n\nX");
         assert_eq!(suffix.len() + next.pending_bytes(), 4);
+    }
+
+    #[test]
+    fn raw_ceiling_preserves_every_possible_crlf_normalization() {
+        let normalizer = NewlineNormalizer::default();
+        assert_eq!(normalizer.raw_append_byte_ceiling(0), 0);
+        assert_eq!(normalizer.raw_append_byte_ceiling(4), 8);
+
+        let (pending, _) = normalizer.append("a\r");
+        assert_eq!(pending.raw_append_byte_ceiling(0), 0);
+        assert_eq!(pending.raw_append_byte_ceiling(3), 5);
     }
 
     proptest! {

@@ -205,6 +205,13 @@ void main() {
       expect(() => utf8ByteLength('\ud800'), throwsFormatException);
       expect(() => utf8ByteLength('\udc00'), throwsFormatException);
     });
+
+    test('bounds UTF-8 admission without allocating an encoded buffer', () {
+      expect(utf8ByteLengthAtMost('abcd', 3), isFalse);
+      expect(utf8ByteLengthAtMost('é', 2), isTrue);
+      expect(utf8ByteLengthAtMost('éé', 3), isFalse);
+      expect(() => utf8ByteLengthAtMost('\ud800', 4), throwsFormatException);
+    });
   });
 
   final libraryPath = nativeLibraryPath();

@@ -301,21 +301,38 @@ final class LosslessInputBatcher<Result> {
 
 /// Counts UTF-8 bytes without allocating and rejects unpaired UTF-16 units.
 int utf8ByteLength(String value) {
+  return _scanUtf8ByteLength(value)!;
+}
+
+/// Checks whether [value] fits [maxBytes] of UTF-8 without allocating encoded bytes.
+///
+/// An obvious UTF-16 lower-bound overflow returns before scanning the whole
+/// string. Inputs within that bound still reject unpaired UTF-16 units.
+bool utf8ByteLengthAtMost(String value, int maxBytes) {
+  if (maxBytes < 0) {
+    throw RangeError.range(maxBytes, 0, null, 'maxBytes');
+  }
+  if (value.length > maxBytes) {
+    return false;
+  }
+  return _scanUtf8ByteLength(value, maxBytes) != null;
+}
+
+int? _scanUtf8ByteLength(String value, [int? maxBytes]) {
   var bytes = 0;
-  final units = value.codeUnits;
-  for (var index = 0; index < units.length; index += 1) {
-    final unit = units[index];
+  for (var index = 0; index < value.length; index += 1) {
+    final unit = value.codeUnitAt(index);
     if (unit <= 0x7f) {
       bytes += 1;
     } else if (unit <= 0x7ff) {
       bytes += 2;
     } else if (unit >= 0xd800 && unit <= 0xdbff) {
-      if (index + 1 >= units.length) {
+      if (index + 1 >= value.length) {
         throw const FormatException(
           'input contains an unpaired high surrogate',
         );
       }
-      final next = units[index + 1];
+      final next = value.codeUnitAt(index + 1);
       if (next < 0xdc00 || next > 0xdfff) {
         throw const FormatException(
           'input contains an unpaired high surrogate',
@@ -327,6 +344,9 @@ int utf8ByteLength(String value) {
       throw const FormatException('input contains an unpaired low surrogate');
     } else {
       bytes += 3;
+    }
+    if (maxBytes != null && bytes > maxBytes) {
+      return null;
     }
   }
   return bytes;

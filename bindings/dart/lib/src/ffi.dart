@@ -114,6 +114,10 @@ typedef _ReducerNewDart =
 typedef _EngineFreeNative =
     ffi.Void Function(ffi.Pointer<_NativeMdstreamEngine>);
 typedef _EngineFreeDart = void Function(ffi.Pointer<_NativeMdstreamEngine>);
+typedef _EngineRawAppendByteCeilingNative =
+    ffi.Size Function(ffi.Pointer<_NativeMdstreamEngine>);
+typedef _EngineRawAppendByteCeilingDart =
+    int Function(ffi.Pointer<_NativeMdstreamEngine>);
 typedef _ReducerFreeNative =
     ffi.Void Function(ffi.Pointer<_NativeMdstreamReducer>);
 typedef _ReducerFreeDart = void Function(ffi.Pointer<_NativeMdstreamReducer>);
@@ -277,6 +281,11 @@ final class NativeBindings {
           .lookupFunction<_EngineCallNative, _EngineCallDart>(
             'mdstream_engine_append',
           ),
+      _engineRawAppendByteCeiling = library
+          .lookupFunction<
+            _EngineRawAppendByteCeilingNative,
+            _EngineRawAppendByteCeilingDart
+          >('mdstream_engine_raw_append_byte_ceiling'),
       _engineExecute = library
           .lookupFunction<_EngineCallNative, _EngineCallDart>(
             'mdstream_engine_execute',
@@ -362,6 +371,7 @@ final class NativeBindings {
   final _ReducerProcessorSchedulerLimitsDart _reducerProcessorSchedulerLimits;
   final _EngineFreeDart _engineFree;
   final _ReducerFreeDart _reducerFree;
+  final _EngineRawAppendByteCeilingDart _engineRawAppendByteCeiling;
   final _EngineCallDart _engineAppend;
   final _EngineCallDart _engineExecute;
   final _ReducerCallDart _reducerApply;
@@ -473,6 +483,9 @@ final class NativeBindings {
   ) => _drain(
     _withInput(bytes, (data, len) => _engineAppend(engine, data, len)),
   );
+
+  int _rawAppendByteCeiling(ffi.Pointer<_NativeMdstreamEngine> engine) =>
+      _engineRawAppendByteCeiling(engine);
 
   List<NativePayload> _executeEngineCommand(
     ffi.Pointer<_NativeMdstreamEngine> engine,
@@ -659,6 +672,15 @@ final class NativeEngineHandle implements ffi.Finalizable {
   /// Appends UTF-8 source bytes and returns copied native payloads.
   List<NativePayload> append(Uint8List bytes) =>
       _withPointer((pointer) => _bindings._appendToEngine(pointer, bytes));
+
+  /// Conservative native raw-byte admission ceiling for the next append.
+  ///
+  /// A negative value is an unsigned `size_t` outside Dart's signed FFI range,
+  /// so it represents no useful local bound and defers to native append.
+  int? get rawAppendByteCeiling => _withPointer((pointer) {
+    final ceiling = _bindings._rawAppendByteCeiling(pointer);
+    return ceiling < 0 ? null : ceiling;
+  });
 
   /// Executes an encoded engine command and returns copied native payloads.
   List<NativePayload> execute(Uint8List command) => _withPointer(

@@ -8,10 +8,10 @@ use mdstream_processors::{
     ProcessorSlotKey,
 };
 use mdstream_protocol::{
-    ApplyOutcome, ChangeImpact, ChangeSet, Document, NodeId, ProcessorInputVersion, ProtocolLimits,
-    Reducer, ReducerStatus, RequestGeneration, ResourceId, Snapshot, TransitionError,
-    TransitionOutcome, TransitionReducer, decode_change_json, decode_snapshot_json,
-    encode_change_json, encode_snapshot_json,
+    ApplyOutcome, ChangeImpact, ChangeSet, Document, DocumentLifecycle, NodeId,
+    ProcessorInputVersion, ProtocolLimits, Reducer, ReducerStatus, RequestGeneration, ResourceId,
+    Snapshot, TransitionError, TransitionOutcome, TransitionReducer, decode_change_json,
+    decode_snapshot_json, encode_change_json, encode_snapshot_json,
 };
 
 use crate::{
@@ -20,7 +20,9 @@ use crate::{
         EngineCommand, ProcessorCompletion, ReducerCommand, decode_engine_command,
         decode_processor_completion, decode_reducer_command, parse_decimal_id, processing_policy,
     },
-    errors::{check_size, engine_error, host_error, identifier_error, protocol_error},
+    errors::{
+        append_bytes_error, check_size, engine_error, host_error, identifier_error, protocol_error,
+    },
     options::{BindingOptions, WireLimits},
     wire::{
         encode_artifact_change, encode_artifact_view, encode_node_view, encode_pending_source_view,
@@ -51,24 +53,33 @@ impl EngineSession {
 
     pub fn append(&mut self, chunk: &[u8]) -> Result<BindingOutput, BindingError> {
         self.metrics.commands = self.metrics.commands.saturating_add(1);
+        if self.engine.lifecycle() == DocumentLifecycle::Finalized {
+            let output = self
+                .engine
+                .append_bytes(chunk)
+                .map_err(append_bytes_error)?;
+            return self.encode_engine_output(output);
+        }
+        self.engine
+            .check_raw_append_len(chunk.len())
+            .map_err(append_bytes_error)?;
         check_size(
             "bindings.append_bytes",
             chunk,
             self.wire_limits.max_command_bytes,
-        )?;
-        let chunk = std::str::from_utf8(chunk).map_err(|error| {
-            BindingError::new(
-                BindingStatus::Utf8,
-                "bindings.invalid_utf8",
-                format!("append input is not UTF-8: {error}"),
-            )
+        )
+        .map_err(|error| {
+            error.with_split_safety(mdstream::SplitSafety::RetryAtOriginalBoundaries)
         })?;
-        self.append_text(chunk)
+        let output = self
+            .engine
+            .append_bytes(chunk)
+            .map_err(append_bytes_error)?;
+        self.encode_engine_output(output)
     }
 
-    fn append_text(&mut self, chunk: &str) -> Result<BindingOutput, BindingError> {
-        let output = self.engine.append(chunk).map_err(engine_error)?;
-        self.encode_engine_output(output)
+    pub fn raw_append_byte_ceiling(&self) -> usize {
+        self.engine.raw_append_byte_ceiling()
     }
 
     pub fn finish(&mut self) -> Result<BindingOutput, BindingError> {
@@ -106,10 +117,6 @@ impl EngineSession {
 
     pub fn execute(&mut self, command_json: &[u8]) -> Result<BindingOutput, BindingError> {
         match decode_engine_command(command_json, self.wire_limits.max_command_bytes)? {
-            EngineCommand::Append { chunk, .. } => {
-                self.metrics.commands = self.metrics.commands.saturating_add(1);
-                self.append_text(&chunk)
-            }
             EngineCommand::Finish { .. } => self.finish(),
             EngineCommand::Reset { .. } => self.reset(),
             EngineCommand::Snapshot { .. } => self.snapshot(),

@@ -158,6 +158,10 @@ describe("Rust/WASM/TypeScript structural goldens", () => {
       constructor() {
         constructedSessions += 1;
       }
+
+      rawAppendByteCeiling(): number {
+        return 0;
+      }
     }
     const loader: WasmModuleLoader = () => ({
       MdstreamEngineSession: LegacySession,
@@ -180,6 +184,10 @@ describe("Rust/WASM/TypeScript structural goldens", () => {
 
   it("rejects a same-schema WASM module missing conditional processor begin", async () => {
     class PartialReducerSession {
+      rawAppendByteCeiling(): number {
+        return 0;
+      }
+
       pendingSourceView(): never {
         throw new Error("session construction must not be reached");
       }

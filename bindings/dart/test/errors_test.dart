@@ -17,6 +17,7 @@ void main() {
               'status_name': 'MDSTREAM_NEEDS_SNAPSHOT',
               'detail_code': 'protocol.sequence_gap',
               'message': 'a snapshot is required',
+              'split_safety': 'retry_at_original_boundaries',
             }),
           ),
         ),
@@ -26,6 +27,7 @@ void main() {
       expect(error.status, 9);
       expect(error.statusName, 'MDSTREAM_NEEDS_SNAPSHOT');
       expect(error.detailCode, 'protocol.sequence_gap');
+      expect(error.splitSafety, SplitSafety.retryAtOriginalBoundaries);
       expect(error.message, 'a snapshot is required');
       expect(error.toString(), contains('a snapshot is required'));
     });
@@ -46,6 +48,7 @@ void main() {
       expect(error.detailCode, 'engine.finished');
       expect(error.schema, 'mdstream.bindings/0.4');
       expect(error.cause, same(cause));
+      expect(error.splitSafety, SplitSafety.notSafe);
     });
 
     test('normalizes malformed host errors without hiding the cause', () {

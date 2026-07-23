@@ -49,6 +49,7 @@ int mdstream_header_smoke(void) {
     MdstreamAllocationMetrics (*allocation_metrics)(void) = &mdstream_allocation_metrics;
     MdstreamEngineResult (*engine_new)(const uint8_t*, size_t) = &mdstream_engine_new;
     void (*engine_free)(MdstreamEngine*) = &mdstream_engine_free;
+    size_t (*engine_raw_append_byte_ceiling)(const MdstreamEngine*) = &mdstream_engine_raw_append_byte_ceiling;
     MdstreamCallResult (*engine_append)(MdstreamEngine*, const uint8_t*, size_t) = &mdstream_engine_append;
     MdstreamCallResult (*engine_execute)(MdstreamEngine*, const uint8_t*, size_t) = &mdstream_engine_execute;
     MdstreamReducerResult (*reducer_new)(const uint8_t*, size_t) = &mdstream_reducer_new;
@@ -83,6 +84,7 @@ int mdstream_header_smoke(void) {
     (void)allocation_metrics;
     (void)engine_new;
     (void)engine_free;
+    (void)engine_raw_append_byte_ceiling;
     (void)engine_append;
     (void)engine_execute;
     (void)reducer_new;

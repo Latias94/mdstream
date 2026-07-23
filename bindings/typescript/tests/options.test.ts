@@ -9,7 +9,11 @@ import {
 describe("binding option parity", () => {
   it("omits unspecified custom-block booleans and preserves explicit false", async () => {
     const encoded: unknown[] = [];
-    class EngineSession {}
+    class EngineSession {
+      rawAppendByteCeiling(): number {
+        return 0;
+      }
+    }
     class ReducerSession {
       constructor(options?: string) {
         encoded.push(options === undefined ? undefined : JSON.parse(options));
@@ -121,6 +125,10 @@ describe("binding option parity", () => {
     let nativeJobReads = 0;
     let nativeSlotReads = 0;
     class EngineSession {
+      rawAppendByteCeiling(): number {
+        return 0;
+      }
+
       free(): void {}
     }
     class ReducerSession {

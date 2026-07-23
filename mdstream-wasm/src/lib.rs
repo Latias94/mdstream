@@ -141,6 +141,11 @@ impl MdstreamEngineSession {
         binding_output(self.inner.append(chunk.as_bytes()))
     }
 
+    #[wasm_bindgen(js_name = rawAppendByteCeiling)]
+    pub fn raw_append_byte_ceiling(&self) -> usize {
+        self.inner.raw_append_byte_ceiling()
+    }
+
     pub fn finish(&mut self) -> Result<MdstreamOutput, JsValue> {
         binding_output(self.inner.finish())
     }

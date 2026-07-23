@@ -1,6 +1,6 @@
 use std::fmt;
 
-use mdstream::{CompilerError, EngineError};
+use mdstream::{AppendBytesError, EngineError, SplitSafety};
 use mdstream_processors::{HostError, IdentifierError, ProcessorLimitsError};
 use mdstream_protocol::{ProtocolError, ProtocolErrorCode};
 use serde::Serialize;
@@ -56,6 +56,7 @@ pub struct BindingError {
     status: BindingStatus,
     detail_code: String,
     message: String,
+    split_safety: SplitSafety,
 }
 
 impl BindingError {
@@ -68,7 +69,13 @@ impl BindingError {
             status,
             detail_code: detail_code.into(),
             message: truncate_utf8(message.into(), MAX_ERROR_MESSAGE_BYTES),
+            split_safety: SplitSafety::NotSafe,
         }
+    }
+
+    pub(crate) fn with_split_safety(mut self, split_safety: SplitSafety) -> Self {
+        self.split_safety = split_safety;
+        self
     }
 
     pub const fn status(&self) -> BindingStatus {
@@ -81,6 +88,10 @@ impl BindingError {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub const fn split_safety(&self) -> SplitSafety {
+        self.split_safety
     }
 
     pub(crate) fn options(message: impl Into<String>) -> Self {
@@ -123,6 +134,7 @@ struct ErrorEnvelope<'a> {
     status_name: &'static str,
     detail_code: &'a str,
     message: &'a str,
+    split_safety: &'static str,
 }
 
 pub fn error_payload_json_bytes(error: &BindingError) -> Vec<u8> {
@@ -133,11 +145,12 @@ pub fn error_payload_json_bytes(error: &BindingError) -> Vec<u8> {
         status_name: error.status.code_name(),
         detail_code: error.detail_code(),
         message: error.message(),
+        split_safety: error.split_safety().as_str(),
     })
     .unwrap_or_else(|_| {
         let status = BindingStatus::Internal;
         format!(
-            r#"{{"schema":"{}","ok":false,"status":{},"status_name":"{}","detail_code":"bindings.error_encoding","message":"failed to encode binding error"}}"#,
+            r#"{{"schema":"{}","ok":false,"status":{},"status_name":"{}","detail_code":"bindings.error_encoding","message":"failed to encode binding error","split_safety":"not_safe"}}"#,
             crate::BINDING_SCHEMA,
             status.code(),
             status.code_name()
@@ -176,34 +189,46 @@ pub(crate) fn protocol_error(error: ProtocolError) -> BindingError {
 }
 
 pub(crate) fn engine_error(error: EngineError) -> BindingError {
-    match error {
-        EngineError::Finished => BindingError::new(
-            BindingStatus::Terminal,
-            "engine.finished",
-            "stream engine is finalized",
+    let split_safety = error.split_safety();
+    let mapped = if let Some((field, limit, actual)) = error.resource_limit() {
+        BindingError::resource(field, limit, actual)
+    } else {
+        match error {
+            EngineError::Finished => BindingError::new(
+                BindingStatus::Terminal,
+                "engine.finished",
+                "stream engine is finalized",
+            ),
+            EngineError::Protocol(error) => protocol_error(error),
+            EngineError::InternalInvariant(error) => BindingError::new(
+                BindingStatus::Internal,
+                "engine.internal_invariant",
+                error.to_string(),
+            ),
+            other => BindingError::new(
+                BindingStatus::Engine,
+                "engine.transition",
+                other.to_string(),
+            ),
+        }
+    };
+    mapped.with_split_safety(split_safety)
+}
+
+pub(crate) fn append_bytes_error(error: AppendBytesError) -> BindingError {
+    let split_safety = error.split_safety();
+    let mapped = match error {
+        AppendBytesError::RawInputTooLarge { limit, actual } => {
+            BindingError::resource("engine.raw_append_bytes", limit, actual)
+        }
+        AppendBytesError::InvalidUtf8(error) => BindingError::new(
+            BindingStatus::Utf8,
+            "bindings.invalid_utf8",
+            format!("append input is not UTF-8: {error}"),
         ),
-        EngineError::LimitExceeded {
-            field,
-            limit,
-            actual,
-        } => BindingError::resource(field, limit, actual),
-        EngineError::Protocol(error) => protocol_error(error),
-        EngineError::Compiler(CompilerError::LimitExceeded {
-            field,
-            limit,
-            actual,
-        }) => BindingError::resource(field, limit, actual),
-        EngineError::InternalInvariant(error) => BindingError::new(
-            BindingStatus::Internal,
-            "engine.internal_invariant",
-            error.to_string(),
-        ),
-        other => BindingError::new(
-            BindingStatus::Engine,
-            "engine.transition",
-            other.to_string(),
-        ),
-    }
+        AppendBytesError::Engine(error) => engine_error(error),
+    };
+    mapped.with_split_safety(split_safety)
 }
 
 pub(crate) fn host_error(error: HostError) -> BindingError {
@@ -290,7 +315,10 @@ fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{host_error, resource_unit};
+    use super::{
+        append_bytes_error, engine_error, error_payload_json_bytes, host_error, resource_unit,
+    };
+    use mdstream::{AppendBytesError, AppendLimitKind, EngineError, SplitSafety};
     use mdstream_processors::HostError;
 
     #[test]
@@ -315,5 +343,22 @@ mod tests {
             error.detail_code(),
             "processor.resource_limit.in_flight_jobs"
         );
+    }
+
+    #[test]
+    fn append_local_limits_publish_typed_split_safety() {
+        let engine_limit = EngineError::AppendLimitExceeded {
+            kind: AppendLimitKind::ChangeOperations,
+            limit: 1,
+            actual: 2,
+        };
+        let error = engine_error(engine_limit.clone());
+        assert_eq!(error.split_safety(), SplitSafety::RetryAtOriginalBoundaries);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&error_payload_json_bytes(&error)).unwrap();
+        assert_eq!(payload["split_safety"], "retry_at_original_boundaries");
+
+        let error = append_bytes_error(AppendBytesError::Engine(engine_limit));
+        assert_eq!(error.split_safety(), SplitSafety::RetryAtOriginalBoundaries);
     }
 }

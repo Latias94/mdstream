@@ -101,6 +101,7 @@ export {
   type Sequence,
   type SourceCursor,
   type SourceRangeView,
+  type SplitSafety,
   type StructureVersion,
   type StructureTransitionView,
   type TableAlignment,

@@ -13,7 +13,6 @@ use crate::{BINDING_SCHEMA, BindingError, BindingStatus, errors::check_size};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub(crate) enum EngineCommand {
-    Append { schema: String, chunk: String },
     Finish { schema: String },
     Reset { schema: String },
     Snapshot { schema: String },
@@ -22,10 +21,7 @@ pub(crate) enum EngineCommand {
 impl EngineCommand {
     fn schema(&self) -> &str {
         match self {
-            Self::Append { schema, .. }
-            | Self::Finish { schema }
-            | Self::Reset { schema }
-            | Self::Snapshot { schema } => schema,
+            Self::Finish { schema } | Self::Reset { schema } | Self::Snapshot { schema } => schema,
         }
     }
 }

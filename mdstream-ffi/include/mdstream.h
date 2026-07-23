@@ -153,6 +153,13 @@ MdstreamProcessorSchedulerLimits mdstream_reducer_processor_scheduler_limits(
 );
 
 /* Hot paths avoid an additional JSON command wrapper. */
+/*
+ * Conservative raw-byte ceiling before UTF-8 decoding. `SIZE_MAX` means no
+ * useful local bound is available, including for a finalized or uninspectable
+ * engine. Call mdstream_engine_append for its structured result; append always
+ * checks authoritatively.
+ */
+size_t mdstream_engine_raw_append_byte_ceiling(const MdstreamEngine* engine);
 MdstreamCallResult mdstream_engine_append(
     MdstreamEngine* engine,
     const uint8_t* chunk,

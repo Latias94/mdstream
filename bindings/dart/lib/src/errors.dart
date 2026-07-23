@@ -1,6 +1,30 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+/// Whether replaying a rejected joined append at retained input boundaries is safe.
+enum SplitSafety {
+  /// The error is local to an append transaction and may admit a replay.
+  retryAtOriginalBoundaries('retry_at_original_boundaries'),
+
+  /// Splitting cannot make the failure admissible or would change semantics.
+  notSafe('not_safe');
+
+  const SplitSafety(this.value);
+
+  /// Stable wire representation owned by the Rust core.
+  final String value;
+
+  /// Decodes an untrusted wire value conservatively.
+  static SplitSafety fromWire(Object? value) {
+    for (final splitSafety in values) {
+      if (splitSafety.value == value) {
+        return splitSafety;
+      }
+    }
+    return notSafe;
+  }
+}
+
 /// A structured error returned by mdstream or synthesized by the Dart binding.
 final class MdstreamException implements Exception {
   /// Creates a structured mdstream error.
@@ -10,6 +34,7 @@ final class MdstreamException implements Exception {
     this.statusName = 'MDSTREAM_INTERNAL_ERROR',
     this.detailCode = 'bindings.dart_error',
     this.schema,
+    this.splitSafety = SplitSafety.notSafe,
     this.cause,
   });
 
@@ -49,6 +74,7 @@ final class MdstreamException implements Exception {
       final statusName = envelope['status_name'];
       final detailCode = envelope['detail_code'];
       final schema = envelope['schema'];
+      final splitSafety = envelope['split_safety'];
       return MdstreamException(
         message is String ? message : 'mdstream operation failed',
         status: status is int ? status : (fallbackStatus ?? 12),
@@ -59,6 +85,7 @@ final class MdstreamException implements Exception {
             ? detailCode
             : 'bindings.invalid_error_payload',
         schema: schema is String ? schema : null,
+        splitSafety: SplitSafety.fromWire(splitSafety),
         cause: value,
       );
     } catch (error) {
@@ -113,6 +140,9 @@ final class MdstreamException implements Exception {
 
   /// Binding schema that encoded the error, when supplied by native code.
   final String? schema;
+
+  /// Rust-owned replay classification, conservatively defaulted for unknown values.
+  final SplitSafety splitSafety;
 
   /// Original error or payload retained for diagnostics.
   final Object? cause;
