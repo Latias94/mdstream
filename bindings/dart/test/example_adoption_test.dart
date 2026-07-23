@@ -71,6 +71,29 @@ void main() {
   );
 
   test(
+    'lossless batching migration example runs with ordered collections',
+    () async {
+      final result = await Process.run(Platform.resolvedExecutable, <String>[
+        'run',
+        'example/lossless_batching.dart',
+        '--library',
+        libraryPath!,
+      ], workingDirectory: Directory.current.path);
+
+      expect(result.exitCode, 0, reason: result.stderr as String);
+      expect(result.stderr, isEmpty);
+      expect(result.stdout, contains('ordered_results=4'));
+      expect(result.stdout, contains('coherent_reducer_results='));
+      expect(result.stdout, contains('final_source='));
+      expect(result.stdout, contains('append_attempts=3'));
+      expect(result.stdout, contains('native_allocations=zero'));
+    },
+    skip: libraryPath == null
+        ? 'run dart run tool/build_native.dart before native tests'
+        : false,
+  );
+
+  test(
     'assertion drift exits nonzero after releasing native allocations',
     () async {
       final temporary = await Directory.systemTemp.createTemp(

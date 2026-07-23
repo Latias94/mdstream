@@ -37,6 +37,49 @@ retains object identity until source or projection coverage changes, and is
 `undefined` when the projection is current. Consumers may render that text as
 pending content, but must not parse it into competing Markdown semantics.
 
+## Lossless input batching
+
+An engine grants at most one live batching lease. The lease retains original
+non-empty chunks behind independent byte and constituent limits, appends them
+in order inside one coherent host operation, and returns every committed result
+as an ordered collection. Direct engine mutation and a second batcher are
+rejected until the current batcher is explicitly released.
+
+```ts
+const batcher = engine.createBatcher({
+  maxBatchBytes: 64 * 1024,
+  maxPendingChunks: 2048,
+});
+
+for (const chunk of modelChunks) {
+  for (const result of batcher.push(chunk)) {
+    replicate(result.changes);
+  }
+}
+for (const result of batcher.finish()) {
+  replicate(result.changes);
+}
+batcher.release();
+```
+
+If a constituent fails after a committed prefix, `BatchOperationError` exposes
+`completedResults`, the typed `cause`, the failed `operation`, an immutable
+`pending` snapshot, and whether a triggering `push` input was accepted. The
+batcher then rejects ordinary input and lifecycle operations. Call
+`retryPending()`, `takePending()`, or `discardPending()` before releasing the
+lease; only discard makes data loss an explicit caller decision. Boundary
+metadata metrics use a deterministic logical cost of eight bytes per retained
+constituent and exclude JavaScript allocator spare capacity.
+
+The repository's runnable
+[`lossless-batching.mjs`](https://github.com/Latias94/mdstream/blob/main/bindings/typescript/examples/lossless-batching.mjs)
+shows both the normal ordered-collection path and partial-failure transfer:
+
+```sh
+pnpm --filter @mdstream/core build
+node bindings/typescript/examples/lossless-batching.mjs --assert
+```
+
 ## Transition facts
 
 Hosts that need to distinguish fresh text, semantic corrections, structural

@@ -72,6 +72,14 @@ describe("framework-neutral transition feed", () => {
         expect(() => engine.close()).toThrowError(
           expect.objectContaining({ detailCode: "bindings.transition_reentry" }),
         );
+        expect(() =>
+          engine.createBatcher({
+            maxBatchBytes: 8,
+            maxPendingChunks: 8,
+          })
+        ).toThrowError(
+          expect.objectContaining({ detailCode: "bindings.transition_reentry" }),
+        );
       }
     });
     engine.store.subscribe(() => order.push("invalidation"));
@@ -143,7 +151,10 @@ describe("framework-neutral transition feed", () => {
   it("coalesces every reducer commit made by one batcher operation", async () => {
     const runtime = await initMdstream({ loader: nodeWasmLoader });
     const engine = runtime.createEngine(capturedOptions);
-    const batcher = engine.createBatcher(4);
+    const batcher = engine.createBatcher({
+      maxBatchBytes: 4,
+      maxPendingChunks: 16,
+    });
     const batches: TransitionBatchView[] = [];
     engine.store.subscribeTransitions((batch) => batches.push(batch));
 
@@ -154,6 +165,46 @@ describe("framework-neutral transition feed", () => {
     expect(results).toHaveLength(2);
     expect(batches).toHaveLength(2);
     expect(batches[1]!.facts.length).toBeGreaterThanOrEqual(2);
+    batcher.release();
+    engine.close();
+  });
+
+  it("publishes one default-mode tail while preserving processor candidates", async () => {
+    const runtime = await initMdstream({ loader: nodeWasmLoader });
+    const engine = runtime.createEngine();
+    const processed: string[] = [];
+    const registration = engine.registerProcessor({
+      descriptor: { id: "test.batch.coherent", version: "v1" },
+      configurationVersion: "test.batch.coherent.default",
+      matches: (node) => node.content.kind === "paragraph",
+      process(request) {
+        processed.push(request.key.inputVersion);
+        return {
+          kind: "text",
+          protocol: "test.batch.coherent/1",
+          mediaType: "text/plain",
+          text: "processed",
+        };
+      },
+    });
+    const batcher = engine.createBatcher({
+      maxBatchBytes: 128,
+      maxPendingChunks: 16,
+    });
+    let invalidations = 0;
+    engine.store.subscribe(() => {
+      invalidations += 1;
+    });
+
+    batcher.push("first\n\n");
+    batcher.push("second");
+    expect(batcher.finish()).toHaveLength(3);
+    expect(invalidations).toBe(1);
+    batcher.release();
+
+    await engine.whenProcessorsIdle();
+    expect(processed).toHaveLength(2);
+    registration.dispose();
     engine.close();
   });
 
@@ -261,7 +312,10 @@ describe("framework-neutral transition feed", () => {
         text: "unused",
       }),
     });
-    const batcher = engine.createBatcher(128);
+    const batcher = engine.createBatcher({
+      maxBatchBytes: 128,
+      maxPendingChunks: 16,
+    });
     batcher.push("a");
     batcher.push("b");
     let checked = false;
@@ -290,6 +344,7 @@ describe("framework-neutral transition feed", () => {
     expect(batches.at(-1)).toEqual({ facts: [] });
     registration.dispose();
     expect(batches).toHaveLength(afterDispose);
+    batcher.release();
     engine.close();
   });
 

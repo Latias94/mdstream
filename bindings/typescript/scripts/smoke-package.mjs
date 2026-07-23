@@ -22,3 +22,16 @@ if (engine.createRecoverySnapshot() === undefined) {
   throw new Error("packaged engine emitted no explicit recovery snapshot");
 }
 engine.close();
+
+const batchedEngine = runtime.createEngine();
+const batcher = batchedEngine.createBatcher({
+  maxBatchBytes: 32,
+  maxPendingChunks: 16,
+});
+batcher.push("# Batched package\n\n");
+batcher.push("body");
+if (batcher.finish().length !== 3) {
+  throw new Error("packaged batcher did not return every ordered result");
+}
+batcher.release();
+batchedEngine.close();

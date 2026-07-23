@@ -92,75 +92,124 @@ final class BatchedRecoverySnapshot {
 
 /// Lossless, byte-bounded input batching specialized for [MdstreamEngine].
 final class MdstreamInputBatcher {
-  MdstreamInputBatcher._(this._engine, int maxBatchBytes)
-    : _batcher = LosslessInputBatcher<EngineResult>(
-        maxBatchBytes: maxBatchBytes,
-        append: _engine.append,
-        finish: _engine.finish,
-        reset: _engine.reset,
-        outputPayloadBytes: (result) => int.parse(result.outputPayloadBytes),
-      );
+  MdstreamInputBatcher._(
+    this._engine,
+    this._lease, {
+    required int maxBatchBytes,
+    required int maxPendingChunks,
+  }) : _batcher = BatchInputQueue<EngineResult>(
+         maxBatchBytes: maxBatchBytes,
+         maxPendingChunks: maxPendingChunks,
+         append: (chunk, utf8Bytes) =>
+             _engine._appendFromBatcher(_lease, chunk, utf8Bytes),
+         outputPayloadBytes: (result) => int.parse(result.outputPayloadBytes),
+         inputByteLength: (chunk, observeScan) =>
+             _engine._preflightFromBatcher(_lease, chunk, observeScan),
+       );
 
   final MdstreamEngine _engine;
-  final LosslessInputBatcher<EngineResult> _batcher;
-  int _snapshotOutputBytes = 0;
+  final _BatchLease _lease;
+  final BatchInputQueue<EngineResult> _batcher;
+  bool _released = false;
 
   /// Maximum UTF-8 bytes retained before pending input is flushed.
   int get maxBatchBytes => _batcher.maxBatchBytes;
 
+  /// Maximum non-empty caller chunks retained before lossless pre-flush.
+  int get maxPendingChunks => _batcher.maxPendingChunks;
+
+  /// Whether this batcher has released its exclusive engine lease.
+  bool get isReleased => _released;
+
   /// Returns a point-in-time immutable view of batching and output counters.
-  BatchMetrics get metrics {
-    final metrics = _batcher.metrics;
-    return BatchMetrics(
-      maxBatchBytes: metrics.maxBatchBytes,
-      inputChunks: metrics.inputChunks,
-      inputBytes: metrics.inputBytes,
-      forwardedBytes: metrics.forwardedBytes,
-      pendingBytes: metrics.pendingBytes,
-      joinCopyBytes: metrics.joinCopyBytes,
-      outputPayloadBytes:
-          (BigInt.parse(metrics.outputPayloadBytes) +
-                  BigInt.from(_snapshotOutputBytes))
-              .toString(),
-      batchCount: metrics.batchCount,
-      appendCalls: metrics.appendCalls,
-    );
+  BatchMetrics get metrics => _batcher.metrics;
+
+  /// Returns exact pending ownership, or `null` when nothing is retained.
+  BatchPendingInput? inspectPending() {
+    _assertActive();
+    return _batcher.inspectPending();
   }
 
   /// Queues one source chunk and returns results from any automatic flushes.
-  List<EngineResult> push(String chunk) => _batcher.push(chunk);
+  List<EngineResult> push(String chunk) {
+    _assertActive();
+    return _batcher.push(chunk);
+  }
 
-  /// Forwards pending source and returns its result, if any.
-  EngineResult? flush() => _batcher.flush();
+  /// Commits ordinary pending source and returns all ordered results.
+  List<EngineResult> flush() {
+    _assertActive();
+    return _batcher.flush();
+  }
+
+  /// Explicitly retries source retained by an earlier append failure.
+  List<EngineResult> retryPending() {
+    _assertActive();
+    return _batcher.retryPending();
+  }
+
+  /// Transfers exact pending chunks to the caller without committing them.
+  BatchPendingInput? takePending() {
+    _assertActive();
+    return _batcher.takePending();
+  }
+
+  /// Explicitly abandons pending input without committing it.
+  BatchPendingInput? discardPending() {
+    _assertActive();
+    return _batcher.discardPending();
+  }
 
   /// Flushes pending source and finalizes the underlying stream.
-  List<EngineResult> finish() => _batcher.finish();
+  List<EngineResult> finish() {
+    _assertActive();
+    return _batcher.runResultOperation(
+      BatchOperation.finish,
+      () => _engine._finishFromBatcher(_lease),
+    );
+  }
 
   /// Flushes pending source and resets the underlying stream.
-  List<EngineResult> reset() => _batcher.reset();
+  List<EngineResult> reset() {
+    _assertActive();
+    return _batcher.runResultOperation(
+      BatchOperation.reset,
+      () => _engine._resetFromBatcher(_lease),
+    );
+  }
 
   /// Flushes pending source before requesting a canonical recovery snapshot.
   BatchedRecoverySnapshot createRecoverySnapshot() {
-    final flushed = <EngineResult>[];
-    final result = flush();
-    if (result != null) {
-      flushed.add(result);
-    }
-    try {
-      final snapshot = _engine.createRecoverySnapshot();
-      _snapshotOutputBytes += snapshot?.byteLength ?? 0;
-      return BatchedRecoverySnapshot(
-        flushed: List.unmodifiable(flushed),
-        snapshot: snapshot,
+    _assertActive();
+    final result = _batcher.runValueOperation<CanonicalSnapshotBytes?>(
+      BatchOperation.recoverySnapshot,
+      () => _engine._snapshotFromBatcher(_lease),
+      outputPayloadBytes: (snapshot) => snapshot?.byteLength ?? 0,
+    );
+    return BatchedRecoverySnapshot(
+      flushed: result.completedResults,
+      snapshot: result.value,
+    );
+  }
+
+  /// Releases the exclusive engine lease after pending ownership is resolved.
+  void release() {
+    _assertActive();
+    if (_batcher.inspectPending() != null) {
+      throw _batchStateException(
+        'bindings.batch_pending',
+        'pending input must commit, transfer, or be discarded before release',
       );
-    } catch (error, stackTrace) {
-      if (flushed.isEmpty) {
-        rethrow;
-      }
-      throw BatchOperationException<EngineResult>(
-        completedResults: List.unmodifiable(flushed),
-        cause: error,
-        stackTrace: stackTrace,
+    }
+    _engine._releaseBatchLease(_lease);
+    _released = true;
+  }
+
+  void _assertActive() {
+    if (_released) {
+      throw _batchStateException(
+        'bindings.batch_released',
+        'mdstream input batcher has released its engine lease',
       );
     }
   }
@@ -177,6 +226,7 @@ final class MdstreamEngine {
   int _changePayloads = 0;
   int _snapshotPayloads = 0;
   int _outputPayloadBytes = 0;
+  _BatchLease? _batchLease;
 
   /// Whether the native engine and paired reducer have been closed.
   bool get isClosed => _engine.isClosed;
@@ -201,33 +251,121 @@ final class MdstreamEngine {
 
   /// Appends one UTF-8 source chunk and applies every emitted change.
   EngineResult append(String chunk) {
-    final ceiling = _engine.rawAppendByteCeiling;
-    if (ceiling != null && !utf8ByteLengthAtMost(chunk, ceiling)) {
-      throw MdstreamException(
-        'raw append input exceeds the current native source admission ceiling',
-        status: BindingStatus.resourceLimitExceeded.value,
-        statusName: BindingStatus.resourceLimitExceeded.statusName,
-        detailCode: 'bindings.resource_limit',
-      );
-    }
+    _assertDirectMutationAllowed();
+    return _appendUnchecked(chunk);
+  }
+
+  EngineResult _appendFromBatcher(
+    _BatchLease lease,
+    String chunk,
+    int utf8Bytes,
+  ) {
+    _assertBatchLease(lease);
+    _assertCachedAppendAdmission(utf8Bytes);
+    return _appendEncoded(chunk);
+  }
+
+  EngineResult _appendUnchecked(String chunk) {
+    _admittedUtf8ByteLength(chunk);
+    return _appendEncoded(chunk);
+  }
+
+  EngineResult _appendEncoded(String chunk) {
     _commands += 1;
     return _consume(_engine.append(Uint8List.fromList(utf8.encode(chunk))));
   }
 
+  int _preflightFromBatcher(
+    _BatchLease lease,
+    String chunk,
+    void Function(int bytes) observeScan,
+  ) {
+    _assertBatchLease(lease);
+    return _admittedUtf8ByteLength(chunk, observeScan: observeScan);
+  }
+
+  int _admittedUtf8ByteLength(
+    String chunk, {
+    void Function(int bytes)? observeScan,
+  }) {
+    final ceiling = _engine.rawAppendByteCeiling;
+    if (ceiling == null) {
+      final bytes = utf8ByteLength(chunk);
+      observeScan?.call(bytes);
+      return bytes;
+    }
+    final bytes = utf8ByteLengthWithin(
+      chunk,
+      ceiling,
+      observeScan: observeScan,
+    );
+    if (bytes != null) {
+      return bytes;
+    }
+    throw _rawAdmissionException();
+  }
+
+  void _assertCachedAppendAdmission(int utf8Bytes) {
+    final ceiling = _engine.rawAppendByteCeiling;
+    if (ceiling == null || utf8Bytes <= ceiling) {
+      return;
+    }
+    throw _rawAdmissionException();
+  }
+
+  MdstreamException _rawAdmissionException() {
+    return MdstreamException(
+      'raw append input exceeds the current native source admission ceiling',
+      status: BindingStatus.resourceLimitExceeded.value,
+      statusName: BindingStatus.resourceLimitExceeded.statusName,
+      detailCode: 'bindings.resource_limit',
+    );
+  }
+
   /// Finalizes the stream and applies every emitted change.
   EngineResult finish() {
+    _assertDirectMutationAllowed();
+    return _finishUnchecked();
+  }
+
+  EngineResult _finishFromBatcher(_BatchLease lease) {
+    _assertBatchLease(lease);
+    return _finishUnchecked();
+  }
+
+  EngineResult _finishUnchecked() {
     _commands += 1;
     return _consume(_engine.execute(_command('finish')));
   }
 
   /// Resets the stream and applies every emitted change.
   EngineResult reset() {
+    _assertDirectMutationAllowed();
+    return _resetUnchecked();
+  }
+
+  EngineResult _resetFromBatcher(_BatchLease lease) {
+    _assertBatchLease(lease);
+    return _resetUnchecked();
+  }
+
+  EngineResult _resetUnchecked() {
     _commands += 1;
     return _consume(_engine.execute(_command('reset')));
   }
 
   /// Requests an opaque canonical snapshot for reducer recovery.
   CanonicalSnapshotBytes? createRecoverySnapshot() {
+    _assertDirectMutationAllowed();
+    return _snapshotUnchecked();
+  }
+
+  CanonicalSnapshotBytes? _snapshotFromBatcher(_BatchLease lease) {
+    _assertBatchLease(lease);
+    return _snapshotUnchecked();
+  }
+
+  CanonicalSnapshotBytes? _snapshotUnchecked() {
     _commands += 1;
     final payloads = _engine.execute(_command('snapshot'));
     CanonicalSnapshotBytes? snapshot;
@@ -245,10 +383,31 @@ final class MdstreamEngine {
     return snapshot;
   }
 
-  /// Creates a lossless source batcher bounded by [maxBatchBytes].
-  MdstreamInputBatcher createBatcher(int maxBatchBytes) {
+  /// Creates the engine's only live lossless source batcher.
+  MdstreamInputBatcher createBatcher({
+    required int maxBatchBytes,
+    required int maxPendingChunks,
+  }) {
     _assertOpen();
-    return MdstreamInputBatcher._(this, maxBatchBytes);
+    if (_batchLease != null) {
+      throw _batchStateException(
+        'bindings.batch_lease_active',
+        'mdstream engine already has an active input batcher',
+      );
+    }
+    final lease = _BatchLease();
+    _batchLease = lease;
+    try {
+      return MdstreamInputBatcher._(
+        this,
+        lease,
+        maxBatchBytes: maxBatchBytes,
+        maxPendingChunks: maxPendingChunks,
+      );
+    } catch (_) {
+      _batchLease = null;
+      rethrow;
+    }
   }
 
   /// Starts processor work for the current version of [nodeId].
@@ -335,6 +494,12 @@ final class MdstreamEngine {
     if (_engine.isClosed) {
       return;
     }
+    if (_batchLease != null) {
+      throw _batchStateException(
+        'bindings.batch_lease_active',
+        'release the active input batcher before closing its engine',
+      );
+    }
     _engine.close();
     _reducer.close();
   }
@@ -380,7 +545,34 @@ final class MdstreamEngine {
       );
     }
   }
+
+  void _assertDirectMutationAllowed() {
+    _assertOpen();
+    if (_batchLease != null) {
+      throw _batchStateException(
+        'bindings.batch_lease_active',
+        'direct engine mutation is blocked by an active input batcher',
+      );
+    }
+  }
+
+  void _assertBatchLease(_BatchLease lease) {
+    _assertOpen();
+    if (!identical(_batchLease, lease)) {
+      throw _batchStateException(
+        'bindings.batch_released',
+        'the input batcher no longer owns this engine',
+      );
+    }
+  }
+
+  void _releaseBatchLease(_BatchLease lease) {
+    _assertBatchLease(lease);
+    _batchLease = null;
+  }
 }
+
+final class _BatchLease {}
 
 /// Pairs native engine and reducer handles behind the high-level engine API.
 MdstreamEngine createNativeEngine(
@@ -395,3 +587,11 @@ MdstreamException _unexpectedEnginePayload(String message) => MdstreamException(
   statusName: BindingStatus.internalError.statusName,
   detailCode: 'bindings.unexpected_payload',
 );
+
+MdstreamException _batchStateException(String detailCode, String message) =>
+    MdstreamException(
+      message,
+      status: BindingStatus.invalidArgument.value,
+      statusName: BindingStatus.invalidArgument.statusName,
+      detailCode: detailCode,
+    );

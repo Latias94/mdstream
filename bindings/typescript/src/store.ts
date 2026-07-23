@@ -267,6 +267,20 @@ export class RustBackedStore implements MdstreamStore {
     if (!this.#captureTransitions) {
       return operation();
     }
+    return this.#runCoherentOperation(operation, true);
+  }
+
+  /** @internal */
+  runCoherentDocumentOperation<Result>(operation: () => Result): Result {
+    this.#assertOpen();
+    this.#assertMutationAllowed();
+    return this.#runCoherentOperation(operation, this.#captureTransitions);
+  }
+
+  #runCoherentOperation<Result>(
+    operation: () => Result,
+    publishTransitions: boolean,
+  ): Result {
     if (this.#operation !== undefined) {
       return operation();
     }
@@ -277,7 +291,7 @@ export class RustBackedStore implements MdstreamStore {
       return operation();
     } finally {
       this.#operation = undefined;
-      this.#finishDocumentOperation(pending);
+      this.#finishDocumentOperation(pending, publishTransitions);
     }
   }
 
@@ -801,15 +815,20 @@ export class RustBackedStore implements MdstreamStore {
     notifyKeyed(this.#artifactListeners, notifications.artifacts);
   }
 
-  #finishDocumentOperation(operation: StoreOperation): void {
-    const batch = Object.freeze({
-      facts: Object.freeze([...operation.facts]),
-    });
-    this.#publishingTransitions = true;
-    try {
-      notifyTransitionListeners(this.#transitionListeners, batch);
-    } finally {
-      this.#publishingTransitions = false;
+  #finishDocumentOperation(
+    operation: StoreOperation,
+    publishTransitions: boolean,
+  ): void {
+    if (publishTransitions) {
+      const batch = Object.freeze({
+        facts: Object.freeze([...operation.facts]),
+      });
+      this.#publishingTransitions = true;
+      try {
+        notifyTransitionListeners(this.#transitionListeners, batch);
+      } finally {
+        this.#publishingTransitions = false;
+      }
     }
 
     this.#notify(operation.notifications);

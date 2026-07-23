@@ -169,11 +169,73 @@ state meaning as an animated mode.
 
 ## Batching and processors
 
-`engine.createBatcher(maxBatchBytes)` coalesces small token chunks without
-dropping bytes. `push`, `finish`, and `reset` return every produced result in
-wire order, including the two-result case where pending input is flushed before
-an oversized chunk. Metrics report input, forwarded, pending, copy, payload,
-and native append counts as decimal strings.
+`engine.createBatcher(maxBatchBytes: ..., maxPendingChunks: ...)` retains
+bounded caller boundaries and applies them in order. The Dart value gate chose
+constituent-first canonical appends: semantic joining reduced calls but failed
+the deterministic copy-work budget on every required workload. Empty chunks
+count as input attempts but consume no pending boundary.
+
+`push`, `flush`, `retryPending`, `finish`, and `reset` return immutable ordered
+`List<EngineResult>` collections. A host adapter must merge the collection's
+`reducerResults` and publish one coherent batch-tail notification; it must not
+call a controller append once per constituent.
+
+```dart
+final batcher = engine.createBatcher(
+  maxBatchBytes: 16 * 1024,
+  maxPendingChunks: 2048,
+);
+final results = <EngineResult>[];
+
+try {
+  results.addAll(batcher.push(tokenChunk));
+  results.addAll(batcher.finish());
+} on BatchOperationException<EngineResult> catch (error) {
+  results.addAll(error.completedResults);
+  final pending = error.pending;
+  if (pending != null) {
+    // Choose exactly one ownership action. This example retries.
+    results.addAll(batcher.retryPending());
+  }
+  if (error.operation == BatchOperation.push &&
+      error.newInputAccepted == false) {
+    // The caller still owns tokenChunk, so submit it exactly once.
+    results.addAll(batcher.push(tokenChunk));
+  }
+  results.addAll(batcher.finish());
+}
+
+// Publish `results.expand((result) => result.reducerResults)` once here.
+batcher.release();
+engine.close();
+```
+
+One batcher holds the engine's exclusive mutation lease until `release()`.
+Direct append, finish, reset, snapshot, close, and second-batcher creation fail
+with `bindings.batch_lease_active` throughout that lifetime, including after
+an empty flush. Release succeeds only after pending input commits, is transferred
+by `takePending()`, or is explicitly abandoned by `discardPending()`. Both
+ownership operations return the immutable `BatchPendingInput` evidence.
+
+Append and lifecycle callback failures reached through the batcher always use
+`BatchOperationException`, even when no prefix committed. It preserves the
+ordered `completedResults`, original `cause`, stable `operation`, nullable
+`newInputAccepted`, and immutable `BatchPendingInput`. Raw source admission
+errors raised before the batcher accepts a chunk remain direct
+`MdstreamException` values. While pending input remains unresolved, ordinary
+push, flush, and lifecycle calls fail with `bindings.batch_unresolved`; the
+caller must use `retryPending()`, `takePending()`, or `discardPending()`.
+`retryPending()` itself is valid only in that blocked state. `inspectPending()`
+provides a nullable ownership snapshot without mutation.
+
+`BatchMetrics` separately reports input and append attempts, successful
+appends, committed and pending bytes, pending constituents, logical boundary
+metadata (eight bytes per constituent), scan/join/replay work, encoded output,
+and published results. Run the complete migration example with:
+
+```console
+dart run example/lossless_batching.dart --library /path/to/mdstream-ffi
+```
 
 Processor methods expose native begin, complete, fail, and cancel leases. Their
 text, binary, or citation artifacts are keyed by epoch, node identity, processor
@@ -212,6 +274,7 @@ are sealed variants, so consumers switch on the concrete variant instead of
 checking strings and nullable fields. Variant-specific fields are non-nullable,
 and decoding rejects inconsistent native state/payload combinations.
 
-All engine and reducer handles support idempotent `close()`. Explicit close is
-the lifecycle contract; short-lived native outputs and buffers are copied and
-released synchronously on both success and error paths.
+Engine and reducer handles support idempotent `close()` when they have no live
+batch lease. Explicit close is the lifecycle contract; short-lived native
+outputs and buffers are copied and released synchronously on both success and
+error paths.

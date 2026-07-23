@@ -4,8 +4,9 @@ library;
 export 'src/batching.dart'
     show
         BatchMetrics,
+        BatchOperation,
         BatchOperationException,
-        LosslessInputBatcher,
+        BatchPendingInput,
         utf8ByteLength,
         utf8ByteLengthAtMost;
 export 'src/engine.dart'

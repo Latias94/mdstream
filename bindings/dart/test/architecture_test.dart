@@ -41,6 +41,19 @@ void main() {
       entrypoint,
       isNot(matches(RegExp(r"export 'src/protocol\.dart'\s+hide"))),
     );
+    expect(entrypoint, isNot(contains('LosslessInputBatcher')));
+    expect(entrypoint, isNot(contains('runBatchCandidateForTesting')));
+    expect(entrypoint, contains('BatchPendingInput'));
+
+    final batching = File(
+      '${root.path}${Platform.pathSeparator}lib'
+      '${Platform.pathSeparator}src${Platform.pathSeparator}batching.dart',
+    ).readAsStringSync();
+    expect(batching, isNot(contains('BatchCandidatePolicy')));
+    expect(batching, isNot(contains('runBatchCandidateForTesting')));
+    expect(batching, isNot(contains('_applyJoinedForEvaluation')));
+    expect(batching, isNot(contains('_joinedFirstForEvaluation')));
+    expect(batching, isNot(contains('_retryAtOriginalBoundaries')));
 
     final pubspec =
         loadYaml(

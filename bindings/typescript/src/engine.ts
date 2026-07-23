@@ -119,16 +119,34 @@ export interface EngineResult {
   readonly outputPayloadBytes: DecimalCounter;
 }
 
+export interface LosslessBatchOptions {
+  readonly maxBatchBytes: number;
+  readonly maxPendingChunks: number;
+}
+
 export interface BatchMetrics {
   readonly maxBatchBytes: DecimalCounter;
-  readonly inputChunks: DecimalCounter;
+  readonly maxPendingChunks: DecimalCounter;
+  readonly inputAttempts: DecimalCounter;
   readonly inputBytes: DecimalCounter;
-  readonly forwardedBytes: DecimalCounter;
+  readonly appendAttempts: DecimalCounter;
+  readonly successfulAppends: DecimalCounter;
+  readonly committedBytes: DecimalCounter;
   readonly pendingBytes: DecimalCounter;
+  readonly pendingConstituents: DecimalCounter;
+  /** Logical bytes for live boundary records, at eight bytes per constituent. */
+  readonly boundaryMetadataBytes: DecimalCounter;
+  readonly scanBytes: DecimalCounter;
   readonly joinCopyBytes: DecimalCounter;
+  readonly replayCount: DecimalCounter;
   readonly outputPayloadBytes: DecimalCounter;
-  readonly batchCount: DecimalCounter;
-  readonly wasmAppendCalls: DecimalCounter;
+  readonly publishedResults: DecimalCounter;
+}
+
+export interface BatchPendingInput {
+  readonly chunks: readonly string[];
+  readonly bytes: DecimalCounter;
+  readonly constituents: DecimalCounter;
 }
 
 export interface BatchedRecoverySnapshot {
@@ -136,19 +154,41 @@ export interface BatchedRecoverySnapshot {
   readonly snapshot: CanonicalSnapshotBytes | undefined;
 }
 
+export type BatchOperation =
+  | "push"
+  | "flush"
+  | "retry_pending"
+  | "finish"
+  | "reset"
+  | "recovery_snapshot";
+
 export class BatchOperationError extends Error {
   readonly completedResults: readonly EngineResult[];
+  override readonly cause: unknown;
+  readonly operation: BatchOperation;
+  readonly pending: BatchPendingInput | undefined;
+  readonly newInputAccepted: boolean | undefined;
 
-  constructor(completedResults: readonly EngineResult[], cause: unknown) {
-    super("batch operation failed after committing earlier results", { cause });
+  constructor(options: {
+    readonly completedResults: readonly EngineResult[];
+    readonly cause: unknown;
+    readonly operation: BatchOperation;
+    readonly pending: BatchPendingInput | undefined;
+    readonly newInputAccepted: boolean | undefined;
+  }) {
+    super("batch operation failed with explicitly recoverable input ownership", {
+      cause: options.cause,
+    });
     this.name = "BatchOperationError";
-    this.completedResults = Object.freeze([...completedResults]);
+    this.completedResults = Object.freeze([...options.completedResults]);
+    this.cause = options.cause;
+    this.operation = options.operation;
+    this.pending = options.pending;
+    this.newInputAccepted = options.newInputAccepted;
   }
 }
 
 const emptyEngineResults = Object.freeze([]) as readonly EngineResult[];
-type DocumentOperationRunner = <Result>(operation: () => Result) => Result;
-const documentOperationRunners = new WeakMap<MdstreamEngine, DocumentOperationRunner>();
 
 const runtimes = new WeakMap<WasmModuleLoader, Promise<MdstreamRuntime>>();
 
@@ -237,6 +277,7 @@ export class MdstreamEngine {
   readonly #engine: WasmEngineSession;
   readonly #rustStore: RustBackedStore;
   readonly #scheduler: ProcessorScheduler;
+  #activeBatchLease: object | undefined;
   #closed = false;
 
   private constructor(
@@ -248,10 +289,6 @@ export class MdstreamEngine {
     this.#rustStore = store;
     this.store = createStoreView(store);
     this.#scheduler = new ProcessorScheduler(store, schedulerLimits);
-    documentOperationRunners.set(
-      this,
-      (operation) => this.#rustStore.runDocumentOperation(operation),
-    );
     store.setEventSink((events) => this.#scheduler.handleStoreEvents(events));
   }
 
@@ -265,56 +302,23 @@ export class MdstreamEngine {
   }
 
   append(chunk: string): EngineResult {
-    return this.#rustStore.runDocumentOperation(() => {
-      this.#assertOpen();
-      assertRawAppendAdmission(this.#engine, chunk);
-      return this.#consume(() => this.#engine.append(chunk));
-    });
+    return this.#runDirectMutation(() => this.#append(chunk));
   }
 
   finish(): EngineResult {
-    return this.#rustStore.runDocumentOperation(() => {
-      this.#assertOpen();
-      return this.#consume(() => this.#engine.finish());
-    });
+    return this.#runDirectMutation(() => this.#finish());
   }
 
   reset(): EngineResult {
-    return this.#rustStore.runDocumentOperation(() => {
-      this.#assertOpen();
-      return this.#consume(() => this.#engine.reset());
-    });
+    return this.#runDirectMutation(() => this.#reset());
   }
 
   createRecoverySnapshot(): CanonicalSnapshotBytes | undefined {
-    return this.#rustStore.runDocumentOperation(() => {
-      this.#assertOpen();
-      let output: WasmOutput;
-      try {
-        output = this.#engine.snapshot();
-      } catch (error) {
-        throw MdstreamError.from(error);
-      }
-      const drained = drainOutput(output);
-      let snapshot: CanonicalSnapshotBytes | undefined;
-      for (const payload of drained.payloads) {
-        if (payload.kind !== BindingPayloadKind.Snapshot || snapshot !== undefined) {
-          throw new MdstreamError("engine snapshot returned an unexpected payload", {
-            status: 12,
-            statusName: "MDSTREAM_INTERNAL_ERROR",
-            detailCode: "bindings.unexpected_payload",
-          });
-        }
-        snapshot = asCanonicalSnapshotBytes(payload.bytes);
-      }
-      return snapshot;
-    });
+    return this.#runDirectMutation(() => this.#recoverySnapshot());
   }
 
   registerProcessor(processor: ContentProcessor): ProcessorRegistration {
-    return this.#rustStore.runDocumentOperation(() =>
-      this.#scheduler.register(processor)
-    );
+    return this.#runDirectMutation(() => this.#scheduler.register(processor));
   }
 
   subscribeProcessorErrors(listener: ProcessorErrorListener): () => void {
@@ -325,9 +329,13 @@ export class MdstreamEngine {
     return this.#scheduler.whenIdle();
   }
 
-  createBatcher(maxBatchBytes: number): LosslessInputBatcher {
-    this.#assertOpen();
-    return new LosslessInputBatcher(this, maxBatchBytes);
+  createBatcher(options: LosslessBatchOptions): LosslessInputBatcher {
+    const normalized = normalizeBatchOptions(options);
+    return new EngineInputBatcher(
+      this.#acquireBatchLease(),
+      normalized.maxBatchBytes,
+      normalized.maxPendingChunks,
+    );
   }
 
   metrics(): BindingMetricsView {
@@ -339,12 +347,119 @@ export class MdstreamEngine {
     if (this.#closed) {
       return;
     }
+    this.#assertNoBatchLease();
     this.#rustStore.assertMutationAllowed();
     this.#closed = true;
     this.#scheduler.close();
     this.#rustStore.setEventSink(undefined);
     this.#engine.free();
     this.#rustStore.close();
+  }
+
+  #runDirectMutation<Result>(operation: () => Result): Result {
+    this.#assertOpen();
+    this.#assertNoBatchLease();
+    return this.#rustStore.runDocumentOperation(operation);
+  }
+
+  #append(chunk: string): EngineResult {
+    assertRawAppendAdmission(this.#engine, chunk);
+    return this.#consume(() => this.#engine.append(chunk));
+  }
+
+  #finish(): EngineResult {
+    return this.#consume(() => this.#engine.finish());
+  }
+
+  #reset(): EngineResult {
+    return this.#consume(() => this.#engine.reset());
+  }
+
+  #recoverySnapshot(): CanonicalSnapshotBytes | undefined {
+    let output: WasmOutput;
+    try {
+      output = this.#engine.snapshot();
+    } catch (error) {
+      throw MdstreamError.from(error);
+    }
+    const drained = drainOutput(output);
+    let snapshot: CanonicalSnapshotBytes | undefined;
+    for (const payload of drained.payloads) {
+      if (payload.kind !== BindingPayloadKind.Snapshot || snapshot !== undefined) {
+        throw new MdstreamError("engine snapshot returned an unexpected payload", {
+          status: 12,
+          statusName: "MDSTREAM_INTERNAL_ERROR",
+          detailCode: "bindings.unexpected_payload",
+        });
+      }
+      snapshot = asCanonicalSnapshotBytes(payload.bytes);
+    }
+    return snapshot;
+  }
+
+  #acquireBatchLease(): EngineBatchLease {
+    this.#assertOpen();
+    this.#assertNoBatchLease();
+    this.#rustStore.assertMutationAllowed();
+    const token = {};
+    this.#activeBatchLease = token;
+    const assertActive = () => {
+      this.#assertOpen();
+      if (this.#activeBatchLease !== token) {
+        throw batchStateError(
+          "the mdstream batching lease has been released",
+          "bindings.batch_released",
+        );
+      }
+    };
+    return Object.freeze({
+      run: <Result>(operation: () => Result): Result => {
+        assertActive();
+        return this.#rustStore.runCoherentDocumentOperation(operation);
+      },
+      preflightAppend: (
+        chunk: string,
+        observeScan: (bytes: number) => void,
+      ): number => {
+        assertActive();
+        return admittedUtf8ByteLength(this.#engine, chunk, observeScan);
+      },
+      append: (chunk: string, admittedBytes: number): EngineResult => {
+        assertActive();
+        assertRawAppendByteLengthAdmission(this.#engine, admittedBytes);
+        return this.#consume(() => this.#engine.append(chunk));
+      },
+      finish: (): EngineResult => {
+        assertActive();
+        return this.#finish();
+      },
+      reset: (): EngineResult => {
+        assertActive();
+        return this.#reset();
+      },
+      recoverySnapshot: (): CanonicalSnapshotBytes | undefined => {
+        assertActive();
+        return this.#recoverySnapshot();
+      },
+      assertActive,
+      assertMutationAllowed: (): void => {
+        assertActive();
+        this.#rustStore.assertMutationAllowed();
+      },
+      release: (): void => {
+        assertActive();
+        this.#activeBatchLease = undefined;
+      },
+    });
+  }
+
+  #assertNoBatchLease(): void {
+    if (this.#activeBatchLease !== undefined) {
+      throw batchStateError(
+        "mdstream engine mutation is owned by an active batching lease",
+        "bindings.batch_lease_active",
+      );
+    }
   }
 
   #consume(operation: () => WasmOutput): EngineResult {
@@ -390,175 +505,503 @@ export class MdstreamEngine {
   }
 }
 
-export class LosslessInputBatcher {
-  readonly #engine: MdstreamEngine;
-  readonly #maxBatchBytes: number;
-  readonly #runOperation: DocumentOperationRunner;
-  readonly #chunks: string[] = [];
-  #pendingBytes = 0;
-  #inputChunks = 0n;
-  #inputBytes = 0n;
-  #forwardedBytes = 0n;
-  #joinCopyBytes = 0n;
-  #outputPayloadBytes = 0n;
-  #batchCount = 0n;
+export interface LosslessInputBatcher {
+  readonly maxBatchBytes: number;
+  readonly maxPendingChunks: number;
+  push(chunk: string): readonly EngineResult[];
+  flush(): readonly EngineResult[];
+  retryPending(): readonly EngineResult[];
+  finish(): readonly EngineResult[];
+  reset(): readonly EngineResult[];
+  createRecoverySnapshot(): BatchedRecoverySnapshot;
+  inspectPending(): BatchPendingInput | undefined;
+  takePending(): BatchPendingInput | undefined;
+  discardPending(): BatchPendingInput | undefined;
+  release(): void;
+  metrics(): BatchMetrics;
+}
 
-  constructor(engine: MdstreamEngine, maxBatchBytes: number) {
-    if (!Number.isSafeInteger(maxBatchBytes) || maxBatchBytes <= 0) {
-      throw new RangeError("maxBatchBytes must be a positive safe integer");
-    }
-    this.#engine = engine;
-    this.#maxBatchBytes = maxBatchBytes;
-    const runOperation = documentOperationRunners.get(engine);
-    if (runOperation === undefined) {
-      throw new TypeError("batchers require an mdstream-created engine");
-    }
-    this.#runOperation = runOperation;
+interface EngineBatchLease {
+  run<Result>(operation: () => Result): Result;
+  preflightAppend(chunk: string, observeScan: (bytes: number) => void): number;
+  append(chunk: string, admittedBytes: number): EngineResult;
+  finish(): EngineResult;
+  reset(): EngineResult;
+  recoverySnapshot(): CanonicalSnapshotBytes | undefined;
+  assertActive(): void;
+  assertMutationAllowed(): void;
+  release(): void;
+}
+
+interface PendingChunk {
+  readonly text: string;
+  readonly bytes: number;
+}
+
+const logicalBoundaryMetadataBytes = 8n;
+
+class PendingChunks {
+  readonly #chunks: PendingChunk[] = [];
+  #bytes = 0;
+
+  get bytes(): number {
+    return this.#bytes;
   }
 
-  push(chunk: string): readonly EngineResult[] {
-    return this.#runOperation(() => this.#push(chunk));
+  get constituents(): number {
+    return this.#chunks.length;
   }
 
-  #push(chunk: string): readonly EngineResult[] {
-    let results: EngineResult[] | undefined;
-    const bytes = utf8ByteLength(chunk);
-    this.#inputChunks += 1n;
-    this.#inputBytes += BigInt(bytes);
+  get isEmpty(): boolean {
+    return this.#chunks.length === 0;
+  }
+
+  wouldExceed(bytes: number, maxBytes: number, maxChunks: number): boolean {
+    return this.#chunks.length >= maxChunks || bytes > maxBytes - this.#bytes;
+  }
+
+  accept(text: string, bytes: number): void {
     if (bytes === 0) {
-      return emptyEngineResults;
+      return;
     }
-    if (this.#pendingBytes > 0 && this.#pendingBytes + bytes > this.#maxBatchBytes) {
-      const flushed = this.#flush();
-      if (flushed !== undefined) {
-        (results ??= []).push(flushed);
-      }
-    }
-    if (bytes > this.#maxBatchBytes) {
-      const forwarded = this.#afterCommitted(
-        results ?? emptyEngineResults,
-        () => this.#forward(chunk, bytes),
-      );
-      (results ??= []).push(forwarded);
-      return Object.freeze(results);
-    }
-    this.#chunks.push(chunk);
-    this.#pendingBytes += bytes;
-    if (this.#pendingBytes === this.#maxBatchBytes) {
-      const flushed = this.#flush();
-      if (flushed !== undefined) {
-        (results ??= []).push(flushed);
-      }
-    }
-    return results === undefined ? emptyEngineResults : Object.freeze(results);
+    this.#chunks.push({ text, bytes });
+    this.#bytes += bytes;
   }
 
-  flush(): EngineResult | undefined {
-    return this.#runOperation(() => this.#flush());
+  front(): PendingChunk | undefined {
+    return this.#chunks[0];
   }
 
-  #flush(): EngineResult | undefined {
+  commitFront(expected: PendingChunk): void {
+    if (this.#chunks[0] !== expected) {
+      throw new Error("pending input ownership changed during append");
+    }
+    this.#chunks.shift();
+    this.#bytes -= expected.bytes;
+  }
+
+  clear(): void {
+    this.#chunks.length = 0;
+    this.#bytes = 0;
+  }
+
+  snapshot(): BatchPendingInput | undefined {
     if (this.#chunks.length === 0) {
       return undefined;
     }
-    const bytes = this.#pendingBytes;
-    const joined =
-      this.#chunks.length === 1 ? this.#chunks[0] : this.#chunks.join("");
-    if (joined === undefined) {
+    return Object.freeze({
+      chunks: Object.freeze(this.#chunks.map(({ text }) => text)),
+      bytes: counter(BigInt(this.#bytes)),
+      constituents: counter(BigInt(this.#chunks.length)),
+    });
+  }
+
+  joinedForEvaluation(): string | undefined {
+    if (this.#chunks.length === 0) {
       return undefined;
     }
-    if (this.#chunks.length > 1) {
-      this.#joinCopyBytes += BigInt(bytes);
+    return this.#chunks.length === 1
+      ? this.#chunks[0]?.text
+      : this.#chunks.map(({ text }) => text).join("");
+  }
+}
+
+interface PendingApplyObserver<Result> {
+  onAttempt(): void;
+  onCommitted(chunk: PendingChunk, result: Result): void;
+}
+
+class PendingApplyFailure<Result> extends Error {
+  readonly completedResults: readonly Result[];
+  override readonly cause: unknown;
+
+  constructor(completedResults: readonly Result[], cause: unknown) {
+    super("pending constituent append failed", { cause });
+    this.completedResults = Object.freeze([...completedResults]);
+    this.cause = cause;
+  }
+}
+
+function applyPendingConstituents<Result>(
+  pending: PendingChunks,
+  append: (chunk: string, bytes: number) => Result,
+  observer: PendingApplyObserver<Result>,
+): readonly Result[] {
+  const completed: Result[] = [];
+  while (true) {
+    const chunk = pending.front();
+    if (chunk === undefined) {
+      return completed.length === 0 ? Object.freeze([]) : Object.freeze(completed);
     }
-    const result = this.#engine.append(joined);
-    this.#chunks.length = 0;
-    this.#pendingBytes = 0;
-    this.#recordForward(bytes, result);
-    return result;
+    observer.onAttempt();
+    let result: Result;
+    try {
+      result = append(chunk.text, chunk.bytes);
+    } catch (error) {
+      throw new PendingApplyFailure(completed, error);
+    }
+    pending.commitFront(chunk);
+    observer.onCommitted(chunk, result);
+    completed.push(result);
+  }
+}
+
+class EngineInputBatcher implements LosslessInputBatcher {
+  readonly #lease: EngineBatchLease;
+  readonly #pending = new PendingChunks();
+  readonly #maxBatchBytes: number;
+  readonly #maxPendingChunks: number;
+  #released = false;
+  #unresolved = false;
+  #inputAttempts = 0n;
+  #inputBytes = 0n;
+  #appendAttempts = 0n;
+  #successfulAppends = 0n;
+  #committedBytes = 0n;
+  #scanBytes = 0n;
+  #joinCopyBytes = 0n;
+  #replayCount = 0n;
+  #outputPayloadBytes = 0n;
+  #publishedResults = 0n;
+
+  constructor(
+    lease: EngineBatchLease,
+    maxBatchBytes: number,
+    maxPendingChunks: number,
+  ) {
+    this.#lease = lease;
+    this.#maxBatchBytes = maxBatchBytes;
+    this.#maxPendingChunks = maxPendingChunks;
+  }
+
+  get maxBatchBytes(): number {
+    return this.#maxBatchBytes;
+  }
+
+  get maxPendingChunks(): number {
+    return this.#maxPendingChunks;
+  }
+
+  push(chunk: string): readonly EngineResult[] {
+    return this.#lease.run(() => {
+      this.#assertUsable();
+      this.#inputAttempts += 1n;
+      this.#assertResolved();
+      const bytes = this.#lease.preflightAppend(chunk, (scannedBytes) => {
+        this.#scanBytes += BigInt(scannedBytes);
+      });
+      this.#inputBytes += BigInt(bytes);
+      if (bytes === 0) {
+        return emptyEngineResults;
+      }
+
+      const results: EngineResult[] = [];
+      if (
+        !this.#pending.isEmpty &&
+        this.#pending.wouldExceed(
+          bytes,
+          this.#maxBatchBytes,
+          this.#maxPendingChunks,
+        )
+      ) {
+        results.push(...this.#applyPending("push", false));
+      }
+
+      if (bytes > this.#maxBatchBytes) {
+        try {
+          results.push(this.#appendStandalone(chunk, bytes));
+        } catch (error) {
+          this.#throwBatchOperationFailure(results, error, "push", false);
+        }
+        return Object.freeze(results);
+      }
+
+      this.#pending.accept(chunk, bytes);
+      if (this.#pending.bytes === this.#maxBatchBytes) {
+        results.push(...this.#applyPending("push", true, results));
+      }
+      return results.length === 0 ? emptyEngineResults : Object.freeze(results);
+    });
+  }
+
+  flush(): readonly EngineResult[] {
+    return this.#lease.run(() => {
+      this.#assertUsable();
+      this.#assertResolved();
+      return this.#applyPending("flush", undefined);
+    });
+  }
+
+  retryPending(): readonly EngineResult[] {
+    return this.#lease.run(() => {
+      this.#assertUsable();
+      if (!this.#unresolved) {
+        throw batchStateError(
+          "retryPending requires unresolved pending input",
+          "bindings.batch_pending",
+        );
+      }
+      return this.#applyPending("retry_pending", undefined);
+    });
   }
 
   finish(): readonly EngineResult[] {
-    return this.#runOperation(() => {
-      const results = this.#flushResults();
-      const result = this.#afterCommitted(results, () => this.#engine.finish());
-      this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
-      results.push(result);
-      return Object.freeze(results);
-    });
+    return this.#lifecycle("finish", () => this.#lease.finish());
   }
 
   reset(): readonly EngineResult[] {
-    return this.#runOperation(() => {
-      const results = this.#flushResults();
-      const result = this.#afterCommitted(results, () => this.#engine.reset());
-      this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
+    return this.#lifecycle("reset", () => this.#lease.reset());
+  }
+
+  createRecoverySnapshot(): BatchedRecoverySnapshot {
+    return this.#lease.run(() => {
+      this.#assertUsable();
+      this.#assertResolved();
+      const flushed = this.#applyPending("recovery_snapshot", undefined);
+      let snapshot: CanonicalSnapshotBytes | undefined;
+      try {
+        snapshot = this.#lease.recoverySnapshot();
+      } catch (error) {
+        this.#throwBatchOperationFailure(
+          flushed,
+          error,
+          "recovery_snapshot",
+          undefined,
+        );
+      }
+      if (snapshot !== undefined) {
+        this.#outputPayloadBytes += BigInt(snapshot.byteLength);
+      }
+      return Object.freeze({ flushed, snapshot });
+    });
+  }
+
+  inspectPending(): BatchPendingInput | undefined {
+    this.#assertUsable();
+    this.#lease.assertActive();
+    return this.#pending.snapshot();
+  }
+
+  takePending(): BatchPendingInput | undefined {
+    this.#assertUsable();
+    this.#lease.assertMutationAllowed();
+    const pending = this.#pending.snapshot();
+    this.#pending.clear();
+    this.#unresolved = false;
+    return pending;
+  }
+
+  discardPending(): BatchPendingInput | undefined {
+    this.#assertUsable();
+    this.#lease.assertMutationAllowed();
+    const discarded = this.#pending.snapshot();
+    this.#pending.clear();
+    this.#unresolved = false;
+    return discarded;
+  }
+
+  release(): void {
+    this.#assertUsable();
+    this.#lease.assertMutationAllowed();
+    if (!this.#pending.isEmpty || this.#unresolved) {
+      throw batchStateError(
+        "pending input must commit, transfer, or be explicitly discarded before release",
+        "bindings.batch_pending",
+      );
+    }
+    this.#lease.release();
+    this.#released = true;
+  }
+
+  metrics(): BatchMetrics {
+    return Object.freeze({
+      maxBatchBytes: counter(BigInt(this.#maxBatchBytes)),
+      maxPendingChunks: counter(BigInt(this.#maxPendingChunks)),
+      inputAttempts: counter(this.#inputAttempts),
+      inputBytes: counter(this.#inputBytes),
+      appendAttempts: counter(this.#appendAttempts),
+      successfulAppends: counter(this.#successfulAppends),
+      committedBytes: counter(this.#committedBytes),
+      pendingBytes: counter(BigInt(this.#pending.bytes)),
+      pendingConstituents: counter(BigInt(this.#pending.constituents)),
+      boundaryMetadataBytes: counter(
+        BigInt(this.#pending.constituents) * logicalBoundaryMetadataBytes,
+      ),
+      scanBytes: counter(this.#scanBytes),
+      joinCopyBytes: counter(this.#joinCopyBytes),
+      replayCount: counter(this.#replayCount),
+      outputPayloadBytes: counter(this.#outputPayloadBytes),
+      publishedResults: counter(this.#publishedResults),
+    });
+  }
+
+  #lifecycle(
+    operation: "finish" | "reset",
+    callback: () => EngineResult,
+  ): readonly EngineResult[] {
+    return this.#lease.run(() => {
+      this.#assertUsable();
+      this.#assertResolved();
+      const results = [...this.#applyPending(operation, undefined)];
+      let result: EngineResult;
+      try {
+        result = callback();
+      } catch (error) {
+        this.#throwBatchOperationFailure(results, error, operation, undefined);
+      }
+      this.#recordPublishedResult(result);
       results.push(result);
       return Object.freeze(results);
     });
   }
 
-  createRecoverySnapshot(): BatchedRecoverySnapshot {
-    return this.#runOperation(() => {
-      const flushed = this.#flushResults();
-      const snapshot = this.#afterCommitted(
-        flushed,
-        () => this.#engine.createRecoverySnapshot(),
+  #applyPending(
+    operation: BatchOperation,
+    newInputAccepted: boolean | undefined,
+    earlierResults: readonly EngineResult[] = emptyEngineResults,
+  ): readonly EngineResult[] {
+    try {
+      const results = applyPendingConstituents(
+        this.#pending,
+        (chunk, bytes) => this.#lease.append(chunk, bytes),
+        {
+          onAttempt: () => {
+            this.#appendAttempts += 1n;
+          },
+          onCommitted: (chunk, result) => {
+            this.#recordCommittedAppend(chunk.bytes, result);
+          },
+        },
       );
-      if (snapshot !== undefined) {
-        this.#outputPayloadBytes += BigInt(snapshot.byteLength);
+      this.#unresolved = false;
+      return results;
+    } catch (error) {
+      if (!(error instanceof PendingApplyFailure)) {
+        throw error;
       }
-      return Object.freeze({ flushed: Object.freeze(flushed), snapshot });
-    });
+      this.#unresolved = true;
+      throw new BatchOperationError({
+        completedResults: [...earlierResults, ...error.completedResults],
+        cause: error.cause,
+        operation,
+        pending: this.#pending.snapshot(),
+        newInputAccepted,
+      });
+    }
   }
 
-  metrics(): BatchMetrics {
-    return {
-      maxBatchBytes: counter(BigInt(this.#maxBatchBytes)),
-      inputChunks: counter(this.#inputChunks),
-      inputBytes: counter(this.#inputBytes),
-      forwardedBytes: counter(this.#forwardedBytes),
-      pendingBytes: counter(BigInt(this.#pendingBytes)),
-      joinCopyBytes: counter(this.#joinCopyBytes),
-      outputPayloadBytes: counter(this.#outputPayloadBytes),
-      batchCount: counter(this.#batchCount),
-      wasmAppendCalls: counter(this.#batchCount),
-    };
-  }
-
-  #forward(chunk: string, bytes: number): EngineResult {
-    const result = this.#engine.append(chunk);
-    this.#recordForward(bytes, result);
+  #appendStandalone(chunk: string, bytes: number): EngineResult {
+    this.#appendAttempts += 1n;
+    const result = this.#lease.append(chunk, bytes);
+    this.#recordCommittedAppend(bytes, result);
     return result;
   }
 
-  #recordForward(bytes: number, result: EngineResult): void {
-    this.#forwardedBytes += BigInt(bytes);
+  #recordCommittedAppend(bytes: number, result: EngineResult): void {
+    this.#successfulAppends += 1n;
+    this.#committedBytes += BigInt(bytes);
+    this.#recordPublishedResult(result);
+  }
+
+  #recordPublishedResult(result: EngineResult): void {
     this.#outputPayloadBytes += BigInt(result.outputPayloadBytes);
-    this.#batchCount += 1n;
+    this.#publishedResults += 1n;
   }
 
-  #flushResults(): EngineResult[] {
-    const results: EngineResult[] = [];
-    const flushed = this.#flush();
-    if (flushed !== undefined) {
-      results.push(flushed);
-    }
-    return results;
-  }
-
-  #afterCommitted<Result>(
+  #throwBatchOperationFailure(
     completedResults: readonly EngineResult[],
-    operation: () => Result,
-  ): Result {
-    try {
-      return operation();
-    } catch (error) {
-      if (completedResults.length === 0) {
-        throw error;
-      }
-      throw new BatchOperationError(completedResults, error);
+    cause: unknown,
+    operation: BatchOperation,
+    newInputAccepted: boolean | undefined,
+  ): never {
+    throw new BatchOperationError({
+      completedResults,
+      cause,
+      operation,
+      pending: this.#pending.snapshot(),
+      newInputAccepted,
+    });
+  }
+
+  #assertUsable(): void {
+    if (this.#released) {
+      throw batchStateError(
+        "the mdstream batching lease has been released",
+        "bindings.batch_released",
+      );
     }
   }
+
+  #assertResolved(): void {
+    if (this.#unresolved) {
+      throw batchStateError(
+        "pending input must be retried, transferred, or discarded first",
+        "bindings.batch_unresolved",
+      );
+    }
+  }
+}
+
+/** @internal */
+export interface BatchCandidateMetrics {
+  readonly appendAttempts: DecimalCounter;
+  readonly encodedResultBytes: DecimalCounter;
+  readonly scanBytes: DecimalCounter;
+  readonly joinCopyBytes: DecimalCounter;
+  readonly replayCount: DecimalCounter;
+}
+
+/** @internal Test-only KTD3 evaluator; not exported from the package entry point. */
+export function evaluateBatchCandidateForTest(
+  chunks: readonly string[],
+  candidate: "joined-first" | "constituent-first",
+  operations: {
+    readonly append: (chunk: string) => EngineResult;
+    readonly finish: () => EngineResult;
+  },
+): BatchCandidateMetrics {
+  const pending = new PendingChunks();
+  let scanBytes = 0n;
+  for (const chunk of chunks) {
+    const bytes = utf8ByteLength(chunk);
+    scanBytes += BigInt(bytes);
+    pending.accept(chunk, bytes);
+  }
+
+  let appendAttempts = 0n;
+  let encodedResultBytes = 0n;
+  let joinCopyBytes = 0n;
+  const record = (result: EngineResult) => {
+    encodedResultBytes += BigInt(result.outputPayloadBytes);
+  };
+
+  if (candidate === "constituent-first") {
+    applyPendingConstituents(pending, (chunk) => operations.append(chunk), {
+      onAttempt: () => {
+        appendAttempts += 1n;
+      },
+      onCommitted: (_chunk, result) => record(result),
+    });
+  } else {
+    const joined = pending.joinedForEvaluation();
+    if (joined !== undefined) {
+      appendAttempts += 1n;
+      if (pending.constituents > 1) {
+        joinCopyBytes += BigInt(pending.bytes);
+      }
+      record(operations.append(joined));
+      pending.clear();
+    }
+  }
+  record(operations.finish());
+
+  return Object.freeze({
+    appendAttempts: counter(appendAttempts),
+    encodedResultBytes: counter(encodedResultBytes),
+    scanBytes: counter(scanBytes),
+    joinCopyBytes: counter(joinCopyBytes),
+    replayCount: counter(0n),
+  });
 }
 
 export function utf8ByteLength(value: string): number {
@@ -570,33 +1013,65 @@ export function utf8ByteLength(value: string): number {
 }
 
 function assertRawAppendAdmission(engine: WasmEngineSession, chunk: string): void {
+  admittedUtf8ByteLength(engine, chunk);
+}
+
+function admittedUtf8ByteLength(
+  engine: WasmEngineSession,
+  chunk: string,
+  observeScan: (bytes: number) => void = () => {},
+): number {
+  const limit = rawAppendByteCeiling(engine);
+  if (chunk.length > limit) {
+    observeScan(0);
+    throw rawAdmissionError();
+  }
+  const scan = scanUtf8(chunk, limit);
+  observeScan(scan.bytes);
+  if (!scan.withinLimit) {
+    throw rawAdmissionError();
+  }
+  return scan.bytes;
+}
+
+function assertRawAppendByteLengthAdmission(
+  engine: WasmEngineSession,
+  admittedBytes: number,
+): void {
+  if (admittedBytes > rawAppendByteCeiling(engine)) {
+    throw rawAdmissionError();
+  }
+}
+
+function rawAppendByteCeiling(engine: WasmEngineSession): number {
   let ceiling: unknown;
   try {
     ceiling = engine.rawAppendByteCeiling();
   } catch (error) {
     throw MdstreamError.from(error);
   }
-  if (!Number.isSafeInteger(ceiling) || (ceiling as number) < 0) {
+  if (
+    typeof ceiling !== "number" ||
+    !Number.isSafeInteger(ceiling) ||
+    ceiling < 0
+  ) {
     throw new TypeError(
       "mdstream WASM rawAppendByteCeiling must return a non-negative safe integer",
     );
   }
-  const limit = ceiling as number;
-  if (chunk.length > limit || scanUtf8ByteLength(chunk, limit) === undefined) {
-    throw new MdstreamError(
-      "raw append input exceeds the current native source admission ceiling",
-      {
-        status: 11,
-        statusName: "MDSTREAM_RESOURCE_LIMIT_EXCEEDED",
-        detailCode: "bindings.resource_limit",
-      },
-    );
-  }
+  return ceiling;
 }
 
 function scanUtf8ByteLength(value: string, limit?: number): number | undefined {
+  const scan = scanUtf8(value, limit ?? Number.MAX_SAFE_INTEGER);
+  return scan.withinLimit ? scan.bytes : undefined;
+}
+
+function scanUtf8(
+  value: string,
+  maxBytes: number,
+): { readonly bytes: number; readonly withinLimit: boolean } {
   let bytes = 0;
-  const maxBytes = limit ?? Number.MAX_SAFE_INTEGER;
   for (let index = 0; index < value.length; index += 1) {
     const unit = value.charCodeAt(index);
     if (unit <= 0x7f) {
@@ -616,10 +1091,21 @@ function scanUtf8ByteLength(value: string, limit?: number): number | undefined {
       bytes += 3;
     }
     if (bytes > maxBytes) {
-      return undefined;
+      return { bytes, withinLimit: false };
     }
   }
-  return bytes;
+  return { bytes, withinLimit: true };
+}
+
+function rawAdmissionError(): MdstreamError {
+  return new MdstreamError(
+    "raw append input exceeds the current native source admission ceiling",
+    {
+      status: 11,
+      statusName: "MDSTREAM_RESOURCE_LIMIT_EXCEEDED",
+      detailCode: "bindings.resource_limit",
+    },
+  );
 }
 
 async function createRuntime(loader: WasmModuleLoader): Promise<MdstreamRuntime> {
@@ -650,6 +1136,34 @@ function prepareSessionOptions(
     encodedJson: JSON.stringify({ schema, ...normalized }),
     captureTransitions: normalized.capture_transitions === true,
   };
+}
+
+function normalizeBatchOptions(
+  options: LosslessBatchOptions,
+): LosslessBatchOptions {
+  if (options === null || typeof options !== "object") {
+    throw new TypeError("lossless batch options must be an object");
+  }
+  assertPositiveSafeInteger(options.maxBatchBytes, "maxBatchBytes");
+  assertPositiveSafeInteger(options.maxPendingChunks, "maxPendingChunks");
+  return Object.freeze({
+    maxBatchBytes: options.maxBatchBytes,
+    maxPendingChunks: options.maxPendingChunks,
+  });
+}
+
+function assertPositiveSafeInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive safe integer`);
+  }
+}
+
+function batchStateError(message: string, detailCode: string): MdstreamError {
+  return new MdstreamError(message, {
+    status: 1,
+    statusName: "MDSTREAM_INVALID_ARGUMENT",
+    detailCode,
+  });
 }
 
 function releaseFailedReducer(

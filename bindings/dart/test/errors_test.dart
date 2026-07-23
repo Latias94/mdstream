@@ -17,7 +17,7 @@ void main() {
               'status_name': 'MDSTREAM_NEEDS_SNAPSHOT',
               'detail_code': 'protocol.sequence_gap',
               'message': 'a snapshot is required',
-              'split_safety': 'retry_at_original_boundaries',
+              'split_safety': 'not_safe',
             }),
           ),
         ),
@@ -27,7 +27,7 @@ void main() {
       expect(error.status, 9);
       expect(error.statusName, 'MDSTREAM_NEEDS_SNAPSHOT');
       expect(error.detailCode, 'protocol.sequence_gap');
-      expect(error.splitSafety, SplitSafety.retryAtOriginalBoundaries);
+      expect(error.splitSafety, SplitSafety.notSafe);
       expect(error.message, 'a snapshot is required');
       expect(error.toString(), contains('a snapshot is required'));
     });

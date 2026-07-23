@@ -147,6 +147,19 @@ describe("framework-neutral package boundaries", () => {
       .map((file) => readFileSync(file, "utf8"))
       .join("\n");
     expect(publishedSource).not.toContain("examples/web");
+
+    expect(webSource).toContain("export interface HostDeliveryRecord");
+    expect(webSource).toContain("export interface HostTextRun");
+    expect(webSource).toContain("animationEligible");
+    for (const exampleOnlySurface of [
+      "HostDeliveryRecord",
+      "HostTextRun",
+      "animationEligible",
+      "fresh-delivery",
+    ]) {
+      expect(publishedSource).not.toContain(exampleOnlySurface);
+    }
+    expect(publishedSource).not.toMatch(/\b(?:animation|motion|renderer)\b/iu);
   });
 
   it("takes effective processor scheduler limits only from the native session", () => {
