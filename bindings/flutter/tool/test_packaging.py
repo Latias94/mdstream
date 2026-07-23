@@ -485,6 +485,176 @@ class BuildNativeContractTest(unittest.TestCase):
 
 
 class PackageSmokeContractTest(unittest.TestCase):
+    def test_android_command_timeout_is_phase_named_and_bounded(self) -> None:
+        diagnostic = "x" * (android_smoke.ANDROID_DIAGNOSTIC_CHARS * 2)
+        with patch.object(
+            android_smoke.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(
+                ["adb", "install"],
+                android_smoke.ANDROID_PHASE_TIMEOUT_SECONDS["adb-install"],
+                output=diagnostic,
+            ),
+        ), patch("builtins.print"):
+            with self.assertRaises(PackageSmokeError) as raised:
+                android_smoke._run(
+                    ["adb", "install"],
+                    cwd=TOOL_ROOT,
+                    phase="adb-install",
+                    capture=True,
+                )
+
+        message = str(raised.exception)
+        self.assertIn("adb-install timed out", message)
+        self.assertIn("[truncated]", message)
+        self.assertLessEqual(
+            len(message),
+            android_smoke.ANDROID_DIAGNOSTIC_CHARS + 256,
+        )
+
+    def test_android_device_smoke_assigns_every_command_a_timeout(self) -> None:
+        calls: list[tuple[list[str], str]] = []
+
+        def fake_run(
+            command: list[str],
+            *,
+            cwd: Path,
+            phase: str,
+            capture: bool = False,
+        ) -> subprocess.CompletedProcess[str]:
+            del cwd, capture
+            self.assertGreater(android_smoke.ANDROID_PHASE_TIMEOUT_SECONDS[phase], 0)
+            calls.append((command, phase))
+            stdout = ""
+            if phase == "adb-page-size":
+                stdout = "16384\n"
+            elif phase == "adb-logcat-read":
+                stdout = f"{android_smoke.SMOKE_OK} abi=1\n"
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        with patch.object(android_smoke, "_run", side_effect=fake_run):
+            android_smoke._run_on_device(Path("smoke.apk"), "emulator-5554")
+
+        self.assertEqual(
+            [phase for _, phase in calls],
+            [
+                "adb-wait-for-device",
+                "adb-page-size",
+                "adb-install",
+                "adb-logcat-clear",
+                "adb-launch",
+                "adb-logcat-read",
+                "adb-uninstall",
+            ],
+        )
+
+    def test_android_install_failure_does_not_attempt_cleanup(self) -> None:
+        phases: list[str] = []
+
+        def fake_run(
+            command: list[str],
+            *,
+            cwd: Path,
+            phase: str,
+            capture: bool = False,
+        ) -> subprocess.CompletedProcess[str]:
+            del cwd, capture
+            phases.append(phase)
+            if phase == "adb-page-size":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="16384\n",
+                    stderr="",
+                )
+            if phase == "adb-install":
+                raise PackageSmokeError("install failed")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with patch.object(android_smoke, "_run", side_effect=fake_run):
+            with self.assertRaisesRegex(PackageSmokeError, "install failed"):
+                android_smoke._run_on_device(Path("smoke.apk"), "emulator-5554")
+
+        self.assertNotIn("adb-uninstall", phases)
+
+    def test_android_cleanup_does_not_replace_the_primary_failure(self) -> None:
+        primary = PackageSmokeError("launch failed")
+
+        def fake_run(
+            command: list[str],
+            *,
+            cwd: Path,
+            phase: str,
+            capture: bool = False,
+        ) -> subprocess.CompletedProcess[str]:
+            del cwd, capture
+            if phase == "adb-page-size":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="16384\n",
+                    stderr="",
+                )
+            if phase == "adb-launch":
+                raise primary
+            if phase == "adb-uninstall":
+                raise PackageSmokeError("uninstall failed")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with patch.object(android_smoke, "_run", side_effect=fake_run):
+            with self.assertRaises(PackageSmokeError) as raised:
+                android_smoke._run_on_device(Path("smoke.apk"), "emulator-5554")
+
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(str(raised.exception), "launch failed")
+        self.assertEqual(
+            raised.exception.__notes__,
+            ["Android cleanup also failed: uninstall failed"],
+        )
+
+    def test_android_cleanup_failure_alone_fails_the_smoke(self) -> None:
+        def fake_run(
+            command: list[str],
+            *,
+            cwd: Path,
+            phase: str,
+            capture: bool = False,
+        ) -> subprocess.CompletedProcess[str]:
+            del cwd, capture
+            if phase == "adb-page-size":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="16384\n",
+                    stderr="",
+                )
+            if phase == "adb-logcat-read":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=f"{android_smoke.SMOKE_OK} abi=1\n",
+                    stderr="",
+                )
+            if phase == "adb-uninstall":
+                raise PackageSmokeError("uninstall failed")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with patch.object(android_smoke, "_run", side_effect=fake_run):
+            with self.assertRaisesRegex(PackageSmokeError, "uninstall failed"):
+                android_smoke._run_on_device(Path("smoke.apk"), "emulator-5554")
+
+    def test_android_workflow_has_an_outer_timeout(self) -> None:
+        workflow = (
+            TOOL_ROOT.parents[2]
+            / ".github"
+            / "workflows"
+            / "flutter-platforms.yml"
+        ).read_text(encoding="utf-8")
+        android_job = workflow[
+            workflow.index("  android:\n") : workflow.index("  apple:\n")
+        ]
+        self.assertIn("    timeout-minutes: 60", android_job)
+
     def test_flutter_tool_uses_the_windows_batch_entrypoint(self) -> None:
         with patch.object(package_smoke.sys, "platform", "win32"):
             self.assertEqual(package_smoke._flutter_tool(), "flutter.bat")

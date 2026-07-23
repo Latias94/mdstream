@@ -27,11 +27,28 @@ APPLICATION_ID = "io.mdstream.smoke.mdstream_flutter_android_smoke"
 SMOKE_OK = "MDSTREAM_FLUTTER_SMOKE_OK"
 SMOKE_ERROR = "MDSTREAM_FLUTTER_SMOKE_ERROR"
 RUNTIME_SMOKE_PROBE = Path(__file__).with_name("runtime_smoke_probe.dart")
+ANDROID_DIAGNOSTIC_CHARS = 8_000
+ANDROID_RUNTIME_TIMEOUT_SECONDS = 60.0
+ANDROID_PHASE_TIMEOUT_SECONDS = {
+    "native-build": 1_200.0,
+    "flutter-create": 180.0,
+    "flutter-pub-add": 180.0,
+    "flutter-build-apk": 1_200.0,
+    "zipalign": 60.0,
+    "adb-wait-for-device": 120.0,
+    "adb-page-size": 15.0,
+    "adb-install": 180.0,
+    "adb-logcat-clear": 15.0,
+    "adb-launch": 45.0,
+    "adb-logcat-read": 15.0,
+    "adb-uninstall": 60.0,
+}
 
 
 def _run(
-    command: list[str], *, cwd: Path, capture: bool = False
+    command: list[str], *, cwd: Path, phase: str, capture: bool = False
 ) -> subprocess.CompletedProcess[str]:
+    timeout = ANDROID_PHASE_TIMEOUT_SECONDS[phase]
     print("+", " ".join(command), flush=True)
     try:
         return subprocess.run(
@@ -41,13 +58,40 @@ def _run(
             env=_clean_environment(),
             text=True,
             capture_output=capture,
+            timeout=timeout,
         )
     except FileNotFoundError as error:
-        raise PackageSmokeError(f"required tool not found: {command[0]}") from error
-    except subprocess.CalledProcessError as error:
         raise PackageSmokeError(
-            f"command failed with exit code {error.returncode}: {' '.join(command)}"
+            f"Android phase {phase} requires missing tool: {command[0]}"
         ) from error
+    except subprocess.TimeoutExpired as error:
+        detail = _bounded_diagnostics(error.stdout, error.stderr)
+        suffix = f"\n{detail}" if detail else ""
+        raise PackageSmokeError(
+            f"Android phase {phase} timed out after {timeout:g} seconds: "
+            f"{' '.join(command)}{suffix}"
+        ) from error
+    except subprocess.CalledProcessError as error:
+        detail = _bounded_diagnostics(error.stdout, error.stderr)
+        suffix = f"\n{detail}" if detail else ""
+        raise PackageSmokeError(
+            f"Android phase {phase} failed with exit code {error.returncode}: "
+            f"{' '.join(command)}{suffix}"
+        ) from error
+
+
+def _bounded_diagnostics(*values: str | bytes | None) -> str:
+    parts = []
+    for value in values:
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+        if value:
+            parts.append(value.strip())
+    detail = "\n".join(part for part in parts if part)
+    if len(detail) <= ANDROID_DIAGNOSTIC_CHARS:
+        return detail
+    marker = "[truncated]\n"
+    return marker + detail[-(ANDROID_DIAGNOSTIC_CHARS - len(marker)) :]
 
 
 def _clean_environment() -> dict[str, str]:
@@ -129,19 +173,38 @@ def _configure_uncompressed_native_libraries(project: Path) -> None:
 
 def _run_on_device(apk: Path, device: str) -> None:
     adb = ["adb", "-s", device]
-    _run([*adb, "wait-for-device"], cwd=apk.parent)
+    _run(
+        [*adb, "wait-for-device"],
+        cwd=apk.parent,
+        phase="adb-wait-for-device",
+        capture=True,
+    )
     page_size = _run(
         [*adb, "shell", "getconf", "PAGE_SIZE"],
         cwd=apk.parent,
+        phase="adb-page-size",
         capture=True,
     ).stdout.strip()
     if page_size != "16384":
         raise PackageSmokeError(
             f"Android runtime smoke requires a 16 KiB device, got {page_size!r}"
         )
-    _run([*adb, "install", "-r", str(apk)], cwd=apk.parent)
+    installed = False
+    primary_error: BaseException | None = None
     try:
-        _run([*adb, "logcat", "-c"], cwd=apk.parent)
+        _run(
+            [*adb, "install", "-r", str(apk)],
+            cwd=apk.parent,
+            phase="adb-install",
+            capture=True,
+        )
+        installed = True
+        _run(
+            [*adb, "logcat", "-c"],
+            cwd=apk.parent,
+            phase="adb-logcat-clear",
+            capture=True,
+        )
         _run(
             [
                 *adb,
@@ -153,13 +216,16 @@ def _run_on_device(apk: Path, device: str) -> None:
                 f"{APPLICATION_ID}/.MainActivity",
             ],
             cwd=apk.parent,
+            phase="adb-launch",
+            capture=True,
         )
-        deadline = time.monotonic() + 60.0
+        deadline = time.monotonic() + ANDROID_RUNTIME_TIMEOUT_SECONDS
         latest = ""
         while time.monotonic() < deadline:
             latest = _run(
-                [*adb, "logcat", "-d", "-v", "brief"],
+                [*adb, "logcat", "-d", "-v", "brief", "-t", "200"],
                 cwd=apk.parent,
+                phase="adb-logcat-read",
                 capture=True,
             ).stdout
             if SMOKE_OK in latest:
@@ -172,8 +238,24 @@ def _run_on_device(apk: Path, device: str) -> None:
         raise PackageSmokeError(
             f"Android runtime smoke did not report success on {device}:\n{tail}"
         )
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        _run([*adb, "uninstall", APPLICATION_ID], cwd=apk.parent)
+        if installed:
+            try:
+                _run(
+                    [*adb, "uninstall", APPLICATION_ID],
+                    cwd=apk.parent,
+                    phase="adb-uninstall",
+                    capture=True,
+                )
+            except PackageSmokeError as cleanup_error:
+                if primary_error is None:
+                    raise
+                primary_error.add_note(
+                    f"Android cleanup also failed: {cleanup_error}"
+                )
 
 
 def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
@@ -192,6 +274,7 @@ def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
                 str(temporary),
             ],
             cwd=PLUGIN_ROOT,
+            phase="flutter-create",
         )
         _configure_uncompressed_native_libraries(temporary)
         _run(
@@ -203,6 +286,7 @@ def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
                 f"override:mdstream:{{path: {(REPOSITORY_ROOT / 'bindings' / 'dart').as_posix()}}}",
             ],
             cwd=temporary,
+            phase="flutter-pub-add",
         )
         _write_smoke_main(temporary / "lib" / "main.dart")
         _run(
@@ -215,6 +299,7 @@ def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
                 "android-arm,android-arm64,android-x64",
             ],
             cwd=temporary,
+            phase="flutter-build-apk",
         )
         apk = temporary / "build" / "app" / "outputs" / "flutter-apk" / "app-release.apk"
         if not apk.is_file():
@@ -240,6 +325,7 @@ def _build_and_inspect_apk(keep_temporary: bool, device: str | None) -> None:
         _run(
             [str(_zipalign_tool()), "-c", "-P", "16", "-v", "4", str(apk)],
             cwd=temporary,
+            phase="zipalign",
         )
         if device is not None:
             _run_on_device(apk, device)
@@ -270,6 +356,7 @@ def main() -> int:
                     "android",
                 ],
                 cwd=REPOSITORY_ROOT,
+                phase="native-build",
             )
         _build_and_inspect_apk(
             args.keep_temporary,
