@@ -34,6 +34,8 @@ interface NodeBinding {
   readonly unsubscribe: () => void;
   resourceUnsubscribes: (() => void)[];
   artifactUnsubscribe: (() => void) | undefined;
+  animationWatermarkCandidate: number | undefined;
+  view: NodeView | undefined;
   updating: boolean;
 }
 
@@ -44,6 +46,7 @@ export class ContentIrView {
   readonly #pendingRoot: HTMLElement;
   readonly #onDiagnostics: (diagnostics: ContentIrDiagnostics) => void;
   readonly #nodes = new Map<NodeId, NodeBinding>();
+  readonly #animationWatermarks = new Map<string, number>();
   readonly #unsubscribeRoot: () => void;
   readonly #unsubscribePending: () => void;
   readonly #unsubscribePolicy: () => void;
@@ -68,7 +71,7 @@ export class ContentIrView {
         for (const nodeId of changedNodes) {
           const binding = this.#nodes.get(nodeId);
           if (binding !== undefined) {
-            this.#updateNode(binding);
+            this.#updateNode(binding, true);
           }
         }
       }
@@ -90,6 +93,7 @@ export class ContentIrView {
       this.#disposeNode(binding);
     }
     this.#nodes.clear();
+    this.#animationWatermarks.clear();
   }
 
   #handleRootChange(): void {
@@ -109,6 +113,7 @@ export class ContentIrView {
         this.#disposeNode(binding);
       }
       this.#nodes.clear();
+      this.#animationWatermarks.clear();
       this.#answerRoot.replaceChildren();
     }
 
@@ -135,14 +140,16 @@ export class ContentIrView {
       unsubscribe: this.#store.subscribeNode(id, () => this.#updateNode(binding)),
       resourceUnsubscribes: [],
       artifactUnsubscribe: undefined,
+      animationWatermarkCandidate: undefined,
+      view: undefined,
       updating: false,
     };
     this.#nodes.set(id, binding);
-    this.#updateNode(binding);
+    this.#updateNode(binding, true);
     return binding;
   }
 
-  #updateNode(binding: NodeBinding): void {
+  #updateNode(binding: NodeBinding, force = false): void {
     if (this.#closed || binding.updating) {
       return;
     }
@@ -155,6 +162,9 @@ export class ContentIrView {
         binding.element.remove();
         return;
       }
+      if (!force && binding.view === view) {
+        return;
+      }
       for (const unsubscribe of binding.resourceUnsubscribes) {
         unsubscribe();
       }
@@ -163,13 +173,24 @@ export class ContentIrView {
       binding.artifactUnsubscribe = undefined;
 
       const epoch = this.#store.getSnapshot().document?.coordinate.epoch ?? "0";
+      const previousHostKey = binding.element.dataset.hostKey;
+      const hostKey = this.#policy.nodeKey(binding.id, epoch);
+      if (previousHostKey !== undefined && previousHostKey !== hostKey) {
+        this.#animationWatermarks.delete(previousHostKey);
+      }
       binding.element.dataset.nodeId = binding.id as string;
-      binding.element.dataset.hostKey = this.#policy.nodeKey(binding.id, epoch);
+      binding.element.dataset.hostKey = hostKey;
       binding.element.dataset.nodeKind = view.node.content.kind;
       binding.element.dataset.stability = view.node.stability;
       binding.element.dataset.presentation = this.#policy.stateForNode(binding.id);
+      binding.animationWatermarkCandidate = undefined;
       binding.element.replaceChildren(this.#renderContent(binding, view));
+      if (binding.animationWatermarkCandidate !== undefined) {
+        this.#animationWatermarks.set(hostKey, binding.animationWatermarkCandidate);
+      }
+      binding.view = view;
     } finally {
+      binding.animationWatermarkCandidate = undefined;
       binding.updating = false;
     }
   }
@@ -191,14 +212,14 @@ export class ContentIrView {
       case "strikethrough":
         return this.#container("s", view);
       case "text":
-        return textElement("span", this.#policy.displayText(binding.id, view.bodyText));
+        return this.#presentedText("span", binding, view);
       case "soft_break":
       case "hard_break":
         return document.createElement("br");
       case "thematic_break":
         return document.createElement("hr");
       case "inline_code":
-        return textElement("code", this.#policy.displayText(binding.id, view.bodyText));
+        return this.#presentedText("code", binding, view);
       case "code_block":
         return this.#renderCodeBlock(binding, view, content);
       case "link":
@@ -250,13 +271,13 @@ export class ContentIrView {
       case "table_cell":
         return this.#container("td", view);
       case "html": {
-        const inert = textElement("pre", this.#policy.displayText(binding.id, view.bodyText));
+        const inert = this.#presentedText("pre", binding, view);
         inert.className = "inert-html";
         inert.setAttribute("aria-label", "HTML source shown as inert text");
         return inert;
       }
       case "math": {
-        const math = textElement("code", this.#policy.displayText(binding.id, view.bodyText));
+        const math = this.#presentedText("code", binding, view);
         math.className = content.display ? "math math-display" : "math";
         return math;
       }
@@ -278,7 +299,7 @@ export class ContentIrView {
     const caption = document.createElement("figcaption");
     caption.textContent = content.info ?? "code";
     const pre = document.createElement("pre");
-    const code = textElement("code", this.#policy.displayText(binding.id, view.bodyText));
+    const code = this.#presentedText("code", binding, view);
     if (content.info !== null) {
       code.dataset.language = content.info;
     }
@@ -288,6 +309,48 @@ export class ContentIrView {
       figure.append(this.#renderArtifact(binding, view));
     }
     return figure;
+  }
+
+  #presentedText<Tag extends keyof HTMLElementTagNameMap>(
+    tag: Tag,
+    binding: NodeBinding,
+    view: NodeView,
+  ): HTMLElementTagNameMap[Tag] {
+    const element = document.createElement(tag);
+    const runs = this.#policy.textRuns(
+      binding.id,
+      view.node.body.start as string,
+      view.bodyText,
+    );
+    const hostKey = binding.element.dataset.hostKey ?? "";
+    const watermark = this.#animationWatermarks.get(hostKey) ?? 0;
+    let nextWatermark = watermark;
+    for (const run of runs) {
+      const delivered = document.createElement("span");
+      const animationEligible = run.animationEligible &&
+        run.animationSequence !== null &&
+        run.animationSequence > watermark;
+      delivered.className = animationEligible
+        ? "fresh-delivery"
+        : "settled-delivery";
+      delivered.dataset.deliveryAnimation = animationEligible
+        ? "eligible"
+        : "ineligible";
+      delivered.dataset.sourceRange = `${run.range.start}:${run.range.end}`;
+      if (run.animationSequence !== null) {
+        delivered.dataset.deliverySequence = String(run.animationSequence);
+        nextWatermark = Math.max(nextWatermark, run.animationSequence);
+      }
+      delivered.textContent = run.text;
+      element.append(delivered);
+    }
+    if (hostKey.length > 0 && nextWatermark > watermark) {
+      binding.animationWatermarkCandidate = Math.max(
+        binding.animationWatermarkCandidate ?? 0,
+        nextWatermark,
+      );
+    }
+    return element;
   }
 
   #renderArtifact(binding: NodeBinding, view: NodeView): HTMLElement {
@@ -304,6 +367,18 @@ export class ContentIrView {
       nodeId: view.node.id,
       processorId: MERMAID_PREVIEW_PROCESSOR_ID,
     };
+    this.#updateArtifactOutput(output, slot);
+    binding.artifactUnsubscribe = this.#store.subscribeArtifact(slot, () => {
+      if (this.#closed) {
+        return;
+      }
+      this.#updateArtifactOutput(output, slot);
+      this.#reportDiagnostics();
+    });
+    return output;
+  }
+
+  #updateArtifactOutput(output: HTMLOutputElement, slot: ArtifactSlot): void {
     const artifact = this.#store.getArtifactSnapshot(slot);
     this.#artifactState = artifact?.state ?? "not ready";
     if (artifact?.state === "ready" && artifact.artifact?.payload.kind === "text") {
@@ -313,11 +388,6 @@ export class ContentIrView {
     } else {
       output.textContent = "Derived preview pending";
     }
-    binding.artifactUnsubscribe = this.#store.subscribeArtifact(slot, () => {
-      this.#updateNode(binding);
-      this.#reportDiagnostics();
-    });
-    return output;
   }
 
   #renderLinkedChildren(
@@ -416,7 +486,7 @@ export class ContentIrView {
     }
     const resource = this.#store.getResourceSnapshot(resourceId);
     binding.resourceUnsubscribes.push(
-      this.#store.subscribeResource(resourceId, () => this.#updateNode(binding)),
+      this.#store.subscribeResource(resourceId, () => this.#updateNode(binding, true)),
     );
     const content = resource?.resource.content;
     return content?.kind === "link" || content?.kind === "citation"
@@ -447,8 +517,8 @@ export class ContentIrView {
     if (this.#closed) {
       return;
     }
-    const pending = this.#policy.observePending(this.#store);
     this.#pendingRoot.replaceChildren();
+    const pending = this.#policy.observePending(this.#store);
     if (pending === undefined) {
       this.#pendingRoot.hidden = true;
       return;
@@ -481,11 +551,16 @@ export class ContentIrView {
   }
 
   #disposeNode(binding: NodeBinding): void {
+    const hostKey = binding.element.dataset.hostKey;
+    if (hostKey !== undefined) {
+      this.#animationWatermarks.delete(hostKey);
+    }
     binding.unsubscribe();
     for (const unsubscribe of binding.resourceUnsubscribes) {
       unsubscribe();
     }
     binding.artifactUnsubscribe?.();
+    binding.view = undefined;
   }
 
   #reportDiagnostics(): void {

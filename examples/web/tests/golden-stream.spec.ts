@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 test("immediate and paced fresh sessions settle to equal meaning", async ({ page }) => {
   const errors = collectPageErrors(page);
+  await installDeliveryProbe(page);
   await page.goto("/?autoplay=false");
   await page.getByRole("button", { name: "Replay" }).click();
   const headingNode = page.locator('[data-node-kind="heading"]').first();
@@ -17,7 +18,24 @@ test("immediate and paced fresh sessions settle to equal meaning", async ({ page
     .toBeGreaterThan(0);
   expect(await page.locator("#answer").getAttribute("data-pending-catch-up-bytes"))
     .toBe(await page.locator("#answer").getAttribute("data-pending-presented-bytes"));
+  const animatedRuns = page.locator('#answer [data-delivery-animation="eligible"]');
+  const settledRuns = page.locator('#answer [data-delivery-animation="ineligible"]');
+  await expect(animatedRuns).toHaveCount(0);
+  await expect(settledRuns).not.toHaveCount(0);
+  for (let index = 0; index < await settledRuns.count(); index += 1) {
+    await expect(settledRuns.nth(index)).toHaveAttribute("data-source-range", /^\d+:\d+$/);
+  }
   await expect(page.locator('[data-event-kind="correction"]')).not.toHaveCount(0);
+  const deliveryProbe = await page.evaluate(() =>
+    (globalThis as typeof globalThis & {
+      __mdstreamDeliveryProbe: {
+        readonly started: readonly string[];
+        readonly duplicates: readonly string[];
+      };
+    }).__mdstreamDeliveryProbe
+  );
+  expect(deliveryProbe.started).toEqual([]);
+  expect(deliveryProbe.duplicates).toEqual([]);
   const safeLinks = page.locator('a[href="https://docs.rs/mdstream"]');
   await expect(safeLinks).toHaveCount(2);
   for (let index = 0; index < await safeLinks.count(); index += 1) {
@@ -52,6 +70,168 @@ test("immediate and paced fresh sessions settle to equal meaning", async ({ page
   await expect(page.locator("html")).toHaveAttribute("data-lifecycle", /streaming|draining|settled/);
   await settled(page);
   expect(await settledMeaning(page)).toEqual(immediate);
+  expect(errors).toEqual([]);
+});
+
+test("a fresh delivery animates once before a late node update settles it", async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await installDeliveryProbe(page);
+  await page.goto("/?autoplay=false");
+
+  const rendered = await page.evaluate(async () => {
+    const hostPolicyPath = "/src/host-policy.ts";
+    const contentIrViewPath = "/src/content-ir-view.ts";
+    const [{ HostPresentationPolicy }, { ContentIrView }] = await Promise.all([
+      import(hostPolicyPath) as Promise<typeof import("../src/host-policy.js")>,
+      import(contentIrViewPath) as Promise<typeof import("../src/content-ir-view.js")>,
+    ]);
+    const nodeId = "browser-animation";
+    const bodyText = "fresh";
+    const byteLength = (text: string) => new TextEncoder().encode(text).byteLength;
+    const makeNodeView = (version: string) => ({
+      schema: "mdstream.bindings/0.4",
+      kind: "node_view",
+      node: {
+        id: nodeId,
+        version,
+        stability: "provisional",
+        source: { start: "0", end: String(byteLength(bodyText)) },
+        body: { start: "0", end: String(byteLength(bodyText)) },
+        children: { version: "1", children: [] },
+        content: { kind: "text", text: { kind: "source" } },
+      },
+      bodyText,
+    });
+    const documentStamp = (sequence: string, projectionCursor: string) => ({
+      continuityGeneration: "0",
+      coordinate: {
+        epoch: "1",
+        sequence,
+        changeId: `browser:${sequence}`,
+        sourceCursor: "0",
+      },
+      lifecycle: "open",
+      projectionCursor,
+      rootsVersion: "1",
+    });
+    const appendBatch = {
+      facts: [{
+        scope: "continuous",
+        before: documentStamp("0", "0"),
+        after: documentStamp("1", String(byteLength(bodyText))),
+        nodes: [{
+          key: { continuityGeneration: "0", epoch: "1", nodeId },
+          before: {
+            version: "0",
+            stability: "provisional",
+            parent: { kind: "document" },
+            childrenVersion: "1",
+          },
+          after: {
+            version: "1",
+            stability: "provisional",
+            parent: { kind: "document" },
+            childrenVersion: "1",
+          },
+          text: {
+            kind: "projection_append",
+            range: { start: "0", end: String(byteLength(bodyText)) },
+            text: bodyText,
+          },
+        }],
+        structures: [],
+        resources: [],
+      }],
+    };
+    const nextFrame = () => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+    const nodeListeners = new Set<() => void>();
+    let nodeView = makeNodeView("1");
+    const store = {
+      subscribe: () => () => undefined,
+      subscribePendingSource: () => () => undefined,
+      subscribeNode: (_id: string, listener: () => void) => {
+        nodeListeners.add(listener);
+        return () => nodeListeners.delete(listener);
+      },
+      getSnapshot: () => ({
+        document: {
+          coordinate: { epoch: "1" },
+          roots: { children: [nodeId] },
+        },
+        impact: { fullReplace: false, rootsChanged: false },
+      }),
+      getNodeSnapshot: (id: string) => id === nodeId ? nodeView : undefined,
+      getPendingSourceSnapshot: () => undefined,
+      metrics: () => ({
+        materializedNodeViews: "1",
+        materializedResourceViews: "0",
+        materializedPendingSourceViews: "0",
+      }),
+    };
+    const policy = new HostPresentationPolicy("immediate", false);
+    policy.consume(store as never, appendBatch as never);
+
+    const fixture = document.createElement("section");
+    const answer = document.createElement("article");
+    const pending = document.createElement("aside");
+    fixture.append(answer, pending);
+    document.body.append(fixture);
+    const view = new ContentIrView({
+      store: store as never,
+      policy,
+      answerRoot: answer,
+      pendingRoot: pending,
+      onDiagnostics: () => undefined,
+    });
+    await nextFrame();
+    await nextFrame();
+    const initial = answer.querySelector<HTMLElement>("[data-delivery-animation]");
+    const initialState = {
+      animation: initial?.dataset.deliveryAnimation ?? null,
+      range: initial?.dataset.sourceRange ?? null,
+      cssAnimation: initial === null ? null : getComputedStyle(initial).animationName,
+    };
+
+    nodeView = makeNodeView("2");
+    for (const listener of [...nodeListeners]) {
+      listener();
+    }
+    await nextFrame();
+    await nextFrame();
+    const settled = answer.querySelector<HTMLElement>("[data-delivery-animation]");
+    const settledState = {
+      animation: settled?.dataset.deliveryAnimation ?? null,
+      range: settled?.dataset.sourceRange ?? null,
+      cssAnimation: settled === null ? null : getComputedStyle(settled).animationName,
+    };
+    view.close();
+    fixture.remove();
+    return { initialState, settledState };
+  });
+
+  expect(rendered.initialState).toEqual({
+    animation: "eligible",
+    range: "0:5",
+    cssAnimation: "fresh-ink",
+  });
+  expect(rendered.settledState).toEqual({
+    animation: "ineligible",
+    range: "0:5",
+    cssAnimation: "none",
+  });
+  const deliveryProbe = await page.evaluate(() =>
+    (globalThis as typeof globalThis & {
+      __mdstreamDeliveryProbe: {
+        readonly started: readonly string[];
+        readonly duplicates: readonly string[];
+      };
+    }).__mdstreamDeliveryProbe
+  );
+  expect(deliveryProbe.started).toHaveLength(1);
+  expect(deliveryProbe.duplicates).toEqual([]);
   expect(errors).toEqual([]);
 });
 
@@ -239,5 +419,38 @@ async function controlsOverlap(page: Page): Promise<boolean> {
       left.top < right.bottom &&
       left.bottom > right.top
     ));
+  });
+}
+
+async function installDeliveryProbe(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const seen = new Set<string>();
+    const started: string[] = [];
+    const duplicates: string[] = [];
+    document.addEventListener("DOMContentLoaded", () => {
+      document.addEventListener("animationstart", (event) => {
+        const candidate = event.target;
+        if (
+          event.animationName !== "fresh-ink" ||
+          !(candidate instanceof HTMLElement) ||
+          candidate.dataset.deliveryAnimation !== "eligible"
+        ) {
+          return;
+        }
+        const hostKey = candidate.closest<HTMLElement>("[data-host-key]")?.dataset.hostKey;
+        const range = candidate.dataset.sourceRange;
+        const sequence = candidate.dataset.deliverySequence;
+        const key = `${hostKey ?? "missing"}:${range ?? "missing"}:${sequence ?? "missing"}`;
+        started.push(key);
+        if (seen.has(key)) {
+          duplicates.push(key);
+        } else {
+          seen.add(key);
+        }
+      }, { capture: true });
+    }, { once: true });
+    Object.defineProperty(globalThis, "__mdstreamDeliveryProbe", {
+      value: { started, duplicates },
+    });
   });
 }

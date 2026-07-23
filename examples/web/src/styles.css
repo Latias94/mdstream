@@ -245,7 +245,7 @@ h3 {
   min-width: 0;
 }
 
-.content-node[data-presentation="fresh"] > * {
+.fresh-delivery {
   animation: fresh-ink 680ms ease-out both;
 }
 
