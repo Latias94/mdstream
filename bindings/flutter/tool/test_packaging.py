@@ -1675,6 +1675,46 @@ class PackageSmokeContractTest(unittest.TestCase):
                     require_all_platforms=False,
                 )
 
+    def test_archive_uses_lf_for_the_canonical_header_on_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "mdstream_flutter.tar.gz"
+            entries = {
+                "pubspec.yaml": b"name: mdstream_flutter\n",
+                **_apple_framework_entries("ios"),
+            }
+            _write_archive(archive, entries)
+            checkout_header = root / "mdstream.h"
+            canonical_header = (
+                TOOL_ROOT.parents[2] / "mdstream-ffi" / "include" / "mdstream.h"
+            ).read_bytes()
+            checkout_header.write_bytes(
+                canonical_header.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            )
+
+            with patch.object(package_smoke, "HEADER_PATH", checkout_header):
+                inspect_package_archive(
+                    archive,
+                    forbidden_terms=set(),
+                    native_ceiling_bytes=max(map(len, entries.values())),
+                    increment_ceiling_bytes=sum(map(len, entries.values())),
+                    require_all_platforms=False,
+                )
+
+            for name, contents in entries.items():
+                if name.endswith("Headers/mdstream.h"):
+                    entries[name] = contents.replace(b"\n", b"\r\n")
+            _write_archive(archive, entries)
+            with patch.object(package_smoke, "HEADER_PATH", checkout_header):
+                with self.assertRaisesRegex(PackageSmokeError, "header differs"):
+                    inspect_package_archive(
+                        archive,
+                        forbidden_terms=set(),
+                        native_ceiling_bytes=max(map(len, entries.values())),
+                        increment_ceiling_bytes=sum(map(len, entries.values())),
+                        require_all_platforms=False,
+                    )
+
     def test_archive_requires_every_apple_framework_interface_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             archive = Path(temporary) / "mdstream_flutter.tar.gz"

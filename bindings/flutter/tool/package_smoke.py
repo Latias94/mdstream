@@ -225,8 +225,8 @@ def inspect_package_archive(
                 )
 
     try:
-        canonical_header = HEADER_PATH.read_bytes()
-    except OSError as error:
+        canonical_header = HEADER_PATH.read_text(encoding="utf-8").encode("utf-8")
+    except (OSError, UnicodeError) as error:
         raise PackageSmokeError(
             f"failed to read canonical mdstream header: {error}"
         ) from error
