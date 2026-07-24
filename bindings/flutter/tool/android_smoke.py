@@ -227,7 +227,15 @@ def _run_on_device(apk: Path, device: str) -> None:
         latest = ""
         while time.monotonic() < deadline:
             latest = _run(
-                [*adb, "logcat", "-d", "-v", "brief", "-t", "200"],
+                [
+                    *adb,
+                    "logcat",
+                    "-d",
+                    "-v",
+                    "brief",
+                    "-s",
+                    "flutter:I",
+                ],
                 cwd=apk.parent,
                 phase="adb-logcat-read",
                 capture=True,
@@ -238,9 +246,16 @@ def _run_on_device(apk: Path, device: str) -> None:
             if SMOKE_ERROR in latest:
                 break
             time.sleep(0.5)
-        tail = "\n".join(latest.splitlines()[-80:])
+        device_log = _run(
+            [*adb, "logcat", "-d", "-v", "brief"],
+            cwd=apk.parent,
+            phase="adb-logcat-read",
+            capture=True,
+        ).stdout
+        diagnostics = _bounded_diagnostics(device_log, latest)
+        suffix = f"\n{diagnostics}" if diagnostics else ""
         raise PackageSmokeError(
-            f"Android runtime smoke did not report success on {device}:\n{tail}"
+            f"Android runtime smoke did not report success on {device}:{suffix}"
         )
     except BaseException as error:
         primary_error = error

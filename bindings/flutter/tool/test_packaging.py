@@ -551,6 +551,81 @@ class PackageSmokeContractTest(unittest.TestCase):
             ],
         )
 
+    def test_android_runtime_observation_keeps_the_complete_flutter_log(
+        self,
+    ) -> None:
+        calls: list[tuple[list[str], str]] = []
+
+        def fake_run(
+            command: list[str],
+            *,
+            cwd: Path,
+            phase: str,
+            capture: bool = False,
+        ) -> subprocess.CompletedProcess[str]:
+            del cwd, capture
+            calls.append((command, phase))
+            stdout = ""
+            if phase == "adb-page-size":
+                stdout = "16384\n"
+            elif phase == "adb-logcat-read":
+                stdout = f"{android_smoke.SMOKE_OK} abi=1\n"
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        with patch.object(android_smoke, "_run", side_effect=fake_run):
+            android_smoke._run_on_device(Path("smoke.apk"), "emulator-5554")
+
+        logcat_reads = [
+            command for command, phase in calls if phase == "adb-logcat-read"
+        ]
+        self.assertEqual(
+            logcat_reads,
+            [
+                [
+                    "adb",
+                    "-s",
+                    "emulator-5554",
+                    "logcat",
+                    "-d",
+                    "-v",
+                    "brief",
+                    "-s",
+                    "flutter:I",
+                ]
+            ],
+        )
+
+    def test_android_runtime_failure_includes_device_diagnostics(self) -> None:
+        logcat_reads: list[list[str]] = []
+
+        def fake_run(
+            command: list[str],
+            *,
+            cwd: Path,
+            phase: str,
+            capture: bool = False,
+        ) -> subprocess.CompletedProcess[str]:
+            del cwd, capture
+            stdout = ""
+            if phase == "adb-page-size":
+                stdout = "16384\n"
+            elif phase == "adb-logcat-read":
+                logcat_reads.append(command)
+                stdout = (
+                    f"I/flutter: {android_smoke.SMOKE_ERROR} probe failed\n"
+                    if len(logcat_reads) == 1
+                    else "E/AndroidRuntime: native crash detail\n"
+                )
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        with patch.object(android_smoke, "_run", side_effect=fake_run):
+            with self.assertRaises(PackageSmokeError) as raised:
+                android_smoke._run_on_device(Path("smoke.apk"), "emulator-5554")
+
+        self.assertEqual(len(logcat_reads), 2)
+        self.assertIn(android_smoke.SMOKE_ERROR, str(raised.exception))
+        self.assertIn("native crash detail", str(raised.exception))
+
     def test_android_install_failure_does_not_attempt_cleanup(self) -> None:
         phases: list[str] = []
 
