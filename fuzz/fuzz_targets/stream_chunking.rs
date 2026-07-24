@@ -5,7 +5,8 @@ use std::fmt::Write as _;
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use mdstream::{
-    CompilerError, CompilerLimits, EngineError, EngineLimits, EngineOutput, StreamEngine,
+    AppendLimitKind, CompilerError, CompilerLimits, EngineError, EngineLimits, EngineOutput,
+    StreamEngine,
 };
 use mdstream_conformance::{
     NormalizedSnapshot, ProtocolTrace, TraceInputEvent, assert_last_retry_idempotent,
@@ -254,16 +255,16 @@ fn assert_limit_error(error: &EngineError, plane: LimitPlane, limit: usize) {
         ) => *seen == limit && *actual > limit,
         (
             LimitPlane::ChangeBytes,
-            EngineError::LimitExceeded {
-                field: "engine.change_bytes",
+            EngineError::AppendLimitExceeded {
+                kind: AppendLimitKind::ChangeBytes,
                 limit: seen,
                 actual,
             },
         ) => *seen == limit && *actual > limit,
         (
             LimitPlane::TransactionBytes,
-            EngineError::LimitExceeded {
-                field: "engine.transaction_bytes",
+            EngineError::AppendLimitExceeded {
+                kind: AppendLimitKind::TransactionBytes,
                 limit: seen,
                 actual,
             },
