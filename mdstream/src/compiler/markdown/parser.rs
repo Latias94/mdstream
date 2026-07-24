@@ -506,6 +506,11 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
         };
         self.budget.reserve_node(content_structural_items)?;
         let expected = FrameEnd::Parser(tag.to_end());
+        let flatten_link = matches!(&tag, Tag::Link { .. })
+            && self
+                .stack
+                .iter()
+                .any(|frame| frame.payload.prohibits_nested_link());
         let payload = match tag {
             Tag::Paragraph => FramePayload::Paragraph,
             Tag::Heading {
@@ -567,36 +572,40 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
                 id,
             } => {
                 repair_collapsed_range(self.source, &mut range, link_type)?;
-                let (style, reference_label, resolved) = link_contract(link_type, id.as_ref())?;
-                if let Some(key) = citation_key(link_type, reference_label.as_deref()) {
-                    let target = if resolved {
-                        Some(self.push_resource(
-                            DraftResourceRole::Citation,
-                            range.clone(),
-                            Some(key.as_str()),
-                            dest_url.as_ref(),
-                            (!title.is_empty()).then_some(title.as_ref()),
-                        )?)
-                    } else {
-                        None
-                    };
-                    FramePayload::CitationReference { key, target }
+                if flatten_link {
+                    FramePayload::LiteralLink { body: None }
                 } else {
-                    let target = if resolved {
-                        Some(self.push_resource(
-                            DraftResourceRole::Link,
-                            range.clone(),
-                            reference_label.as_deref(),
-                            dest_url.as_ref(),
-                            (!title.is_empty()).then_some(title.as_ref()),
-                        )?)
+                    let (style, reference_label, resolved) = link_contract(link_type, id.as_ref())?;
+                    if let Some(key) = citation_key(link_type, reference_label.as_deref()) {
+                        let target = if resolved {
+                            Some(self.push_resource(
+                                DraftResourceRole::Citation,
+                                range.clone(),
+                                Some(key.as_str()),
+                                dest_url.as_ref(),
+                                (!title.is_empty()).then_some(title.as_ref()),
+                            )?)
+                        } else {
+                            None
+                        };
+                        FramePayload::CitationReference { key, target }
                     } else {
-                        None
-                    };
-                    FramePayload::Link {
-                        target,
-                        reference_label,
-                        style,
+                        let target = if resolved {
+                            Some(self.push_resource(
+                                DraftResourceRole::Link,
+                                range.clone(),
+                                reference_label.as_deref(),
+                                dest_url.as_ref(),
+                                (!title.is_empty()).then_some(title.as_ref()),
+                            )?)
+                        } else {
+                            None
+                        };
+                        FramePayload::Link {
+                            target,
+                            reference_label,
+                            style,
+                        }
                     }
                 }
             }
@@ -754,6 +763,14 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
                 absolute_range(body, self.absolute_base)?,
                 DraftOriginHint::Parsed,
             ),
+            FramePayload::LiteralLink { .. } => (
+                DraftContentKind::Text {
+                    text: mdstream_protocol::SemanticText::Source {},
+                },
+                Vec::new(),
+                source,
+                DraftOriginHint::Parsed,
+            ),
             FramePayload::Image {
                 target,
                 reference_label,
@@ -838,6 +855,7 @@ impl<'source, 'config> MarkdownCompiler<'source, 'config> {
                     FramePayload::CodeBlock { .. }
                     | FramePayload::HtmlBlock { .. }
                     | FramePayload::Custom { .. }
+                    | FramePayload::LiteralLink { .. }
                     | FramePayload::Image { .. } => {
                         return Err(MarkdownError::UnexpectedEvent {
                             event: "collector",

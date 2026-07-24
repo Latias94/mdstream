@@ -146,6 +146,69 @@ fn unresolved_and_collapsed_references_remain_typed() {
 }
 
 #[test]
+fn nested_links_inside_unresolved_references_are_flattened_to_text() {
+    for (source, child_path, expected_range) in
+        [("[<aa:>]a", &[][..], 1..6), ("[*<aa:>*]a", &[0][..], 2..7)]
+    {
+        let forest = compile_markdown(source, SourceCursor::new(0)).unwrap();
+        let paragraph = &forest.roots[0];
+        let outer = &paragraph.children[0];
+
+        assert!(matches!(
+            outer.content,
+            DraftContentKind::Link {
+                target: None,
+                style: LinkStyle::ShortcutUnknown,
+                ..
+            }
+        ));
+        let literal_container = child_path
+            .iter()
+            .fold(outer, |node, index| &node.children[*index]);
+        assert_eq!(literal_container.children.len(), 1);
+        let literal = &literal_container.children[0];
+        assert!(matches!(
+            &literal.content,
+            DraftContentKind::Text {
+                text: SemanticText::Source {}
+            }
+        ));
+        assert_eq!(literal.source.start.get(), expected_range.start);
+        assert_eq!(literal.source.end.get(), expected_range.end);
+        assert_eq!(forest.resources.len(), 0);
+    }
+}
+
+#[test]
+fn nested_links_inside_unresolved_citations_are_flattened_to_text() {
+    let forest = compile_markdown("[@<aa:>]a", SourceCursor::new(0)).unwrap();
+    let outer = &forest.roots[0].children[0];
+
+    assert!(matches!(
+        &outer.content,
+        DraftContentKind::CitationReference { key, target: None } if key == "<aa:>"
+    ));
+    assert_eq!(outer.children.len(), 2);
+    assert!(matches!(
+        outer.children[0].content,
+        DraftContentKind::Text {
+            text: SemanticText::Source {}
+        }
+    ));
+    assert_eq!(outer.children[0].source.start.get(), 1);
+    assert_eq!(outer.children[0].source.end.get(), 2);
+    assert!(matches!(
+        outer.children[1].content,
+        DraftContentKind::Text {
+            text: SemanticText::Source {}
+        }
+    ));
+    assert_eq!(outer.children[1].source.start.get(), 2);
+    assert_eq!(outer.children[1].source.end.get(), 7);
+    assert_eq!(forest.resources.len(), 0);
+}
+
+#[test]
 fn fragment_resources_preserve_usage_labels_before_document_semantics() {
     let source = concat!(
         "[a][Straße] [b][STRASSE] [c](https://example.test) ",

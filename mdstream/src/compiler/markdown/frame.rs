@@ -78,6 +78,9 @@ pub(super) enum FramePayload {
         reference_label: Option<String>,
         style: LinkStyle,
     },
+    LiteralLink {
+        body: Option<Range<usize>>,
+    },
     CitationReference {
         key: String,
         target: Option<DraftResourceIndex>,
@@ -95,8 +98,15 @@ impl FramePayload {
     pub(super) const fn is_collector(&self) -> bool {
         matches!(
             self,
-            Self::CodeBlock { .. } | Self::HtmlBlock { .. } | Self::Image { .. }
+            Self::CodeBlock { .. }
+                | Self::HtmlBlock { .. }
+                | Self::LiteralLink { .. }
+                | Self::Image { .. }
         )
+    }
+
+    pub(super) const fn prohibits_nested_link(&self) -> bool {
+        matches!(self, Self::Link { .. } | Self::CitationReference { .. })
     }
 
     pub(super) fn collector_body_mut(
@@ -105,6 +115,7 @@ impl FramePayload {
         match self {
             Self::CodeBlock { body, .. }
             | Self::HtmlBlock { body, .. }
+            | Self::LiteralLink { body }
             | Self::Image { body, .. } => Ok(body),
             _ => Err(MarkdownError::UnexpectedEvent {
                 event: "collector-body",
@@ -132,6 +143,7 @@ impl FramePayload {
             Self::Strong => "strong",
             Self::Strikethrough => "strikethrough",
             Self::Link { .. } => "link",
+            Self::LiteralLink { .. } => "literal-link",
             Self::CitationReference { .. } => "citation-reference",
             Self::Image { .. } => "image",
         }
@@ -163,6 +175,7 @@ pub(super) fn collect_semantic_event(
                 });
             }
         },
+        FramePayload::LiteralLink { .. } => {}
         FramePayload::Image { alt, .. } => match event {
             Event::Text(value) | Event::Code(value) | Event::InlineHtml(value) => {
                 alt.push_str(&value);

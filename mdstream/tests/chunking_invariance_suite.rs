@@ -105,6 +105,7 @@ fn bounded_short_sources_are_invariant_under_every_utf8_partition() {
         ("split-crlf", "A\r\nB"),
         ("unicode", "中é🙂"),
         ("ambiguous-setext", "a\n---\n"),
+        ("nested-autolink-reference", "[<aa:>]a"),
     ] {
         let expected = support::replay(support::chunk_whole(source));
         for schedule in exhaustive_utf8_partitions(source).unwrap() {
