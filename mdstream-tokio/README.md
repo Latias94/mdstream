@@ -20,6 +20,38 @@ cargo +1.88.0 run -p mdstream-tokio --example agent_tui
 
 Both modes use `spawn_stream_engine_actor`. The example adds actor transport, lossless coalescing, bounded backpressure, follow-tail, scrolling, and terminal lifecycle. Ratatui composition is example-owned host policy, not a renderer exported by mdstream. Continue with the [replica recovery recipe](https://github.com/Latias94/mdstream/blob/main/docs/EXAMPLES.md#replica-recovery) before transporting changes across a fallible boundary.
 
+## Rich agent workbench example
+
+`agent_tui` stays deliberately small. Use this optional workbench when you need
+one complete example of how an agent TUI can compose the public state contract
+without moving UI concerns into this crate:
+
+```sh
+cargo +1.88.0 run -p mdstream-tokio --features rich-tui --example agent_tui_rich -- --smoke
+```
+
+The command finishes with `RICH_SMOKE_OK`. Omit `--smoke` for a three-pane
+Ratatui host:
+
+```sh
+cargo +1.88.0 run -p mdstream-tokio --features rich-tui --example agent_tui_rich
+```
+
+The example replays actor batches through `TransitionReducer` to keep canonical
+Content IR, then renders that state directly. Grapheme pacing remains host-local
+policy and settles to the reducer's canonical document. It includes scrolling,
+follow-tail, wrap and motion controls, a host-owned tool-activity side channel,
+and Tree-sitter highlighting for completed Rust and JSON code blocks. Tree-sitter
+never parses the Markdown stream; it receives only text from typed `CodeBlock`
+nodes. The `rich-tui` feature gates the example target, so ordinary library
+consumers do not build it. The grammars remain example-only development
+dependencies.
+
+Mermaid stays a typed code node in this terminal host. A caller that wants a
+derived artifact can select it and hand it to the standalone
+[Merman processor recipe](https://github.com/Latias94/mdstream/tree/main/mdstream-merman);
+artifact trust and display policy remain host-owned.
+
 ## Actor contract
 
 `spawn_stream_engine_actor` owns one `StreamEngine` and accepts ordered `ActorCommand::Append`, `Reset`, and `Finish` values. `recv` yields success-only `ActorBatch` values. A batch retains its ordered constituent `EngineOutput` transitions and is published with one channel send, so a receiver never observes only part of one coalescer flush.

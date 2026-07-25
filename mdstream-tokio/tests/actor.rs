@@ -2,6 +2,11 @@
 #[path = "../examples/agent_tui.rs"]
 mod agent_tui;
 
+#[cfg(feature = "rich-tui")]
+#[allow(dead_code)]
+#[path = "../examples/agent_tui_rich.rs"]
+mod agent_tui_rich;
+
 use mdstream_protocol::DocumentLifecycle;
 
 #[tokio::test]
@@ -104,5 +109,58 @@ fn valid_summary() -> agent_tui::SmokeSummary {
         batches: 1,
         changes: 1,
         errors: 0,
+    }
+}
+
+#[cfg(feature = "rich-tui")]
+#[tokio::test]
+async fn rich_agent_tui_smoke_renders_semantic_content_and_settles_host_policy() {
+    let summary = agent_tui_rich::run_smoke().await.unwrap();
+
+    agent_tui_rich::validate_smoke_summary(&summary).unwrap();
+
+    assert_eq!(summary.lifecycle, DocumentLifecycle::Finalized);
+    assert_eq!(summary.source, agent_tui_rich::DEMO_MARKDOWN);
+    assert_eq!(summary.input_capacity, agent_tui_rich::INPUT_CAPACITY);
+    assert_eq!(
+        summary.commands_sent,
+        agent_tui_rich::DEMO_MARKDOWN.chars().count() as u64
+    );
+    assert!(summary.commands_sent > summary.input_capacity as u64);
+    assert!(summary.batches > 0);
+    assert!(summary.changes >= summary.batches);
+    assert_eq!(summary.errors, 0);
+    assert!(summary.animation_ticks > 0);
+    assert!(summary.semantic_lines >= 10);
+    assert!(summary.highlighted_segments > 0);
+    assert_eq!(summary.completed_activities, 3);
+}
+
+#[cfg(feature = "rich-tui")]
+#[test]
+fn rich_smoke_summary_rejects_missing_syntax_highlighting() {
+    let mut summary = rich_valid_summary();
+    summary.highlighted_segments = 0;
+
+    let error = agent_tui_rich::validate_smoke_summary(&summary).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("Tree-sitter"));
+}
+
+#[cfg(feature = "rich-tui")]
+fn rich_valid_summary() -> agent_tui_rich::SmokeSummary {
+    agent_tui_rich::SmokeSummary {
+        source: agent_tui_rich::DEMO_MARKDOWN.to_string(),
+        lifecycle: DocumentLifecycle::Finalized,
+        input_capacity: agent_tui_rich::INPUT_CAPACITY,
+        commands_sent: agent_tui_rich::DEMO_MARKDOWN.chars().count() as u64,
+        batches: 1,
+        changes: 1,
+        errors: 0,
+        animation_ticks: 1,
+        semantic_lines: 10,
+        highlighted_segments: 1,
+        completed_activities: 3,
     }
 }

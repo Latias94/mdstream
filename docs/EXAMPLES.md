@@ -16,7 +16,7 @@ Example roles are deliberate:
 1. Run the [Rust minimal tutorial](#rust-minimal) for the canonical engine/reducer model.
 2. Run the [framework-neutral Web flagship](#web-flagship) to see host-owned presentation policy.
 3. Choose the [Dart](#dart-headless) or [Flutter](#flutter-host) path if that is your target runtime.
-4. Add asynchronous transport with the [Tokio actor](#tokio-actor) or derived rich content with [Merman](#merman-artifact) only when needed.
+4. Add asynchronous transport with the [Tokio actor](#tokio-actor), then inspect a complete host composition in the [Tokio rich workbench](#tokio-rich-workbench) when building an agent TUI.
 5. Use the focused recipes and contract probes for recovery, processors, custom syntax, and release diagnostics.
 
 <!-- example:rust-minimal -->
@@ -87,6 +87,20 @@ The primary command above is for a source checkout, where `build_native.py` stag
 - Availability: Source checkout and the published `mdstream-tokio` crate archive.
 
 Omit `--smoke` for the scrollable Ratatui host. This example adds lossless coalescing, bounded backpressure, actor shutdown, follow-tail, and host scrolling policy; the TUI is not a first-party renderer contract.
+<!-- /example -->
+
+<!-- example:tokio-rich-workbench -->
+## Tokio rich workbench
+
+- Role: Interactive agent-TUI host composition.
+- Source: [`mdstream-tokio/examples/agent_tui_rich.rs`](../mdstream-tokio/examples/agent_tui_rich.rs)
+- Prerequisites: Rust 1.88 or newer, a C compiler for Tree-sitter grammar build steps, and a terminal for interactive mode.
+- Run: `cargo +1.88.0 run -p mdstream-tokio --features rich-tui --example agent_tui_rich -- --smoke`
+- Expect: `RICH_SMOKE_OK` with finalized canonical content, nonzero semantic lines and Tree-sitter captures, settled grapheme animation, and completed host activity events.
+- Next: [Merman artifact](#merman-artifact)
+- Availability: Source checkout and the published `mdstream-tokio` crate archive; the optional `rich-tui` feature is not part of the default library build.
+
+Omit `--smoke` to open a three-pane Ratatui workbench. It replays actor batches through `TransitionReducer` to maintain canonical Content IR, then renders headings, prose, lists, links, code, and citation references from that state. Its animation cursor, layout, scrolling, highlighting, and tool activity remain host-local policy. Tree-sitter receives only completed Rust and JSON `CodeBlock` nodes. The example never reparses Markdown, writes UI state into canonical content, or treats its activity timeline as a protocol contract. Mermaid remains a typed code node until a host explicitly hands it to an artifact processor such as Merman.
 <!-- /example -->
 
 <!-- example:merman-artifact -->
