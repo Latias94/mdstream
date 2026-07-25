@@ -95,12 +95,16 @@ Omit `--smoke` for the scrollable Ratatui host. This example adds lossless coale
 - Role: Interactive agent-TUI host composition.
 - Source: [`mdstream-tokio/examples/agent_tui_rich.rs`](../mdstream-tokio/examples/agent_tui_rich.rs)
 - Prerequisites: Rust 1.88 or newer, a C compiler for Tree-sitter grammar build steps, and a terminal for interactive mode.
-- Run: `cargo +1.88.0 run -p mdstream-tokio --features rich-tui --example agent_tui_rich -- --smoke`
-- Expect: `RICH_SMOKE_OK` with finalized canonical content, nonzero semantic lines and Tree-sitter captures, settled grapheme animation, and completed host activity events.
+- Run (smoke): `cargo +1.88.0 run -p mdstream-tokio --features rich-tui --example agent_tui_rich -- --smoke`
+- Run (interactive): `cargo +1.88.0 run -p mdstream-tokio --features rich-tui --example agent_tui_rich`
+- Run (reduced motion): `cargo +1.88.0 run -p mdstream-tokio --features rich-tui --example agent_tui_rich -- --reduced-motion`
+- Expect: `RICH_SMOKE_OK` with finalized canonical content, nonzero semantic lines and Tree-sitter captures, a drained stable-line queue, direct-render-equivalent final lines, and completed host activity events.
 - Next: [Merman artifact](#merman-artifact)
 - Availability: Source checkout and the published `mdstream-tokio` crate archive; the optional `rich-tui` feature is not part of the default library build.
 
-Omit `--smoke` to open a three-pane Ratatui workbench. It replays actor batches through `TransitionReducer` to maintain canonical Content IR, then renders headings, prose, lists, links, code, and citation references from that state. Its animation cursor, layout, scrolling, highlighting, and tool activity remain host-local policy. Tree-sitter receives only completed Rust and JSON `CodeBlock` nodes. The example never reparses Markdown, writes UI state into canonical content, or treats its activity timeline as a protocol contract. Mermaid remains a typed code node until a host explicitly hands it to an artifact processor such as Merman.
+The three-pane Ratatui workbench reduces every ordered result in an actor batch, then reconciles once from the coherent batch-tail `TransitionReducer` document. It derives the recursively stable leading root prefix and keeps three non-overlapping visible regions: committed lines, visible queued stable lines waiting in a host-owned FIFO, and the latest mutable Content IR tail. Pending raw source appears only as a factual status; it is neither transcript content nor input to a host Markdown parser. Stable identity remains correction-capable, so late semantic changes refresh the same qualified owner without replaying it as fresh content.
+
+Line pacing, animation, reduced motion, Tree-sitter analysis, layout, scrolling, highlighting, and tool activity remain host-local policy. Tree-sitter receives only complete, recursively stable Rust and JSON `CodeBlock` bodies, while provisional code stays plain. The terminal-specific line queue is not a shared presentation API or renderer; the Web and Flutter examples deliberately use different host state and presentation mechanisms. Mermaid remains a typed code node until a host explicitly hands it to an artifact processor such as Merman.
 <!-- /example -->
 
 <!-- example:merman-artifact -->

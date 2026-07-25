@@ -37,15 +37,31 @@ Ratatui host:
 cargo +1.88.0 run -p mdstream-tokio --features rich-tui --example agent_tui_rich
 ```
 
-The example replays actor batches through `TransitionReducer` to keep canonical
-Content IR, then renders that state directly. Grapheme pacing remains host-local
-policy and settles to the reducer's canonical document. It includes scrolling,
-follow-tail, wrap and motion controls, a host-owned tool-activity side channel,
-and Tree-sitter highlighting for completed Rust and JSON code blocks. Tree-sitter
-never parses the Markdown stream; it receives only text from typed `CodeBlock`
-nodes. The `rich-tui` feature gates the example target, so ordinary library
-consumers do not build it. The grammars remain example-only development
-dependencies.
+Start that interactive host with reduced motion already enabled:
+
+```sh
+cargo +1.88.0 run -p mdstream-tokio --features rich-tui --example agent_tui_rich -- --reduced-motion
+```
+
+The host reduces every ordered result in an `ActorBatch` before reconciling
+presentation once from the coherent batch-tail document. It derives a leading
+prefix of recursively stable roots, then presents canonical content as three
+non-overlapping regions: lines before each stable root's committed-line
+frontier, visible queued stable lines waiting in the host's FIFO, and the
+latest mutable Content IR tail. Moving a line between the first two regions
+changes presentation state without hiding or duplicating text. `Stable`
+identity is not immutable content: a later semantic correction refreshes the
+same qualified owner from canonical state instead of replaying it as new text.
+
+Raw pending source is shown only as a factual status. It is not rendered as
+transcript content and the host never reparses it as Markdown. Line pacing,
+animation, reduced motion, Tree-sitter analysis, layout, follow-tail, and
+scrolling remain host-owned policy. Tree-sitter receives only complete,
+recursively stable Rust and JSON `CodeBlock` bodies; provisional code remains
+plain canonical content. The terminal line queue is specific to this Ratatui
+example, not a shared presentation API or renderer. The `rich-tui` feature
+gates the example target, so ordinary library consumers do not build it, and
+its grammars remain example-only development dependencies.
 
 Mermaid stays a typed code node in this terminal host. A caller that wants a
 derived artifact can select it and hand it to the standalone
@@ -54,7 +70,7 @@ artifact trust and display policy remain host-owned.
 
 ## Actor contract
 
-`spawn_stream_engine_actor` owns one `StreamEngine` and accepts ordered `ActorCommand::Append`, `Reset`, and `Finish` values. `recv` yields success-only `ActorBatch` values. A batch retains its ordered constituent `EngineOutput` transitions and is published with one channel send, so a receiver never observes only part of one coalescer flush.
+`spawn_stream_engine_actor` owns one `StreamEngine` and accepts ordered `ActorCommand::Append`, `Reset`, and `Finish` values. `recv` yields success-only `ActorBatch` values. A batch retains its ordered constituent `EngineOutput` transitions and is published with one channel send, so a receiver never observes only part of one coalescer flush. Reduce the complete batch in order before publishing one coherent view from its tail state; do not expose same-batch intermediate reducer states.
 
 Adjacent append commands share a bounded scheduling window, but canonical appends execute over their original non-empty boundaries. Reset and finish are ordering barriers: pending input must commit before a barrier executes. Closing the input finalizes an open document exactly once.
 

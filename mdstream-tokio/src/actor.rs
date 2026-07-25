@@ -28,10 +28,16 @@ impl From<String> for ActorCommand {
     }
 }
 
-/// Results committed by one coalescer flush or lifecycle command.
+/// An ordered group of committed engine results from one coalescer flush or
+/// lifecycle command.
 ///
-/// Constituent append boundaries remain visible even though the whole batch is
-/// published through one channel operation.
+/// Constituent append boundaries remain visible and retain commit order even
+/// though the whole batch is published through one channel operation. A host
+/// should reduce every contained [`ChangeSet`] in transition order, then
+/// publish one coherent view or presentation update from the resulting
+/// batch-tail state. It should not expose intermediate reducer states from
+/// within the batch because a later result in the same batch may supersede
+/// them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActorBatch {
     transitions: Vec<EngineOutput>,

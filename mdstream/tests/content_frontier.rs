@@ -1,7 +1,8 @@
 use mdstream::{EngineOutput, StreamEngine};
 use mdstream_conformance::NormalizedSnapshot;
 use mdstream_protocol::{
-    ApplyOutcome, ContentKind, ContentNode, NodeId, NodeStability, NodeVersion, Reducer, Snapshot,
+    ApplyOutcome, ContentKind, ContentNode, Document, NodeId, NodeStability, NodeVersion, Reducer,
+    Snapshot,
 };
 
 fn apply_output(reducer: &mut Reducer, output: EngineOutput) {
@@ -26,6 +27,142 @@ fn compile(chunks: &[&str]) -> Snapshot {
 
 fn node(snapshot: &Snapshot, id: NodeId) -> &ContentNode {
     snapshot.nodes().iter().find(|node| node.id == id).unwrap()
+}
+
+fn chunks_by_character_widths<'a>(source: &'a str, widths: &[usize]) -> Vec<&'a str> {
+    assert!(!widths.is_empty());
+    assert!(widths.iter().all(|width| *width > 0));
+
+    let mut boundaries = source
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    boundaries.push(source.len());
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let character_count = boundaries.len() - 1;
+    let mut width_index = 0;
+    while start < character_count {
+        let end = start
+            .saturating_add(widths[width_index % widths.len()])
+            .min(character_count);
+        chunks.push(&source[boundaries[start]..boundaries[end]]);
+        start = end;
+        width_index += 1;
+    }
+    chunks
+}
+
+fn assert_subtree_stability(
+    document: &Document,
+    id: NodeId,
+    expected: NodeStability,
+    context: &str,
+) {
+    let current = document
+        .node(id)
+        .unwrap_or_else(|| panic!("{context}: node {id:?} must exist"));
+    assert_eq!(
+        current.stability, expected,
+        "{context}: node {id:?} must match its root stability"
+    );
+    for child in current.children.iter().copied() {
+        assert_subtree_stability(document, child, expected, context);
+    }
+}
+
+fn assert_compiler_stability_frontier(document: &Document, context: &str) {
+    let mut saw_provisional_root = false;
+    for (root_index, root_id) in document.roots().iter().copied().enumerate() {
+        let root = document
+            .node(root_id)
+            .unwrap_or_else(|| panic!("{context}: root {root_id:?} must exist"));
+        match root.stability {
+            NodeStability::Stable => assert!(
+                !saw_provisional_root,
+                "{context}: stable root at index {root_index} follows a provisional root"
+            ),
+            NodeStability::Provisional => saw_provisional_root = true,
+        }
+        assert_subtree_stability(document, root_id, root.stability, context);
+    }
+}
+
+#[test]
+fn engine_compiler_emits_uniform_subtrees_behind_a_stable_root_prefix() {
+    let cases = [
+        (
+            "paragraph-emphasis",
+            "Lead *outer **inner** text* with cafe\u{301} and \u{1f680}.\n\nTrailing paragraph",
+        ),
+        (
+            "nested-list",
+            "- first *item*\n  - nested **child**\n  - sibling\n\n- second item\n\nAfter list",
+        ),
+        (
+            "blockquote",
+            "> Quote with *emphasis*.\n>\n> 1. nested item\n>    - deeper\n\nOutside quote",
+        ),
+        (
+            "table",
+            "| Name | Value |\n| :--- | ---: |\n| *alpha* | `one` |\n| **beta** | two |\n\nAfter table",
+        ),
+        (
+            "fenced-code",
+            "Before fence.\n\n```rust\nfn main() {\n    println!(\"stream \u{4f60}\u{597d} \u{1f30a}\");\n}\n```\n\nAfter *fence*",
+        ),
+    ];
+
+    for (case, source) in cases {
+        let schedules = [
+            ("whole", vec![source]),
+            ("character", chunks_by_character_widths(source, &[1])),
+            (
+                "uneven-utf8",
+                chunks_by_character_widths(source, &[2, 1, 7, 3, 1, 11, 5]),
+            ),
+        ];
+
+        for (schedule, chunks) in schedules {
+            let mut engine = StreamEngine::new();
+            let mut reducer = Reducer::new();
+
+            for (append_index, chunk) in chunks.into_iter().enumerate() {
+                let output = engine.append(chunk).unwrap_or_else(|error| {
+                    panic!("{case}/{schedule} append {append_index} failed: {error}")
+                });
+                apply_output(&mut reducer, output);
+                let document = reducer
+                    .document()
+                    .unwrap_or_else(|| panic!("{case}/{schedule} append {append_index}: document"));
+                let context = format!("{case}/{schedule} append {append_index}");
+                assert_compiler_stability_frontier(document, &context);
+            }
+
+            apply_output(
+                &mut reducer,
+                engine
+                    .finish()
+                    .unwrap_or_else(|error| panic!("{case}/{schedule} finish failed: {error}")),
+            );
+            let document = reducer
+                .document()
+                .unwrap_or_else(|| panic!("{case}/{schedule} finish: document"));
+            let context = format!("{case}/{schedule} finish");
+            assert_compiler_stability_frontier(document, &context);
+            assert!(
+                !document.roots().is_empty(),
+                "{context}: the non-empty source must produce roots"
+            );
+            assert!(
+                document
+                    .nodes()
+                    .all(|node| node.stability == NodeStability::Stable),
+                "{context}: every root subtree node must be stable"
+            );
+        }
+    }
 }
 
 #[test]
