@@ -130,10 +130,35 @@ async fn rich_agent_tui_smoke_renders_semantic_content_and_settles_host_policy()
     assert!(summary.batches > 0);
     assert!(summary.changes >= summary.batches);
     assert_eq!(summary.errors, 0);
-    assert!(summary.animation_ticks > 0);
+    assert!(!summary.reduced_motion);
+    assert!(summary.reconciliations > 0);
+    assert!(summary.enqueued_lines > 0);
+    assert!(summary.committed_lines > 0);
+    assert_eq!(summary.queued_lines, 0);
+    assert_eq!(summary.mutable_roots, 0);
+    assert!(summary.catch_up_entries > 0);
+    assert!(summary.max_queue_depth > 0);
+    assert!(summary.stable_roots_rendered > 0);
+    assert!(summary.stable_roots_reused > 0);
+    assert!(summary.canonical_render_equal);
+    assert!(summary.idle_without_tick);
     assert!(summary.semantic_lines >= 10);
     assert!(summary.highlighted_segments > 0);
     assert_eq!(summary.completed_activities, 3);
+}
+
+#[cfg(feature = "rich-tui")]
+#[tokio::test]
+async fn rich_agent_tui_reduced_motion_converges_without_a_paced_queue() {
+    let summary = agent_tui_rich::run_smoke_with_motion(true).await.unwrap();
+
+    agent_tui_rich::validate_smoke_summary(&summary).unwrap();
+
+    assert!(summary.reduced_motion);
+    assert_eq!(summary.queued_lines, 0);
+    assert_eq!(summary.mutable_roots, 0);
+    assert!(summary.canonical_render_equal);
+    assert!(summary.idle_without_tick);
 }
 
 #[cfg(feature = "rich-tui")]
@@ -158,7 +183,18 @@ fn rich_valid_summary() -> agent_tui_rich::SmokeSummary {
         batches: 1,
         changes: 1,
         errors: 0,
-        animation_ticks: 1,
+        reduced_motion: false,
+        reconciliations: 1,
+        enqueued_lines: 10,
+        committed_lines: 10,
+        queued_lines: 0,
+        mutable_roots: 0,
+        catch_up_entries: 1,
+        max_queue_depth: 10,
+        stable_roots_rendered: 1,
+        stable_roots_reused: 1,
+        canonical_render_equal: true,
+        idle_without_tick: true,
         semantic_lines: 10,
         highlighted_segments: 1,
         completed_activities: 3,
