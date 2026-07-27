@@ -795,6 +795,45 @@ fn completed_blank_whitespace_releases_the_frontier() {
 }
 
 #[test]
+fn newline_terminated_unclaimed_context_waits_for_a_blank_line() {
+    let mut engine = StreamEngine::new();
+    let definition = "[ref]: https://example.test\n";
+
+    engine.append(definition).unwrap();
+    assert_eq!(engine.metrics().compiler.frontier_bytes, definition.len());
+
+    engine.append("\n").unwrap();
+    assert_eq!(engine.metrics().compiler.frontier_bytes, 0);
+}
+
+#[test]
+fn consecutive_reference_definitions_keep_unclaimed_work_bounded() {
+    const DEFINITION_COUNT: usize = 512;
+
+    let mut engine = StreamEngine::new();
+    let mut source_bytes = 0usize;
+    let mut longest_definition = 0usize;
+    for index in 0..DEFINITION_COUNT {
+        let definition = format!("[ref-{index}]: https://example.test/{index}\n");
+        source_bytes += definition.len();
+        longest_definition = longest_definition.max(definition.len());
+        engine.append(&definition).unwrap();
+
+        assert!(
+            engine.metrics().compiler.frontier_bytes <= longest_definition,
+            "unclaimed frontier retained more than the trailing definition: {:?}",
+            engine.metrics().compiler
+        );
+    }
+
+    let metrics = engine.metrics().compiler;
+    assert!(
+        metrics.parsed_source_bytes <= (source_bytes as u64).saturating_mul(4),
+        "reference-definition parsing exceeded its linear byte bound: {metrics:?}"
+    );
+}
+
+#[test]
 fn blank_lines_inside_fenced_code_do_not_trigger_structural_compilation() {
     let mut engine = StreamEngine::new();
 

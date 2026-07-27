@@ -99,6 +99,35 @@ fn split_crlf_and_ambiguous_table_text_are_chunk_invariant() {
 }
 
 #[test]
+fn reference_definition_context_survives_a_line_chunk_boundary() {
+    for (case, source, cut) in [
+        (
+            "reference-definition-before-bare-marker",
+            "[ref]: https://example.test\n-",
+            "[ref]: https://example.test\n".len(),
+        ),
+        (
+            "multiline-reference-definition-before-bare-marker",
+            "[ref]: https://example.test\n\"title\"\n-",
+            "[ref]: https://example.test\n\"title\"\n".len(),
+        ),
+        (
+            "stable-root-before-reference-definition",
+            "# heading\n\n[ref]: https://example.test\n-",
+            "# heading\n\n[ref]: https://example.test\n".len(),
+        ),
+        (
+            "consecutive-reference-definitions-before-bare-marker",
+            "[first]: https://example.test/first\n[ref]: https://example.test\n-",
+            "[first]: https://example.test/first\n[ref]: https://example.test\n".len(),
+        ),
+    ] {
+        assert_cut_invariant(source, vec![cut]);
+        assert_invariant(case, source);
+    }
+}
+
+#[test]
 fn bounded_short_sources_are_invariant_under_every_utf8_partition() {
     for (case, source) in [
         ("ascii", "A\nB"),

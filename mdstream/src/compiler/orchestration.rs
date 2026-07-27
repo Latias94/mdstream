@@ -254,16 +254,21 @@ impl ContentCompiler {
         )?;
         let pending_custom = compilation.pending_custom;
         let definitions = compilation.definitions;
+        let trailing_definition_start = definitions
+            .iter()
+            .map(|definition| definition.source.start)
+            .max();
         let mut draft = compilation.forest;
         let stable_draft_roots =
             stable_root_prefix(&draft, &source, self.frontier.start, finishing)?;
         let next_frontier_start = if let Some(root) = draft.roots.get(stable_draft_roots) {
             physical_line_start(&source, self.frontier.start, root.source.start)?
         } else if !finishing {
-            unfinished_unclaimed_line_start(
+            unclaimed_context_start(
                 &source,
                 self.frontier.start,
                 draft.roots.last().map(|root| root.source.end),
+                trailing_definition_start,
             )?
             .unwrap_or(revision)
         } else {
@@ -751,22 +756,82 @@ fn physical_line_start(
         .ok_or(CompilerError::CursorOverflow)
 }
 
-fn unfinished_unclaimed_line_start(
+fn unclaimed_context_start(
     frontier_source: &str,
     absolute_base: SourceCursor,
     last_root_end: Option<SourceCursor>,
+    trailing_definition_start: Option<SourceCursor>,
 ) -> Result<Option<SourceCursor>, CompilerError> {
-    if frontier_source.ends_with('\n') {
-        return Ok(None);
+    let after_last_root = if let Some(root_end) = last_root_end {
+        let relative_end = root_end
+            .get()
+            .checked_sub(absolute_base.get())
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or(CompilerError::InvalidSourceBoundary(root_end))?;
+        let tail = frontier_source
+            .get(relative_end..)
+            .ok_or(CompilerError::InvalidSourceBoundary(root_end))?;
+        if relative_end > 0
+            && frontier_source
+                .as_bytes()
+                .get(relative_end - 1)
+                .is_some_and(|byte| *byte == b'\n')
+        {
+            relative_end
+        } else {
+            tail.find('\n')
+                .map_or(frontier_source.len(), |offset| relative_end + offset + 1)
+        }
+    } else {
+        0
+    };
+    // A definition may emit no root while still changing how the next line parses.
+    // Only a completed blank line safely closes that unclaimed parser context.
+    let mut after_last_blank = 0;
+    let mut line_end = 0;
+    for line in frontier_source.split_inclusive('\n') {
+        line_end += line.len();
+        let Some(body) = line.strip_suffix('\n') else {
+            continue;
+        };
+        let body = body.strip_suffix('\r').unwrap_or(body);
+        if body.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+            after_last_blank = line_end;
+        }
     }
-    let line_start = frontier_source
-        .rfind('\n')
-        .map_or(0, |index| index.saturating_add(1));
-    let start = absolute_base
-        .checked_add(u64::try_from(line_start).map_err(|_| CompilerError::CursorOverflow)?)
-        .ok_or(CompilerError::CursorOverflow)?;
-    if last_root_end.is_some_and(|root_end| root_end.get() > start.get()) {
+    let closed_context_end = after_last_root.max(after_last_blank);
+
+    let definition_start = trailing_definition_start
+        .map(|start| {
+            let relative = start
+                .get()
+                .checked_sub(absolute_base.get())
+                .and_then(|offset| usize::try_from(offset).ok())
+                .ok_or(CompilerError::InvalidSourceBoundary(start))?;
+            frontier_source
+                .get(relative..)
+                .ok_or(CompilerError::InvalidSourceBoundary(start))?;
+            Ok::<usize, CompilerError>(relative)
+        })
+        .transpose()?
+        .filter(|start| *start >= closed_context_end);
+    let unfinished_line_start = (!frontier_source.ends_with('\n'))
+        .then(|| {
+            frontier_source
+                .rfind('\n')
+                .map_or(0, |index| index.saturating_add(1))
+        })
+        .filter(|start| *start >= closed_context_end);
+    let Some(relative_start) = definition_start
+        .into_iter()
+        .chain(unfinished_line_start)
+        .min()
+    else {
         return Ok(None);
-    }
-    Ok(Some(start))
+    };
+
+    absolute_base
+        .checked_add(u64::try_from(relative_start).map_err(|_| CompilerError::CursorOverflow)?)
+        .ok_or(CompilerError::CursorOverflow)
+        .map(Some)
 }
