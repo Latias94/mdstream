@@ -5,16 +5,16 @@ Version numbers follow SemVer, but the public API is expected to change rapidly 
 
 ## Unreleased
 
-Version 0.4 rebuilds mdstream as a headless, cross-framework streaming rich-content state engine with one replayable Rust contract and intentionally breaks the 0.3 block/update API.
+Version 0.4 rebuilds mdstream as a headless, cross-framework streaming rich-content state engine so arbitrary AI token chunking converges to one recoverable Content IR across Rust, Web, and native UI hosts instead of making every renderer reparse or repair incomplete Markdown. It intentionally breaks the 0.3 block/update API.
 
 ### Added
 
 - Added `mdstream-protocol` and rebuilt `mdstream` around lifecycle-aware `StreamEngine` output and one canonical `Reducer`: ordered `ChangeSet` deltas now produce typed Content IR, deterministic `NodeId` identity, projection-local `NodeVersion` tokens, bounded on-demand pending source, semantic correction, explicit snapshot recovery, finalized state that is invariant across legal UTF-8 chunk schedules, and separate protocol, compiler, and engine limit planes.
 - Added opt-in `mdstream.transitions/1` facts across Rust, WASM/TypeScript, C FFI, Dart, and Flutter so hosts can distinguish fresh projection append, correction, stabilization, structure/resource changes, lifecycle, and full replacement while keeping pacing, animation, layout, scrolling, reduced motion, and accessibility in application code.
-- Added `mdstream-processors` with complete node-local `ProcessorInputVersion` freshness, versioned requests, cooperative cancellation, stale-result rejection, deterministic artifact limits, and `mdstream.citation/1`; the optional standalone Rust 1.95 `mdstream-merman` adapter turns typed Mermaid nodes into opaque derived SVG artifacts without adding Merman to default dependency graphs.
+- Added `mdstream-processors` with complete node-local `ProcessorInputVersion` freshness, versioned requests, cooperative cancellation, stale-result rejection, deterministic artifact limits, and `mdstream.citation/1`; the optional standalone Rust 1.95 `mdstream-merman` adapter turns typed Mermaid nodes into opaque derived SVG artifacts without adding Merman to default dependency graphs, as shown by the [Merman artifact recipe](docs/EXAMPLES.md#merman-artifact).
 - Added Rust-backed WASM and framework-neutral `@mdstream/core` for Node 24 with synchronized engine stores, replica recovery, lossless batching, lazy focused root/node/resource/pending/artifact views, immutable binary artifact snapshots through `ImmutableBytesView`, ordered transition subscriptions, and processor scheduling; no first-party React package, hook, renderer, animation policy, or theme is included.
 - Added a stable C ABI, a Flutter-independent Dart package with typed session-limit groups and sealed reducer/artifact views using a trusted host-supplied native library, and the turnkey `mdstream_flutter` plugin with Android, iOS 14+, macOS, Linux, and Windows native delivery plus focused controllers and continuity-qualified keys without exported widgets or rendering policy.
-- Added one provider-free Golden AI Stream and a runnable adoption ladder: Rust `minimal --assert` is the first tutorial, the private framework-neutral Web host is the primary visual step, and Dart, Flutter, Tokio, Merman, processor, custom-block, transition, and recovery entries provide truthful assertion or smoke paths without promoting example UI policy into package APIs.
+- Added one provider-free Golden AI Stream and a [runnable adoption ladder](docs/EXAMPLES.md): the [Rust minimal tutorial](docs/EXAMPLES.md#rust-minimal) introduces the canonical engine/reducer loop, the [framework-neutral Web flagship](docs/EXAMPLES.md#web-flagship) is the primary visual step, and the [Tokio rich workbench](docs/EXAMPLES.md#tokio-rich-workbench) demonstrates correction-aware pacing, Tree-sitter styling, scrolling, reduced motion, and user-defined animation without promoting UI policy into package APIs; Dart, Flutter, processor, custom-block, transition, recovery, and Merman entries provide additional assertion or smoke paths.
 - Added shared replay and recovery fixtures, exhaustive bounded and adversarial chunk checks, deterministic work/resource budgets, cross-runtime conformance, Cargo package-inventory checks, exact npm/Dart/Flutter archive verification, native binary and forbidden-path checks, and absolute artifact-size ceilings.
 - Added native-reported effective processor scheduler limits across WASM and C FFI so Web, Dart, and Flutter adapters share the validated Rust configuration. Web and Flutter dispatch in bounded event-loop quanta and coalesce queue-saturation errors so large processor sets do not starve host rendering.
 
@@ -78,6 +78,8 @@ Decision: retain `0.4.0`; no published package or tag requires a further version
 ### Migration
 
 Add a direct `mdstream-protocol = "0.4"` dependency wherever the application owns canonical state, remove `features = ["pulldown", "sync"]` from the `mdstream` dependency declaration, and plan a source migration because no 0.3 compatibility aliases are provided.
+
+Use the [Rust minimal tutorial](docs/EXAMPLES.md#rust-minimal) for the new engine/reducer loop, the [stable keyed-state recipe](docs/EXAMPLES.md#stable-keyed-state) for identity-driven cache invalidation, the [Tokio actor example](docs/EXAMPLES.md#tokio-actor) for async ownership, and the [Tokio rich workbench](docs/EXAMPLES.md#tokio-rich-workbench) for host-owned animation and Tree-sitter integration; the [complete learning path](docs/EXAMPLES.md) covers Web, Dart, Flutter, processors, recovery, and Merman.
 
 | 0.3 surface | 0.4 action |
 | --- | --- |
