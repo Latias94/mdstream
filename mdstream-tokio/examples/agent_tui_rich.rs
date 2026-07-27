@@ -399,10 +399,11 @@ impl RichApp {
         let committed_lines = self.presentation.committed_line_count();
         let progress = if self.is_settled() {
             100
-        } else if total_lines == 0 {
-            0
         } else {
-            committed_lines.saturating_mul(100) / total_lines
+            committed_lines
+                .saturating_mul(100)
+                .checked_div(total_lines)
+                .unwrap_or_default()
         };
         for activity in &mut self.activities {
             activity.update(progress);
