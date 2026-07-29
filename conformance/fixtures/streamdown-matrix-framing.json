@@ -1,0 +1,41 @@
+{
+  "schema": "mdstream.conformance/0.4",
+  "id": "streamdown.matrix-framing",
+  "description": "Pinned Streamdown characterization for prose followed by a matrix display containing standalone equals lines.",
+  "source": "For example:\n$$\nA \\vec{v} =\n\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}\n=\n\\begin{pmatrix} 17 \\\\ 39 \\end{pmatrix}\n$$",
+  "dialect": {
+    "id": "streamdown.marked",
+    "extensions": ["math"]
+  },
+  "profile": {
+    "id": "streamdown.block-framing/2.5.0",
+    "claim_scope": ["legacy_block_framing"],
+    "pipeline": ["parseMarkdownIntoBlocks"]
+  },
+  "provenance": {
+    "kind": "upstream",
+    "repository_url": "https://github.com/vercel/streamdown",
+    "commit_sha": "e5deed330aa4231751a106445d93d62e4716a22f",
+    "package": "streamdown",
+    "package_version": "2.5.0",
+    "license": "Apache-2.0",
+    "upstream_path": "packages/streamdown/__tests__/matrix-equation.test.tsx",
+    "upstream_test_name": "should keep math block intact when preceded by text (#194)",
+    "oracle_kind": "upstream_predicate",
+    "extraction": {
+      "kind": "transformed",
+      "steps": ["retain one representative standalone-equals matrix"]
+    }
+  },
+  "options": {},
+  "schedules": [
+    { "id": "whole", "schedule": { "kind": "whole" } },
+    { "id": "lines", "schedule": { "kind": "lines" } },
+    { "id": "characters", "schedule": { "kind": "characters" } }
+  ],
+  "expected": {
+    "upstream_predicates": [
+      "parseMarkdownIntoBlocks returns one block containing both display delimiters and pmatrix"
+    ]
+  }
+}

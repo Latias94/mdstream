@@ -1,43 +1,78 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main, master, develop]
   pull_request:
     branches: [main, master]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  core-msrv:
-    name: Core MSRV / Rust 1.85
+  release-contract:
+    name: Release contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify versions, publish graph, workflows, and docs
+        run: python3 scripts/verify-packages.py --phase static
+
+      - name: Verify Golden fixture synchronization
+        run: python3 scripts/sync-example-fixtures.py --check
+
+      - name: Test fixture and package verifier failure contracts
+        run: python3 -m unittest scripts/test_sync_example_fixtures.py scripts/test_verify_packages.py
+
+  core-msrv:
+    name: Core MSRV / Rust 1.85
+    needs: release-contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Test mdstream all features
-        run: cargo test -p mdstream --tests --all-features
+      - name: Test core protocol, processors, and engine
+        run: cargo nextest run -p mdstream-conformance -p mdstream-protocol -p mdstream-processors -p mdstream --all-features
 
       - name: Check mdstream examples
-        run: cargo check -p mdstream --examples
+        run: cargo check -p mdstream --examples --all-features
 
-      - name: Check mdstream pulldown examples
-        run: cargo check -p mdstream --features pulldown --examples
+      - name: Run Golden first-success example
+        run: cargo run -p mdstream --example minimal -- --assert
+
+      - name: Run focused headless recipes
+        run: |
+          cargo run -p mdstream --example headless_state
+          cargo run -p mdstream --example transition_trace
+          cargo run -p mdstream --example custom_blocks
+          cargo run -p mdstream --example processor_lifecycle
+          cargo run -p mdstream --example replica_recovery
+
+      - name: Replay frozen U7 calibration
+        run: scripts/calibrate-budgets.sh --check
 
   workspace-msrv:
     name: Workspace MSRV / Rust 1.88
+    needs: release-contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -55,14 +90,24 @@ jobs:
       - name: Test workspace all features
         run: cargo nextest run --workspace --all-features
 
+      - name: Verify frozen budget contracts
+        run: python3 scripts/verify-budgets.py --contracts
+
+      - name: Verify default dependency graph excludes Merman
+        run: python3 scripts/verify-budgets.py --negative-merman
+
       - name: Doc tests
         run: cargo test --workspace --all-features --doc
 
       - name: Check Tokio examples
         run: cargo check -p mdstream-tokio --examples
 
+      - name: Run Tokio actor smoke path
+        run: cargo run -p mdstream-tokio --example agent_tui -- --smoke
+
   quality:
     name: Stable quality gate
+    needs: release-contract
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -92,19 +137,180 @@ jobs:
         run: cargo test --workspace --all-features --doc
 
       - name: Check mdstream examples
-        run: cargo check -p mdstream --examples
-
-      - name: Check mdstream pulldown examples
-        run: cargo check -p mdstream --features pulldown --examples
+        run: cargo check -p mdstream --examples --all-features
 
       - name: Check Tokio examples
         run: cargo check -p mdstream-tokio --examples
 
       - name: Check benchmarks
-        run: cargo check -p mdstream --benches
+        run: cargo check -p mdstream --benches --all-features
 
       - name: Check fuzz targets
         run: cargo check --manifest-path fuzz/Cargo.toml --bins
 
-      - name: Package mdstream
-        run: cargo package -p mdstream
+  merman:
+    name: Merman adapter / Rust 1.95
+    needs: release-contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mdstream-merman
+
+      - name: Check standalone formatting
+        run: cargo +1.95.0 fmt --manifest-path mdstream-merman/Cargo.toml -- --check
+
+      - name: Test real Merman adapter
+        run: cargo +1.95.0 nextest run --manifest-path mdstream-merman/Cargo.toml --all-features
+
+      - name: Render Golden Mermaid artifact
+        run: cargo +1.95.0 run --manifest-path mdstream-merman/Cargo.toml --example render_golden -- --assert
+
+  web:
+    name: WASM and TypeScript / Node 24
+    needs: release-contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.85 and WASM target
+        uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack 0.15.0
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+
+      - name: Install wasm-tools 1.253.0
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools@1.253.0
+
+      - name: Install pnpm 11.9.0
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+          run_install: false
+
+      - name: Install Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check WASM target
+        run: cargo check -p mdstream-wasm --target wasm32-unknown-unknown --all-features
+
+      - name: Test WASM runtime
+        run: wasm-pack test --node mdstream-wasm
+
+      - name: Prepare framework-neutral Web example
+        run: pnpm web:prepare
+
+      - name: Typecheck TypeScript packages
+        run: pnpm -r typecheck
+
+      - name: Test TypeScript packages
+        run: pnpm -r test
+
+      - name: Build TypeScript packages
+        run: pnpm -r build
+
+      - name: Run TypeScript transition contract probe
+        run: node bindings/typescript/examples/transition-host.mjs --assert
+
+      - name: Install pinned Chromium
+        run: pnpm --filter @mdstream/example-web exec playwright install --with-deps chromium
+
+      - name: Test Web example in desktop and mobile Chromium
+        run: pnpm --filter @mdstream/example-web test:e2e
+
+      - name: Verify WASM and npm artifact budgets
+        run: pnpm artifacts:check
+
+      - name: Verify npm package contents
+        run: python3 scripts/verify-packages.py --phase local --ecosystem npm
+
+  dart:
+    name: Dart FFI / Dart 3.8.1
+    needs: release-contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.85
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Install Dart 3.8.1
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.8.1
+
+      - name: Install Flutter 3.32.1 for Pub workspace resolution
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.32.1
+          cache: true
+
+      - name: Resolve Pub workspace
+        working-directory: bindings
+        run: flutter pub get
+
+      - name: List Pub workspace
+        working-directory: bindings
+        run: dart pub workspace list
+
+      - name: Analyze standalone Dart package
+        working-directory: bindings/dart
+        run: dart analyze
+
+      - name: Test standalone Dart package with required native library
+        working-directory: bindings/dart
+        run: dart run tool/test_native.dart
+
+      - name: Replay standalone Dart Golden stream
+        shell: bash
+        working-directory: bindings/dart
+        run: |
+          LIBRARY="$(dart run tool/build_native.dart)"
+          dart run example/golden_stream.dart --library "$LIBRARY" --assert
+
+      - name: Verify Dart package contents
+        run: python3 scripts/verify-packages.py --phase local --ecosystem dart
+
+  rust-packages:
+    name: Rust package contents and order
+    needs: release-contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust 1.95 for standalone Merman package
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Verify local Rust package contents
+        run: python3 scripts/verify-packages.py --phase local --ecosystem rust

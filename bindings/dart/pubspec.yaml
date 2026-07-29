@@ -1,0 +1,18 @@
+name: mdstream
+version: 0.4.0
+description: Headless Dart FFI bindings for the mdstream streaming content engine.
+repository: https://github.com/Latias94/mdstream
+issue_tracker: https://github.com/Latias94/mdstream/issues
+
+environment:
+  sdk: ^3.8.0
+
+resolution: workspace
+
+dependencies:
+  ffi: ^2.1.4
+
+dev_dependencies:
+  lints: ^5.1.1
+  test: ^1.25.15
+  yaml: ^3.1.3

@@ -1,114 +1,182 @@
 mod support;
 
-use mdstream::Options;
+use mdstream::StreamEngine;
+use mdstream_conformance::{ChunkSchedule, NormalizedSnapshot, exhaustive_utf8_partitions};
 
-fn assert_invariant(case_name: &str, markdown: &str, opts: Options, trials: u64, max_bytes: usize) {
-    let expected = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());
+fn assert_invariant(case: &str, source: &str) {
+    let expected = support::replay(support::chunk_whole(source));
+    for schedule in [
+        ChunkSchedule::Lines,
+        ChunkSchedule::Characters,
+        ChunkSchedule::Seeded {
+            label: case.to_string(),
+            seed: 0x5eed,
+            trial: 7,
+            max_bytes: 31,
+        },
+    ] {
+        let chunks = schedule
+            .slices(source)
+            .unwrap()
+            .into_iter()
+            .map(str::to_string);
+        assert_eq!(support::replay(chunks), expected, "case={case}");
+    }
+}
 
-    let blocks_lines = support::collect_final_blocks(support::chunk_lines(markdown), opts.clone());
-    assert_eq!(blocks_lines, expected, "case={case_name} chunker=lines");
+fn assert_cut_invariant(source: &str, cuts: Vec<usize>) {
+    let chunks = ChunkSchedule::ByteCuts { cuts: cuts.clone() }
+        .slices(source)
+        .unwrap()
+        .into_iter()
+        .map(str::to_string);
+    assert_eq!(
+        support::replay(chunks),
+        support::replay(support::chunk_whole(source)),
+        "cuts={cuts:?}"
+    );
+}
 
-    let blocks_chars = support::collect_final_blocks(support::chunk_chars(markdown), opts.clone());
-    assert_eq!(blocks_chars, expected, "case={case_name} chunker=chars");
+fn assert_schedule_invariant(
+    case: &str,
+    source: &str,
+    schedule: &ChunkSchedule,
+    expected: &NormalizedSnapshot,
+) {
+    let chunks = schedule
+        .slices(source)
+        .unwrap()
+        .into_iter()
+        .map(str::to_string);
+    assert_eq!(
+        &support::replay(chunks),
+        expected,
+        "case={case} schedule={schedule:?}"
+    );
+}
 
-    for t in 0..trials {
-        let blocks_rand = support::collect_final_blocks(
-            support::chunk_pseudo_random(markdown, case_name, t, max_bytes),
-            opts.clone(),
-        );
-        assert_eq!(blocks_rand, expected, "case={case_name} chunker=rand t={t}");
+#[test]
+fn reference_documents_are_chunk_invariant_under_the_canonical_engine() {
+    for (case, source) in [
+        (
+            "basic-many-blocks",
+            include_str!("fixtures/streamdown_bench/basic_many_blocks_100.md"),
+        ),
+        (
+            "code",
+            include_str!("fixtures/streamdown_bench/code_multiple_code_blocks.md"),
+        ),
+        (
+            "footnotes",
+            include_str!("fixtures/streamdown_bench/footnotes_with_footnotes.md"),
+        ),
+        (
+            "html",
+            include_str!("fixtures/streamdown_bench/html_multiple_blocks.md"),
+        ),
+        (
+            "math",
+            include_str!("fixtures/streamdown_bench/math_with_split_delimiters.md"),
+        ),
+        (
+            "mixed",
+            include_str!("fixtures/streamdown_bench/mixed_content_realistic.md"),
+        ),
+        (
+            "table",
+            include_str!("fixtures/streamdown_bench/table_simple.md"),
+        ),
+    ] {
+        assert_invariant(case, source);
     }
 }
 
 #[test]
-fn streamdown_benchmark_suite_chunking_invariance() {
-    // Inputs sourced from Streamdown's `__benchmarks__/parse-blocks.bench.ts`.
-    let single_block = include_str!("fixtures/streamdown_bench/basic_single_block.md")
-        .trim_end_matches(['\r', '\n']);
-    let multiple_blocks_10 = include_str!("fixtures/streamdown_bench/basic_multiple_blocks_10.md");
-    let single_code_block = include_str!("fixtures/streamdown_bench/code_single_code_block.md");
-    let math_with_split_delimiters =
-        include_str!("fixtures/streamdown_bench/math_with_split_delimiters.md");
-    let multiple_html_blocks = include_str!("fixtures/streamdown_bench/html_multiple_blocks.md");
-    let with_footnotes = include_str!("fixtures/streamdown_bench/footnotes_with_footnotes.md");
-    let simple_table = include_str!("fixtures/streamdown_bench/table_simple.md");
-
-    let opts = Options::default();
-    assert_invariant("single_block", single_block, opts.clone(), 16, 64);
-    assert_invariant(
-        "multiple_blocks_10",
-        multiple_blocks_10,
-        opts.clone(),
-        16,
-        64,
-    );
-    assert_invariant("single_code_block", single_code_block, opts.clone(), 16, 64);
-    assert_invariant(
-        "math_with_split_delimiters",
-        math_with_split_delimiters,
-        opts.clone(),
-        16,
-        64,
-    );
-    assert_invariant(
-        "multiple_html_blocks",
-        multiple_html_blocks,
-        opts.clone(),
-        16,
-        64,
-    );
-    assert_invariant("with_footnotes", with_footnotes, opts.clone(), 16, 64);
-    assert_invariant("simple_table", simple_table, opts.clone(), 16, 64);
+fn split_crlf_and_ambiguous_table_text_are_chunk_invariant() {
+    let source = "A\r\n\r\nB\r\n";
+    assert_cut_invariant(source, vec![2, 4, 7]);
+    assert_invariant("ambiguous-table", "a# Heading\n|# Heading\n-->\n");
 }
 
 #[test]
-fn incremark_inspired_suite_chunking_invariance() {
-    // Inputs inspired by Incremark's `IncremarkParser.*.test.ts`.
-    let paragraph = "Hello, World!";
-    let multiple_paragraphs = "第一段\n\n第二段";
-    let headings = "# 标题一\n\n## 标题二\n\n内容";
-    let code_block = "```js\nconsole.log(\"hi\")\n```\n\n段落";
-    let gfm_table = "| A | B |\n|---|---|\n| 1 | 2 |";
-
-    let opts = Options::default();
-    assert_invariant("incremark_paragraph", paragraph, opts.clone(), 8, 32);
-    assert_invariant(
-        "incremark_multiple_paragraphs",
-        multiple_paragraphs,
-        opts.clone(),
-        8,
-        32,
-    );
-    assert_invariant("incremark_headings", headings, opts.clone(), 8, 32);
-    assert_invariant("incremark_code_block", code_block, opts.clone(), 8, 32);
-    assert_invariant("incremark_gfm_table", gfm_table, opts.clone(), 8, 32);
+fn reference_definition_context_survives_a_line_chunk_boundary() {
+    for (case, source, cut) in [
+        (
+            "reference-definition-before-bare-marker",
+            "[ref]: https://example.test\n-",
+            "[ref]: https://example.test\n".len(),
+        ),
+        (
+            "multiline-reference-definition-before-bare-marker",
+            "[ref]: https://example.test\n\"title\"\n-",
+            "[ref]: https://example.test\n\"title\"\n".len(),
+        ),
+        (
+            "stable-root-before-reference-definition",
+            "# heading\n\n[ref]: https://example.test\n-",
+            "# heading\n\n[ref]: https://example.test\n".len(),
+        ),
+        (
+            "consecutive-reference-definitions-before-bare-marker",
+            "[first]: https://example.test/first\n[ref]: https://example.test\n-",
+            "[first]: https://example.test/first\n[ref]: https://example.test\n".len(),
+        ),
+    ] {
+        assert_cut_invariant(source, vec![cut]);
+        assert_invariant(case, source);
+    }
 }
 
 #[test]
-fn chunking_invariance_handles_crlf_split_across_chunks() {
-    let opts = Options::default();
-    let markdown = "A\r\n\r\nB\r\n";
-
-    let expected = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());
-    let blocks_split_crlf = support::collect_final_blocks(
-        vec![
-            "A\r".to_string(),
-            "\n\r".to_string(),
-            "\nB\r".to_string(),
-            "\n".to_string(),
-        ],
-        opts,
-    );
-    assert_eq!(blocks_split_crlf, expected);
+fn bounded_short_sources_are_invariant_under_every_utf8_partition() {
+    for (case, source) in [
+        ("ascii", "A\nB"),
+        ("split-crlf", "A\r\nB"),
+        ("unicode", "中é🙂"),
+        ("ambiguous-setext", "a\n---\n"),
+        ("nested-autolink-reference", "[<aa:>]a"),
+    ] {
+        let expected = support::replay(support::chunk_whole(source));
+        for schedule in exhaustive_utf8_partitions(source).unwrap() {
+            assert_schedule_invariant(case, source, &schedule, &expected);
+        }
+    }
 }
 
 #[test]
-fn incomplete_table_delimiter_candidate_waits_for_newline() {
-    let opts = Options::default();
-    let markdown = "a# Heading\n|# Heading\n-->\n";
+fn an_incomplete_line_after_a_table_remains_in_the_mutable_frontier() {
+    let source = "$$\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+    assert_cut_invariant(source, vec!["$$\n| A | B |\n|---|---|\n|".len()]);
+}
 
-    let expected = support::collect_final_blocks(support::chunk_whole(markdown), opts.clone());
-    let blocks_chars = support::collect_final_blocks(support::chunk_chars(markdown), opts);
+#[test]
+fn incomplete_lazy_block_quote_continuations_keep_the_container_frontier() {
+    let source = "> quoted line\n-->\n";
+    assert_cut_invariant(source, vec!["> quoted line\n-".len()]);
+}
 
-    assert_eq!(blocks_chars, expected);
+#[test]
+fn a_partial_heading_marker_can_become_a_lazy_block_quote_continuation() {
+    let source = "> quoted line\n#x\n";
+    assert_cut_invariant(source, vec!["> quoted line\n#".len()]);
+}
+
+#[test]
+fn partial_block_markers_can_return_to_paragraph_and_list_continuations() {
+    for (prefix, suffix) in [
+        ("plain line\n#", "x\n"),
+        ("- listed line\n#", "x\n"),
+        ("> - nested line\n#", "x\n"),
+    ] {
+        let source = format!("{prefix}{suffix}");
+        assert_cut_invariant(&source, vec![prefix.len()]);
+    }
+}
+
+#[test]
+fn a_closed_non_paragraph_container_tail_is_not_retained() {
+    let mut engine = StreamEngine::new();
+    engine.append("> # heading\n#").unwrap();
+
+    assert_eq!(engine.metrics().compiler.frontier_bytes, 1);
 }

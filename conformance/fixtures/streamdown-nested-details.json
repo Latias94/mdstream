@@ -1,0 +1,49 @@
+{
+  "schema": "mdstream.conformance/0.4",
+  "id": "streamdown.nested-details",
+  "description": "Pinned Streamdown characterization for balanced nested same-name HTML elements.",
+  "source": "Text before\n\n<details>\n<summary>Outer</summary>\n\n<details>\n<summary>Inner</summary>\n\nInner content\n\n</details>\n\nOuter content after inner closes\n\n</details>\n\nText after",
+  "dialect": {
+    "id": "streamdown.marked",
+    "extensions": ["html"]
+  },
+  "profile": {
+    "id": "streamdown.block-framing/2.5.0",
+    "claim_scope": ["legacy_block_framing"],
+    "pipeline": ["parseMarkdownIntoBlocks"]
+  },
+  "provenance": {
+    "kind": "upstream",
+    "repository_url": "https://github.com/vercel/streamdown",
+    "commit_sha": "e5deed330aa4231751a106445d93d62e4716a22f",
+    "package": "streamdown",
+    "package_version": "2.5.0",
+    "license": "Apache-2.0",
+    "upstream_path": "packages/streamdown/__tests__/nested-details-tables.test.tsx",
+    "upstream_test_name": "should keep nested same-tag HTML blocks as a single balanced block",
+    "oracle_kind": "upstream_predicate",
+    "extraction": { "kind": "literal" }
+  },
+  "options": {},
+  "schedules": [
+    { "id": "whole", "schedule": { "kind": "whole" } },
+    { "id": "lines", "schedule": { "kind": "lines" } },
+    {
+      "id": "seeded-3",
+      "schedule": {
+        "kind": "seeded",
+        "label": "streamdown.nested-details",
+        "seed": 17,
+        "trial": 3,
+        "max_bytes": 19
+      }
+    }
+  ],
+  "expected": {
+    "upstream_predicates": [
+      "the details block contains two opening and two closing details tags",
+      "the details block contains Outer content after inner closes",
+      "the details block excludes trailing Text after"
+    ]
+  }
+}

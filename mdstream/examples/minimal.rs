@@ -1,52 +1,269 @@
-//! Minimal `mdstream` usage (no adapters, no analyzers).
-//!
-//! Run:
-//!   cargo run --example minimal
+use std::{collections::BTreeMap, env, io};
 
-use mdstream::{DocumentState, MdStream, Options};
+use mdstream::{EngineOutput, StreamEngine};
+use mdstream_protocol::{
+    ApplyOutcome, ContentKind, DocumentLifecycle, NodeId, NodeStability, NodeVersion, Reducer,
+};
+use serde_json::Value;
 
-fn main() {
-    let mut stream = MdStream::new(Options::default());
-    let mut state = DocumentState::new();
+const SCENARIO: &str = include_str!("fixtures/golden-ai-stream.json");
+const PENDING_ENGINE_CITATION: &str = "[@engine]: https://docs.rs/mdstream \"mdstream engine\"\n";
 
-    let chunks = [
-        "# Title\n\n",
-        "Hello **wor",
-        "ld**.\n\n",
-        "A list:\n",
-        "- item 1\n",
-        "- item 2\n",
-    ];
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let assert_mode = parse_args()?;
+    let value: Value = serde_json::from_str(SCENARIO)?;
+    let actions = value["episodes"]["mainline"]["actions"]
+        .as_array()
+        .ok_or_else(|| invalid_data("Golden scenario has no mainline actions"))?;
+    let mut engine = StreamEngine::new();
+    let mut reducer = Reducer::new();
+    let mut unresolved_citations = BTreeMap::<String, (NodeId, NodeVersion)>::new();
 
-    for (i, chunk) in chunks.iter().enumerate() {
-        println!("\n== tick {i} ==");
-        let applied = state.apply(stream.append(chunk));
+    println!("owner=mdstream responsibility=canonical-state,identity,lifecycle");
+    println!("owner=host responsibility=presentation,timing,layout,accessibility");
 
-        if applied.reset {
-            println!("reset: true");
-        }
-        if !applied.invalidated.is_empty() {
-            println!("invalidated: {:?}", applied.invalidated);
-        }
-
-        println!("committed={}", state.committed().len());
-        if let Some(p) = state.pending() {
-            println!(
-                "pending id={} kind={:?} text={:?}",
-                p.id.0,
-                p.kind,
-                p.display_or_raw()
-            );
-        } else {
-            println!("pending: <none>");
+    for action in actions {
+        match required_str(action, "kind")? {
+            "append" => apply(&mut reducer, engine.append(required_str(action, "chunk")?)?)?,
+            "checkpoint" => report_checkpoint(
+                action,
+                reducer
+                    .document()
+                    .ok_or_else(|| invalid_data("checkpoint observed before the stream started"))?,
+                assert_mode,
+                &mut unresolved_citations,
+            )?,
+            "finish" => {
+                apply(&mut reducer, engine.finish()?)?;
+                report_checkpoint(
+                    action,
+                    reducer.document().expect("finish installs a document"),
+                    assert_mode,
+                    &mut unresolved_citations,
+                )?;
+            }
+            kind => {
+                return Err(invalid_data(format!("unsupported scenario action `{kind}`")).into());
+            }
         }
     }
 
-    println!("\n== finalize ==");
-    let applied = state.apply(stream.finalize());
+    let document = reducer
+        .document()
+        .ok_or_else(|| invalid_data("scenario produced no canonical document"))?;
+    if assert_mode {
+        assert_eq!(
+            document.source(),
+            required_str(&value["expected"], "final_source")?
+        );
+        assert_eq!(document.lifecycle(), DocumentLifecycle::Finalized);
+        assert!(
+            document
+                .nodes()
+                .all(|node| node.stability == NodeStability::Stable)
+        );
+        println!("ASSERTIONS_OK scenario=golden-ai-stream");
+    } else {
+        println!("COMPLETE scenario=golden-ai-stream");
+    }
+    Ok(())
+}
+
+fn parse_args() -> Result<bool, io::Error> {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    match args.as_slice() {
+        [] => Ok(false),
+        [flag] if flag == "--assert" => Ok(true),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: cargo run -p mdstream --example minimal -- [--assert]",
+        )),
+    }
+}
+
+fn apply(reducer: &mut Reducer, output: EngineOutput) -> Result<(), Box<dyn std::error::Error>> {
+    for change in output.into_changes() {
+        match reducer.apply(change)? {
+            ApplyOutcome::Applied { .. } | ApplyOutcome::Recovered { .. } => {}
+            other => return Err(format!("engine output was not continuous: {other:?}").into()),
+        }
+    }
+    Ok(())
+}
+
+fn report_checkpoint(
+    action: &Value,
+    document: &mdstream_protocol::Document,
+    assert_mode: bool,
+    unresolved_citations: &mut BTreeMap<String, (NodeId, NodeVersion)>,
+) -> Result<(), io::Error> {
+    let id = required_str(action, "id")?;
+    let observations = action["observations"]
+        .as_array()
+        .ok_or_else(|| invalid_data("checkpoint has no observations"))?;
+    let observation_names = observations
+        .iter()
+        .map(|observation| {
+            observation
+                .as_str()
+                .ok_or_else(|| invalid_data("observation must be a string"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if assert_mode {
+        if let Some(expected_cursor) = action["source_cursor"].as_u64() {
+            assert_eq!(
+                document.source().len(),
+                expected_cursor as usize,
+                "checkpoint `{id}`"
+            );
+        }
+        for observation in &observation_names {
+            assert_observation(document, observation, id, unresolved_citations);
+        }
+    }
+
     println!(
-        "final reset={} invalidated={:?}",
-        applied.reset, applied.invalidated
+        "checkpoint={id} canonical_bytes={} projected_bytes={} pending_bytes={} nodes={} lifecycle={:?} observations={}",
+        document.source().len(),
+        document.projection_cursor().get(),
+        document.pending_source().len(),
+        document.nodes().len(),
+        document.lifecycle(),
+        observation_names.join(","),
     );
-    println!("final committed={}", state.committed().len());
+    Ok(())
+}
+
+fn assert_observation(
+    document: &mdstream_protocol::Document,
+    observation: &str,
+    checkpoint: &str,
+    unresolved_citations: &mut BTreeMap<String, (NodeId, NodeVersion)>,
+) {
+    match observation {
+        "pending_source" => assert!(
+            !document.pending_source().is_empty(),
+            "checkpoint `{checkpoint}` promised pending source"
+        ),
+        "provisional_inline"
+        | "provisional_code_fence"
+        | "provisional_code_block"
+        | "provisional_mermaid_fence"
+        | "provisional_mermaid_block"
+        | "provisional_citation_definition" => assert!(
+            provisional_observation_matches(document, observation),
+            "checkpoint `{checkpoint}` promised `{observation}`"
+        ),
+        "stable_code_block" => assert!(has_stable_code_block(document, "rust")),
+        "stable_mermaid_block" => assert!(has_stable_code_block(document, "mermaid")),
+        "unresolved_citation" => {
+            let node = document
+                .nodes()
+                .find(|node| {
+                    matches!(
+                        &node.content,
+                        ContentKind::CitationReference { key, target: None } if key == "engine"
+                    )
+                })
+                .unwrap_or_else(|| {
+                    panic!("checkpoint `{checkpoint}` promised an unresolved citation")
+                });
+            unresolved_citations
+                .entry("engine".to_string())
+                .or_insert((node.id, node.version.clone()));
+        }
+        "resolved_citation" | "semantic_correction" => {
+            let node = document
+                .nodes()
+                .find(|node| {
+                    matches!(
+                        &node.content,
+                        ContentKind::CitationReference { key, target: Some(_) } if key == "engine"
+                    )
+                })
+                .unwrap_or_else(|| {
+                    panic!("checkpoint `{checkpoint}` promised a resolved citation")
+                });
+            if observation == "semantic_correction" {
+                let (old_id, old_version) = &unresolved_citations["engine"];
+                assert_eq!(&node.id, old_id);
+                assert_ne!(&node.version, old_version);
+            }
+        }
+        "finalized" => assert_eq!(document.lifecycle(), DocumentLifecycle::Finalized),
+        observation => panic!("unsupported scenario observation `{observation}`"),
+    }
+}
+
+pub(crate) fn provisional_observation_matches(
+    document: &mdstream_protocol::Document,
+    observation: &str,
+) -> bool {
+    match observation {
+        "provisional_inline" => document.nodes().any(|node| {
+            node.stability == NodeStability::Provisional
+                && matches!(
+                    node.content,
+                    ContentKind::Paragraph {} | ContentKind::Text { .. }
+                )
+        }),
+        "provisional_code_fence" | "provisional_mermaid_fence" => document.nodes().any(|node| {
+            node.stability == NodeStability::Provisional
+                && matches!(node.content, ContentKind::CodeBlock { info: None, .. })
+        }),
+        "provisional_code_block" => document.nodes().any(|node| {
+            node.stability == NodeStability::Provisional
+                && matches!(node.content, ContentKind::CodeBlock { .. })
+        }),
+        "provisional_mermaid_block" => {
+            let has_provisional_mermaid = document.nodes().any(|node| {
+                node.stability == NodeStability::Provisional && node.content.is_mermaid_code_block()
+            });
+            let has_open_code_fence = document.nodes().any(|node| {
+                node.stability == NodeStability::Provisional
+                    && matches!(node.content, ContentKind::CodeBlock { info: None, .. })
+            });
+            has_provisional_mermaid
+                || (has_open_code_fence && document.pending_source().starts_with("mermaid\n"))
+        }
+        "provisional_citation_definition" => {
+            let has_provisional_definition = document.nodes().any(|node| {
+                node.stability == NodeStability::Provisional
+                    && matches!(
+                        &node.content,
+                        ContentKind::CitationDefinition { key, .. } if key == "engine"
+                    )
+            });
+            let definition_is_pending = document.pending_source() == PENDING_ENGINE_CITATION
+                && !document.nodes().any(|node| {
+                    matches!(
+                        &node.content,
+                        ContentKind::CitationDefinition { key, .. } if key == "engine"
+                    )
+                });
+            has_provisional_definition || definition_is_pending
+        }
+        _ => false,
+    }
+}
+
+fn has_stable_code_block(document: &mdstream_protocol::Document, language: &str) -> bool {
+    document.nodes().any(|node| {
+        node.stability == NodeStability::Stable
+            && node
+                .content
+                .code_language()
+                .is_some_and(|actual| actual.eq_ignore_ascii_case(language))
+    })
+}
+
+fn required_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, io::Error> {
+    value[key]
+        .as_str()
+        .ok_or_else(|| invalid_data(format!("missing string field `{key}`")))
+}
+
+fn invalid_data(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }

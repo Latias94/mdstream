@@ -1,0 +1,37 @@
+name: mdstream_flutter
+version: 0.4.0
+description: Turnkey Flutter state and native-library integration for mdstream.
+repository: https://github.com/Latias94/mdstream
+issue_tracker: https://github.com/Latias94/mdstream/issues
+
+environment:
+  sdk: ^3.8.0
+  flutter: ">=3.32.0"
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  mdstream: ^0.4.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  lints: ^5.1.1
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        ffiPlugin: true
+      ios:
+        ffiPlugin: true
+      macos:
+        ffiPlugin: true
+      linux:
+        ffiPlugin: true
+      windows:
+        ffiPlugin: true

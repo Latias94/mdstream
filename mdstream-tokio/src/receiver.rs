@@ -1,149 +1,134 @@
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::CoalesceOptions;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FlushReason {
-    Newline,
-    MaxDelay,
-    MaxBytes,
-    ChannelClosed,
-}
+use crate::coalesce::{PendingChunks, ScannedChunk};
+use crate::stats::CoalesceWork;
+use crate::{CoalesceOptions, CoalesceStats, FlushReason};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoalescedChunk {
     pub text: String,
     pub reason: FlushReason,
-    /// Number of input messages merged into this output chunk.
+    /// Number of channel messages represented by this output. Empty messages
+    /// count here but never consume a constituent boundary.
     pub merged_messages: usize,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CoalesceStats {
-    pub total_in_messages: u64,
-    pub total_out_chunks: u64,
-    pub total_out_bytes: u64,
-    pub last_reason: Option<FlushReason>,
-    pub last_merged_messages: usize,
-    pub last_bytes: usize,
-}
-
-/// A receiver wrapper that merges high-frequency deltas into fewer, larger chunks.
+/// A cancellation-safe receiver that merges owned deltas with bounded metadata.
 pub struct CoalescingReceiver {
     rx: mpsc::Receiver<String>,
-    opts: CoalesceOptions,
-    buf: String,
-    deadline: Option<Instant>,
-    stats: CoalesceStats,
+    options: CoalesceOptions,
+    pending: PendingChunks,
+    lookahead: Option<LookaheadChunk>,
+    work: CoalesceWork,
+}
+
+struct LookaheadChunk {
+    chunk: ScannedChunk,
+    arrived_at: Instant,
 }
 
 impl CoalescingReceiver {
-    pub fn new(rx: mpsc::Receiver<String>, opts: CoalesceOptions) -> Self {
+    pub fn new(rx: mpsc::Receiver<String>, options: CoalesceOptions) -> Self {
         Self {
             rx,
-            opts,
-            buf: String::new(),
-            deadline: None,
-            stats: CoalesceStats::default(),
+            options,
+            pending: PendingChunks::default(),
+            lookahead: None,
+            work: CoalesceWork::default(),
         }
     }
 
-    pub fn set_options(&mut self, opts: CoalesceOptions) {
-        self.opts = opts;
-        // Keep any buffered text; refresh the deadline based on the new policy.
-        if !self.buf.is_empty() {
-            self.deadline = Some(Instant::now() + self.opts.max_delay);
-        }
+    /// Applies a new policy without changing the first pending input's origin.
+    /// Cached byte, constituent, and newline facts are reused without rescans.
+    pub fn set_options(&mut self, options: CoalesceOptions) {
+        self.options = options;
     }
 
     pub fn options(&self) -> CoalesceOptions {
-        self.opts
+        self.options
     }
 
     pub fn stats(&self) -> CoalesceStats {
-        self.stats
+        let lookahead_bytes = self
+            .lookahead
+            .as_ref()
+            .map_or(0, |lookahead| lookahead.chunk.len());
+        let lookahead_constituents = usize::from(
+            self.lookahead
+                .as_ref()
+                .is_some_and(|lookahead| !lookahead.chunk.is_empty()),
+        );
+        let lookahead_metadata_bytes =
+            lookahead_constituents.saturating_mul(std::mem::size_of::<LookaheadChunk>());
+        self.work.snapshot(
+            self.pending.bytes().saturating_add(lookahead_bytes),
+            self.pending
+                .constituents()
+                .saturating_add(lookahead_constituents),
+            self.pending
+                .boundary_metadata_bytes()
+                .saturating_add(lookahead_metadata_bytes),
+        )
     }
 
-    /// Receive the next coalesced chunk.
-    ///
-    /// - Returns `None` when the underlying channel is closed and the internal buffer is empty.
-    /// - Returns a final buffered chunk before finishing, if any.
     pub async fn recv(&mut self) -> Option<String> {
-        self.recv_with_meta().await.map(|c| c.text)
+        self.recv_with_meta().await.map(|chunk| chunk.text)
     }
 
     pub async fn recv_with_meta(&mut self) -> Option<CoalescedChunk> {
-        let mut merged_messages = 0usize;
-
-        if self.buf.is_empty() {
-            let first = self.rx.recv().await?;
-            self.buf.push_str(&first);
-            merged_messages += 1;
-            self.deadline = Some(Instant::now() + self.opts.max_delay);
-        }
-
         loop {
-            if let Some(reason) = self.should_flush_reason() {
-                return Some(self.flush_buffer(reason, merged_messages));
+            if let Some(reason) = self.pending.flush_reason(self.options) {
+                return Some(self.flush(reason));
             }
 
-            let Some(deadline) = self.deadline else {
-                self.deadline = Some(Instant::now() + self.opts.max_delay);
-                continue;
-            };
-
-            let next = tokio::time::timeout_at(deadline, self.rx.recv()).await;
-            match next {
-                Ok(Some(s)) => {
-                    self.buf.push_str(&s);
-                    merged_messages += 1;
+            if self.pending.is_empty() {
+                if let Some(lookahead) = self.lookahead.take() {
+                    self.pending.accept(lookahead.chunk, lookahead.arrived_at);
+                    continue;
                 }
-                Ok(None) => {
-                    // Channel closed: flush remaining buffer once.
-                    if self.buf.is_empty() {
+                match self.rx.recv().await {
+                    Some(text) => {
+                        let arrived_at = Instant::now();
+                        let chunk = ScannedChunk::scan(text, &mut self.work);
+                        self.pending.accept(chunk, arrived_at);
+                    }
+                    None => {
+                        self.pending.clear_empty_messages();
                         return None;
                     }
-                    return Some(self.flush_buffer(FlushReason::ChannelClosed, merged_messages));
                 }
-                Err(_) => {
-                    // Timeout: flush for progress.
-                    return Some(self.flush_buffer(FlushReason::MaxDelay, merged_messages));
+                continue;
+            }
+
+            let received = match self.pending.deadline(self.options) {
+                Some(deadline) => tokio::time::timeout_at(deadline, self.rx.recv()).await,
+                None => Ok(self.rx.recv().await),
+            };
+            match received {
+                Ok(Some(text)) => {
+                    let arrived_at = Instant::now();
+                    let chunk = ScannedChunk::scan(text, &mut self.work);
+                    if let Some(reason) = self.pending.overflow_reason(&chunk, self.options) {
+                        self.lookahead = Some(LookaheadChunk { chunk, arrived_at });
+                        return Some(self.flush(reason));
+                    }
+                    self.pending.accept(chunk, arrived_at);
                 }
+                Ok(None) => return Some(self.flush(FlushReason::ChannelClosed)),
+                Err(_) => return Some(self.flush(FlushReason::MaxDelay)),
             }
         }
     }
 
-    fn should_flush_reason(&self) -> Option<FlushReason> {
-        if self.buf.len() >= self.opts.max_bytes {
-            return Some(FlushReason::MaxBytes);
-        }
-        if self.opts.flush_on_newline && self.buf.contains('\n') {
-            return Some(FlushReason::Newline);
-        }
-        None
-    }
-
-    fn flush_buffer(&mut self, reason: FlushReason, merged_messages: usize) -> CoalescedChunk {
-        let text = self.take_buf();
-        self.stats.total_in_messages = self
-            .stats
-            .total_in_messages
-            .saturating_add(merged_messages as u64);
-        self.stats.total_out_chunks = self.stats.total_out_chunks.saturating_add(1);
-        self.stats.total_out_bytes = self.stats.total_out_bytes.saturating_add(text.len() as u64);
-        self.stats.last_reason = Some(reason);
-        self.stats.last_merged_messages = merged_messages;
-        self.stats.last_bytes = text.len();
+    fn flush(&mut self, reason: FlushReason) -> CoalescedChunk {
+        let (text, merged_messages) = self.pending.take_text(&mut self.work);
+        self.work
+            .record_output(text.len(), merged_messages, Some(reason));
         CoalescedChunk {
             text,
             reason,
             merged_messages,
         }
-    }
-
-    fn take_buf(&mut self) -> String {
-        self.deadline = None;
-        std::mem::take(&mut self.buf)
     }
 }

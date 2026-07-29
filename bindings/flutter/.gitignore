@@ -1,0 +1,14 @@
+.dart_tool/
+build/
+tool/__pycache__/
+*.py[cod]
+
+# Native release artifacts are assembled by tool/build_native.py.
+android/src/main/jniLibs/
+ios/MdstreamFFI.xcframework/
+macos/MdstreamFFI.xcframework/
+linux/lib/
+windows/lib/
+
+example/.dart_tool/
+example/build/

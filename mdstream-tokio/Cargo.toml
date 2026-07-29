@@ -1,8 +1,8 @@
 [package]
 name = "mdstream-tokio"
-version = "0.3.0"
-description = "Tokio glue for mdstream (delta coalescing and optional actor helpers)."
-readme = "../README.md"
+version = "0.4.0"
+description = "Lossless Tokio transport and actor integration for mdstream change sets."
+readme = "README.md"
 edition = "2024"
 rust-version = "1.88.0"
 authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
@@ -11,10 +11,24 @@ repository = "https://github.com/Latias94/mdstream"
 homepage = "https://github.com/Latias94/mdstream"
 
 [dependencies]
-mdstream = { version = "0.3.0", path = "../mdstream" }
+mdstream = { version = "0.4.0", path = "../mdstream" }
+mdstream-protocol = { version = "0.4.0", path = "../mdstream-protocol" }
 tokio = { version = "1.52.3", features = ["sync", "time", "rt", "macros"] }
 
+[features]
+rich-tui = []
+
 [dev-dependencies]
-ratatui = "0.30.2"
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29.0"
-unicode-width = "0.2.2"
+serde_json = "1.0.140"
+tokio = { version = "1.52.3", features = ["test-util"] }
+tree-sitter-highlight = "0.26.11"
+tree-sitter-json = "0.24.8"
+tree-sitter-rust = "0.24.2"
+unicode-segmentation = "1.13.3"
+
+[[example]]
+name = "agent_tui_rich"
+path = "examples/agent_tui_rich.rs"
+required-features = ["rich-tui"]

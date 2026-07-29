@@ -1,230 +1,326 @@
-use crossterm::event::Event;
-use crossterm::event::KeyCode;
-use crossterm::event::KeyEventKind;
-use crossterm::terminal::EnterAlternateScreen;
-use crossterm::terminal::LeaveAlternateScreen;
-use crossterm::terminal::disable_raw_mode;
-use crossterm::terminal::enable_raw_mode;
-use mdstream::BlockKind;
-use mdstream::DocumentState;
-use mdstream::MdStream;
-use mdstream::Options;
-use mdstream_tokio::BackpressurePolicy;
-use mdstream_tokio::CoalescePreset;
-use mdstream_tokio::CoalescingReceiver;
-use mdstream_tokio::DeltaSender;
-use mdstream_tokio::FlushReason;
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Constraint;
-use ratatui::layout::Direction;
-use ratatui::layout::Layout;
-use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
-use ratatui::text::Text;
-use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
-use ratatui::widgets::Paragraph;
 use std::io;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use unicode_width::UnicodeWidthChar;
 
-#[derive(Debug)]
+use crossterm::event::{Event, KeyCode, KeyEventKind};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use mdstream::StreamEngine;
+use mdstream_protocol::{DocumentLifecycle, Reducer};
+use mdstream_tokio::{
+    ActorBatch, ActorCommand, ActorExit, CoalesceOptions, StreamEngineActor,
+    spawn_stream_engine_actor,
+};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+pub(crate) const INPUT_CAPACITY: usize = 8;
+
+pub(crate) const DEMO_MARKDOWN: &str = r#"# mdstream actor demo
+
+This example sends token chunks through a bounded Tokio channel.
+
+- Adjacent chunks are coalesced without loss.
+- Each output item is one atomic change-set batch.
+- Closing input finalizes the canonical document exactly once.
+
+```rust
+let change_sets = engine.append(chunk)?;
+```
+
+Done.
+"#;
+
 struct App {
-    stream: MdStream,
-    state: DocumentState,
-    cache: RenderCache,
-    producer_policy: BackpressurePolicy,
+    reducer: Reducer,
+    actor_open: bool,
     follow_tail: bool,
     scroll_y: u16,
-    last_pending_kind: Option<BlockKind>,
-    coalesce_preset: CoalescePreset,
-    coalesce_dirty: bool,
-    last_flush_reason: Option<FlushReason>,
-    last_flush_merged: usize,
-    last_flush_bytes: usize,
-    total_in_messages: u64,
-    total_out_chunks: u64,
-    pending_code_fence_max_lines: usize,
+    batches: u64,
+    changes: u64,
+    errors: u64,
+    last_error: Option<String>,
 }
 
-#[derive(Debug, Default)]
-struct RenderCache {
-    width: u16,
-    committed_lines: Vec<String>,
-    committed_count: usize,
-    rebuilt: bool,
-}
-
-impl RenderCache {
-    fn invalidate(&mut self) {
-        self.width = 0;
-        self.committed_lines.clear();
-        self.committed_count = 0;
-        self.rebuilt = true;
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            reducer: Reducer::new(),
+            actor_open: true,
+            follow_tail: true,
+            scroll_y: 0,
+            batches: 0,
+            changes: 0,
+            errors: 0,
+            last_error: None,
+        }
     }
+}
+
+impl App {
+    fn apply_actor_batch(&mut self, batch: ActorBatch) {
+        self.batches = self.batches.saturating_add(1);
+        self.changes = self.changes.saturating_add(batch.change_count() as u64);
+        for change in batch.changes().cloned() {
+            if let Err(error) = self.reducer.apply(change) {
+                self.errors = self.errors.saturating_add(1);
+                self.last_error = Some(error.to_string());
+                break;
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SmokeSummary {
+    pub(crate) source: String,
+    pub(crate) lifecycle: DocumentLifecycle,
+    pub(crate) input_capacity: usize,
+    pub(crate) commands_sent: u64,
+    pub(crate) batches: u64,
+    pub(crate) changes: u64,
+    pub(crate) errors: u64,
+}
+
+pub(crate) fn validate_smoke_summary(summary: &SmokeSummary) -> io::Result<()> {
+    if summary.errors != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("smoke actor reported errors={}", summary.errors),
+        ));
+    }
+    if summary.lifecycle != DocumentLifecycle::Finalized {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("smoke document lifecycle={:?}", summary.lifecycle),
+        ));
+    }
+    if summary.source != DEMO_MARKDOWN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "smoke source mismatch: expected {} bytes, received {}",
+                DEMO_MARKDOWN.len(),
+                summary.source.len()
+            ),
+        ));
+    }
+    let expected_commands = DEMO_MARKDOWN.chars().count() as u64;
+    if summary.commands_sent != expected_commands {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "smoke commands_sent mismatch: expected {expected_commands}, received {}",
+                summary.commands_sent
+            ),
+        ));
+    }
+    if summary.input_capacity != INPUT_CAPACITY {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "smoke input_capacity mismatch: expected {INPUT_CAPACITY}, received {}",
+                summary.input_capacity
+            ),
+        ));
+    }
+    if summary.batches == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "smoke actor reported batches=0",
+        ));
+    }
+    if summary.changes < summary.batches {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "smoke counter mismatch: changes={} batches={}",
+                summary.changes, summary.batches
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ProducerCounters {
+    commands_sent: u64,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
-    let producer_policy = parse_policy(std::env::args())?;
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    match args.as_slice() {
+        [flag] if flag == "--smoke" => {
+            let summary = run_smoke().await?;
+            validate_smoke_summary(&summary)?;
+            println!(
+                "SMOKE_OK lifecycle={:?} input_capacity={} commands_sent={} batches={} changes={} errors={}",
+                summary.lifecycle,
+                summary.input_capacity,
+                summary.commands_sent,
+                summary.batches,
+                summary.changes,
+                summary.errors,
+            );
+            return Ok(());
+        }
+        [] => {}
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "usage: cargo run -p mdstream-tokio --example agent_tui -- [--smoke]",
+            ));
+        }
+    }
+
+    run_interactive().await
+}
+
+async fn run_interactive() -> io::Result<()> {
     let mut stdout = io::stdout();
     enable_raw_mode()?;
     crossterm::execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Use a bounded channel so producers cannot allocate unbounded buffers.
-    let (tx_delta, rx_delta) = mpsc::channel::<String>(64);
-    let (tx_ev, mut rx_ev) = mpsc::channel::<Event>(64);
+    let (mut actor, producer) = spawn_demo(Duration::from_millis(4));
 
+    let (events, mut event_rx) = mpsc::channel(64);
     std::thread::spawn(move || {
         loop {
             if let Ok(true) = crossterm::event::poll(Duration::from_millis(50))
-                && let Ok(ev) = crossterm::event::read()
-                && tx_ev.blocking_send(ev).is_err()
+                && let Ok(event) = crossterm::event::read()
+                && events.blocking_send(event).is_err()
             {
                 break;
             }
         }
     });
 
-    tokio::spawn(async move {
-        let mut sender = DeltaSender::new(tx_delta, producer_policy);
-        sender.set_local_max_bytes(16 * 1024);
-        demo_stream(sender).await;
-    });
-
-    let coalesce_preset = CoalescePreset::Balanced;
-    let mut rx = CoalescingReceiver::new(rx_delta, coalesce_preset.options());
-
-    let mut app = App {
-        stream: MdStream::new(Options::default()),
-        state: DocumentState::new(),
-        cache: RenderCache::default(),
-        producer_policy,
-        follow_tail: true,
-        scroll_y: 0,
-        last_pending_kind: None,
-        coalesce_preset,
-        coalesce_dirty: false,
-        last_flush_reason: None,
-        last_flush_merged: 0,
-        last_flush_bytes: 0,
-        total_in_messages: 0,
-        total_out_chunks: 0,
-        pending_code_fence_max_lines: 40,
-    };
-
-    let res = run(&mut terminal, &mut app, &mut rx, &mut rx_ev).await;
+    let result = run(
+        &mut terminal,
+        &mut App::default(),
+        &mut actor,
+        &mut event_rx,
+    )
+    .await;
+    actor.begin_cancel();
+    let actor_result = match tokio::time::timeout(Duration::from_secs(1), actor.join()).await {
+        Ok(result) => result,
+        Err(_) => actor.join().await,
+    }
+    .map_err(|error| io::Error::other(format!("actor task failed: {error}")));
+    let producer_result = producer
+        .await
+        .map_err(|error| io::Error::other(format!("demo producer failed: {error}")));
 
     disable_raw_mode()?;
     crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
-    res
+    producer_result?;
+    drop(actor_result?);
+    result
+}
+
+pub(crate) async fn run_smoke() -> io::Result<SmokeSummary> {
+    let (mut actor, producer) = spawn_demo(Duration::ZERO);
+    let mut app = App::default();
+    while let Some(batch) = actor.recv().await {
+        app.apply_actor_batch(batch);
+    }
+    let unread = actor
+        .join()
+        .await
+        .map_err(|error| io::Error::other(format!("actor task failed: {error}")))?;
+    assert!(unread.unread.is_empty());
+    if !matches!(unread.exit, ActorExit::Completed(_)) {
+        return Err(io::Error::other("actor did not complete normally"));
+    }
+    let producer = producer
+        .await
+        .map_err(|error| io::Error::other(format!("demo producer failed: {error}")))?;
+    let document = app
+        .reducer
+        .document()
+        .ok_or_else(|| io::Error::other("actor produced no canonical document"))?;
+
+    Ok(SmokeSummary {
+        source: document.source().to_string(),
+        lifecycle: document.lifecycle(),
+        input_capacity: INPUT_CAPACITY,
+        commands_sent: producer.commands_sent,
+        batches: app.batches,
+        changes: app.changes,
+        errors: app.errors,
+    })
+}
+
+fn spawn_demo(delay: Duration) -> (StreamEngineActor, JoinHandle<ProducerCounters>) {
+    let (input, input_rx) = mpsc::channel(INPUT_CAPACITY);
+    let actor = spawn_stream_engine_actor(
+        StreamEngine::new(),
+        input_rx,
+        CoalesceOptions::new(Duration::from_millis(80), 16 * 1024, 2048),
+    );
+    let producer = tokio::spawn(demo_stream(input, delay));
+    (actor, producer)
 }
 
 async fn run<B>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-    rx: &mut CoalescingReceiver,
-    rx_ev: &mut mpsc::Receiver<Event>,
+    actor: &mut StreamEngineActor,
+    events: &mut mpsc::Receiver<Event>,
 ) -> io::Result<()>
 where
     B: ratatui::backend::Backend,
     io::Error: From<B::Error>,
 {
-    let mut last_area_w: u16 = 0;
-    let mut last_area_h: u16 = 0;
-
     loop {
-        terminal.draw(|f| {
-            let area = f.area();
+        terminal.draw(|frame| {
             let [main, status] = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(1), Constraint::Length(1)])
-                .areas(area);
-
-            let title = "mdstream-tokio demo (newline/time coalescing, follow-tail)";
-            let block = Block::default().title(title).borders(Borders::ALL);
+                .areas(frame.area());
+            let block = Block::default()
+                .title("mdstream change-set actor")
+                .borders(Borders::ALL);
             let inner = block.inner(main);
-            f.render_widget(block, main);
+            frame.render_widget(block, main);
 
-            if inner.width != last_area_w {
-                last_area_w = inner.width;
-                app.cache.invalidate();
-            }
-            if inner.height != last_area_h {
-                last_area_h = inner.height;
-            }
-
-            let (lines, total_lines) = build_lines(
-                &app.state,
-                &mut app.cache,
-                inner.width,
-                app.pending_code_fence_max_lines,
-            );
+            let source = app
+                .reducer
+                .document()
+                .map_or(String::new(), |document| document.source().to_string());
+            let line_count = source.lines().count().max(1) as u16;
             if app.follow_tail {
-                app.scroll_y = max_scroll(total_lines as u16, inner.height);
-            } else {
-                app.scroll_y = app
-                    .scroll_y
-                    .min(max_scroll(total_lines as u16, inner.height));
+                app.scroll_y = line_count.saturating_sub(inner.height);
             }
-
-            let paragraph = Paragraph::new(Text::from(
-                lines
-                    .into_iter()
-                    .map(|s| Line::from(Span::raw(s)))
-                    .collect::<Vec<_>>(),
-            ))
-            .scroll((app.scroll_y, 0));
-            f.render_widget(paragraph, inner);
-
-            let status_text = status_line(app, total_lines as u32, inner.height);
-            let status_widget =
-                Paragraph::new(Text::from(Line::styled(status_text, Style::default())));
-            f.render_widget(status_widget, status);
+            frame.render_widget(
+                Paragraph::new(source)
+                    .wrap(Wrap { trim: false })
+                    .scroll((app.scroll_y, 0)),
+                inner,
+            );
+            frame.render_widget(Paragraph::new(status_line(app)), status);
         })?;
 
         tokio::select! {
-            maybe_ev = rx_ev.recv() => {
-                let Some(ev) = maybe_ev else { return Ok(()); };
-                if handle_event(app, ev) {
+            event = events.recv() => {
+                let Some(event) = event else { return Ok(()); };
+                if handle_event(app, event) {
                     return Ok(());
                 }
-                if app.coalesce_dirty {
-                    rx.set_options(app.coalesce_preset.options());
-                    app.coalesce_dirty = false;
-                }
             }
-            maybe_chunk = rx.recv_with_meta() => {
-                if let Some(chunk) = maybe_chunk {
-                    app.last_flush_reason = Some(chunk.reason);
-                    app.last_flush_merged = chunk.merged_messages;
-                    app.last_flush_bytes = chunk.text.len();
-                    app.total_in_messages = app
-                        .total_in_messages
-                        .saturating_add(chunk.merged_messages as u64);
-                    app.total_out_chunks = app.total_out_chunks.saturating_add(1);
-
-                    let u = app.stream.append(&chunk.text);
-                    let applied = app.state.apply(u);
-                    if applied.reset {
-                        app.cache.invalidate();
-                        app.scroll_y = 0;
-                    }
-                    // Best-effort: track pending kind for UI hints.
-                    app.last_pending_kind = app.state.pending().map(|p| p.kind);
-                } else {
-                    // Stream ended: finalize once and keep UI interactive.
-                    let u = app.stream.finalize();
-                    let applied = app.state.apply(u);
-                    if applied.reset {
-                        app.cache.invalidate();
-                    }
+            batch = actor.recv(), if app.actor_open => {
+                match batch {
+                    Some(batch) => app.apply_actor_batch(batch),
+                    None => app.actor_open = false,
                 }
             }
             _ = tokio::time::sleep(Duration::from_millis(16)) => {}
@@ -232,8 +328,8 @@ where
     }
 }
 
-fn handle_event(app: &mut App, ev: Event) -> bool {
-    let Event::Key(key) = ev else {
+fn handle_event(app: &mut App, event: Event) -> bool {
+    let Event::Key(key) = event else {
         return false;
     };
     if key.kind != KeyEventKind::Press {
@@ -244,321 +340,73 @@ fn handle_event(app: &mut App, ev: Event) -> bool {
         KeyCode::Char('q') => true,
         KeyCode::Char('f') => {
             app.follow_tail = !app.follow_tail;
-            true
-        }
-        KeyCode::Char('c') => {
-            app.coalesce_preset = app.coalesce_preset.next();
-            app.coalesce_dirty = true;
-            true
-        }
-        KeyCode::Char(']') => {
-            app.pending_code_fence_max_lines = (app.pending_code_fence_max_lines + 10).min(400);
-            true
-        }
-        KeyCode::Char('[') => {
-            app.pending_code_fence_max_lines =
-                app.pending_code_fence_max_lines.saturating_sub(10).max(10);
-            true
+            false
         }
         KeyCode::Char('j') | KeyCode::Down => {
             app.follow_tail = false;
             app.scroll_y = app.scroll_y.saturating_add(1);
-            true
+            false
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.follow_tail = false;
             app.scroll_y = app.scroll_y.saturating_sub(1);
-            true
-        }
-        KeyCode::PageDown => {
-            app.follow_tail = false;
-            app.scroll_y = app.scroll_y.saturating_add(10);
-            true
-        }
-        KeyCode::PageUp => {
-            app.follow_tail = false;
-            app.scroll_y = app.scroll_y.saturating_sub(10);
-            true
+            false
         }
         KeyCode::Char('g') | KeyCode::Home => {
             app.follow_tail = false;
             app.scroll_y = 0;
-            true
+            false
         }
         KeyCode::Char('G') | KeyCode::End => {
             app.follow_tail = true;
-            true
+            false
         }
         _ => false,
     }
 }
 
-fn status_line(app: &App, total_lines: u32, viewport_h: u16) -> String {
-    let committed = app.state.committed().len();
-    let pending = app.state.pending().is_some();
-    let pending_kind = app
-        .last_pending_kind
-        .map(|k| format!("{k:?}"))
-        .unwrap_or("-".to_string());
-    let reason = app
-        .last_flush_reason
-        .map(|r| format!("{r:?}"))
-        .unwrap_or("-".to_string());
+fn status_line(app: &App) -> String {
+    let (lifecycle, epoch, sequence, nodes) = app.reducer.document().map_or_else(
+        || (DocumentLifecycle::Open, 0, 0, 0),
+        |document| {
+            (
+                document.lifecycle(),
+                document.coordinate().epoch.get(),
+                document.coordinate().sequence.get(),
+                document.nodes().len(),
+            )
+        },
+    );
+    let error = app.last_error.as_deref().unwrap_or("-");
     format!(
-        "q quit | j/k scroll | g/G top/bottom | f follow-tail={} | c coalesce={} | [/] code-tail={} | producer={:?} | committed={} pending={} kind={} | flush={} merged={} bytes={} | in_msgs={} out_chunks={} | lines={} y={} vh={}",
+        "q quit | j/k scroll | g/G top/bottom | f follow={} | actor={} | {:?} epoch={} seq={} nodes={} | batches={} changes={} errors={} | error={}",
         app.follow_tail,
-        app.coalesce_preset.label(),
-        app.pending_code_fence_max_lines,
-        app.producer_policy,
-        committed,
-        pending,
-        pending_kind,
-        reason,
-        app.last_flush_merged,
-        app.last_flush_bytes,
-        app.total_in_messages,
-        app.total_out_chunks,
-        total_lines,
-        app.scroll_y,
-        viewport_h,
+        if app.actor_open { "open" } else { "closed" },
+        lifecycle,
+        epoch,
+        sequence,
+        nodes,
+        app.batches,
+        app.changes,
+        app.errors,
+        error,
     )
 }
 
-fn parse_policy(mut args: impl Iterator<Item = String>) -> io::Result<BackpressurePolicy> {
-    let _exe = args.next();
-    let mut policy: Option<BackpressurePolicy> = None;
-
-    while let Some(arg) = args.next() {
-        if let Some(v) = arg.strip_prefix("--policy=") {
-            policy = Some(parse_policy_value(v)?);
-            continue;
+async fn demo_stream(input: mpsc::Sender<ActorCommand>, delay: Duration) -> ProducerCounters {
+    let mut commands_sent = 0_u64;
+    for character in DEMO_MARKDOWN.chars() {
+        if input
+            .send(ActorCommand::Append(character.to_string()))
+            .await
+            .is_err()
+        {
+            return ProducerCounters { commands_sent };
         }
-        if arg == "--policy" {
-            let Some(v) = args.next() else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "--policy requires a value: block|drop-new|coalesce-local",
-                ));
-            };
-            policy = Some(parse_policy_value(&v)?);
-            continue;
-        }
-        if arg == "-h" || arg == "--help" {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "usage: agent_tui [--policy block|drop-new|coalesce-local]",
-            ));
+        commands_sent = commands_sent.saturating_add(1);
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
         }
     }
-
-    Ok(policy.unwrap_or(BackpressurePolicy::CoalesceLocal))
-}
-
-fn parse_policy_value(v: &str) -> io::Result<BackpressurePolicy> {
-    match v {
-        "block" => Ok(BackpressurePolicy::Block),
-        "drop-new" | "dropnew" => Ok(BackpressurePolicy::DropNew),
-        "coalesce-local" | "coalescelocal" => Ok(BackpressurePolicy::CoalesceLocal),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("unknown --policy={v} (expected: block|drop-new|coalesce-local)"),
-        )),
-    }
-}
-
-fn build_lines(
-    state: &DocumentState,
-    cache: &mut RenderCache,
-    width: u16,
-    pending_code_fence_max_lines: usize,
-) -> (Vec<String>, usize) {
-    let width = width.max(1);
-    if cache.width != width {
-        cache.width = width;
-        cache.committed_lines.clear();
-        cache.committed_count = 0;
-        cache.rebuilt = true;
-    }
-
-    let committed = state.committed();
-    if cache.committed_count > committed.len() {
-        cache.invalidate();
-    }
-
-    if cache.committed_count < committed.len() {
-        for b in &committed[cache.committed_count..] {
-            cache
-                .committed_lines
-                .extend(render_block(b.kind, b.display_or_raw(), width, false));
-        }
-        cache.committed_count = committed.len();
-    }
-
-    let mut out = cache.committed_lines.clone();
-
-    if let Some(p) = state.pending() {
-        out.extend(render_pending(
-            p.kind,
-            p.display_or_raw(),
-            width,
-            pending_code_fence_max_lines,
-        ));
-    }
-
-    let total = out.len();
-    (out, total)
-}
-
-fn render_pending(
-    kind: BlockKind,
-    text: &str,
-    width: u16,
-    code_fence_max_lines: usize,
-) -> Vec<String> {
-    // Gemini CLI style: large pending code fences are truncated to reduce flicker/latency.
-    if kind == BlockKind::CodeFence {
-        return render_pending_code_fence(text, width, code_fence_max_lines);
-    }
-    render_block(kind, text, width, true)
-}
-
-fn render_pending_code_fence(text: &str, width: u16, max_lines: usize) -> Vec<String> {
-    let mut lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= max_lines {
-        return render_block(BlockKind::CodeFence, text, width, true);
-    }
-
-    let total = lines.len();
-    let mut kept: Vec<String> = Vec::new();
-    if let Some(first) = lines.first().copied() {
-        kept.push(first.to_string());
-    }
-    let hint = format!(
-        "… generating more … (showing last {} of {} lines)",
-        max_lines.saturating_sub(2),
-        total.saturating_sub(1),
-    );
-    kept.push(hint);
-    let tail = lines.split_off(lines.len().saturating_sub(max_lines.saturating_sub(2)));
-    kept.extend(tail.into_iter().map(|s| s.to_string()));
-
-    let joined = kept.join("\n");
-    render_block(BlockKind::CodeFence, &joined, width, true)
-}
-
-fn render_block(kind: BlockKind, text: &str, width: u16, pending: bool) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-
-    let header = if pending {
-        format!("--- pending {kind:?} ---")
-    } else {
-        format!("--- committed {kind:?} ---")
-    };
-    out.push(header);
-
-    match kind {
-        BlockKind::CodeFence | BlockKind::Table => {
-            for line in text.lines() {
-                out.push(line.to_string());
-            }
-        }
-        _ => {
-            for line in text.lines() {
-                out.extend(wrap_chars(line, width));
-            }
-        }
-    }
-
-    out.push(String::new());
-    out
-}
-
-fn wrap_chars(s: &str, width: u16) -> Vec<String> {
-    let width = width as usize;
-    if width == 0 {
-        return vec![];
-    }
-    if s.is_empty() {
-        return vec![String::new()];
-    }
-
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut cur_w = 0usize;
-
-    for ch in s.chars() {
-        let w = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
-        if cur_w + w > width && !cur.is_empty() {
-            out.push(std::mem::take(&mut cur));
-            cur_w = 0;
-        }
-        cur.push(ch);
-        cur_w += w;
-    }
-
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-
-    out
-}
-
-fn max_scroll(content_h: u16, viewport_h: u16) -> u16 {
-    content_h.saturating_sub(viewport_h)
-}
-
-async fn demo_stream(mut tx: DeltaSender) {
-    let md = r#"# mdstream demo
-
-This is a **streaming** example:
-
-- Flush strategy: newline-gated + time window (like Codex / Gemini CLI)
-- UI strategy: follow-tail by default
-
-```rs
-fn main() {
-    println!("hello");
-}
-```
-
-Now we stream a *large* code block to show pending truncation:
-
-```txt
-"#;
-
-    for chunk in chunk_by(md, 3) {
-        let _ = tx.send(&chunk).await;
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    for i in 1..=200 {
-        let line = format!("{i:04} | The quick brown fox jumps over the lazy dog.\n");
-        for chunk in chunk_by(&line, 2) {
-            let _ = tx.send(&chunk).await;
-            tokio::time::sleep(Duration::from_millis(4)).await;
-        }
-    }
-
-    let tail = "\n```\n\nDone.\n";
-    for chunk in chunk_by(tail, 3) {
-        let _ = tx.send(&chunk).await;
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    let _ = tx.flush().await;
-}
-
-fn chunk_by(s: &str, n: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    for ch in s.chars() {
-        cur.push(ch);
-        if cur.chars().count() >= n {
-            out.push(std::mem::take(&mut cur));
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
+    ProducerCounters { commands_sent }
 }

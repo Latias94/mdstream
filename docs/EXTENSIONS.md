@@ -1,176 +1,116 @@
-# Extensions
+# Extensions and Processors
 
-This document describes how consumers can extend `mdstream` to support custom streaming behaviors and non-standard Markdown constructs.
+mdstream has two extension boundaries with different responsibilities:
+setup-only source framing and post-reduction content processors.
 
-## Extension Points
+## Setup-Only Custom Blocks
 
-### 1) BoundaryPlugin
+`StreamEngineBuilder::custom_block` registers a versioned standalone block
+grammar before input starts. Configuration is sealed after the first append.
+Runtime grammar or transformer mutation is intentionally unavailable because it
+would reinterpret stable history.
 
-Purpose: participate in line-scoped context updates and stable boundary detection.
+Custom delimiters are full physical lines at column zero, open only at document
+start or after a blank line, and pair through one global LIFO stack. Markdown
+code/HTML raw regions protect delimiter-looking text. The complete grammar is
+specified by [ADR 0003](ADR_0003_STANDALONE_CUSTOM_BLOCKS.md).
 
-Use cases:
+`pulldown-cmark` remains the only CommonMark/GFM semantic compiler. LALRPOP is
+not used in the Markdown path: a generated LR grammar would not supply
+CommonMark semantics, streaming checkpoints, lifecycle, or stable identity. It
+remains a possible implementation tool for a future independent closed DSL.
 
-- custom containers (eg `:::warning`)
-- application-specific blocks (eg `<thinking>...</thinking>`)
-- language model tags
+## Four Separate Extension Planes
 
-Guidelines:
+A complete custom content feature composes four contracts instead of adding a
+parser callback or renderer registry:
 
-- must be conservative: avoid committing too early
-- must not mutate committed text
+1. A setup-only `CustomBlockSpec` declares sealed source framing.
+2. The compiler emits a typed `ContentKind::Custom` node with a namespace,
+   name, opacity flag, and bounded string attributes.
+3. An optional versioned processor derives an artifact from the typed node.
+4. The host maps the typed node and artifact protocol to its own display code.
 
-Status: implemented (MVP-level).
+The first two planes are canonical. Processor artifacts and host display state
+are derived. A host may replace its renderer or discard an artifact without
+rewriting Markdown history, node identity, Content IR, or transition facts.
+Custom nodes therefore do not carry framework component names, arbitrary JSON,
+animation metadata, or executable callbacks.
 
-`mdstream` provides:
+## Content Processors
 
-- `BoundaryPlugin` trait
-- `MdStreamBuilder::boundary_plugin(...)` for setup-time registration
-- `MdStream::push_boundary_plugin(...)` and `MdStream::with_boundary_plugin(...)`
-- `FenceBoundaryPlugin` as a small reference implementation (e.g. `:::warning ... :::`)
-- `TagBoundaryPlugin` as another built-in example (e.g. `<thinking> ... </thinking>`)
-- `ContainerBoundaryPlugin` for Incremark-compatible `::: name attr` containers (with nesting)
-- `FnBoundaryPlugin` for quick ad-hoc custom boundaries (closure-based)
+Processors consume typed `ContentNode` input after canonical reduction and
+produce text, binary, or structured failure artifacts. Typical processors
+include:
 
-Lifecycle:
+- citation resolution;
+- Mermaid rendering through optional `mdstream-merman`;
+- math or code compilation owned by an application;
+- domain-specific custom block interpretation.
 
-- registration appends the plugin to the internal boundary registry
-- `matches_start` is used as a pure start predicate
-- `start` is called once when the plugin becomes active for a block
-- `update` is called for each line in the active block, including the starting line
-- `reset` is called when `MdStream::reset()` clears stream state
+Artifacts never enter Content IR. A processor must declare a stable ID,
+implementation version, configuration version, and provisional-input
+capability. Expensive processors should default to stable nodes. Provisional
+preview requires both processor capability and host policy.
 
-Notes on `:::` containers:
+## Scheduling Contract
 
-- If you want **Incremark parity** (`::: name attr` with nesting depth), use `ContainerBoundaryPlugin`.
-  - It requires **whitespace after the marker** (so `:::warning` does not match).
-  - It supports longer markers (e.g. `:::::`) and nested containers (each end closes one level).
-- If you want a **fence-like block** that also matches `:::warning` (no whitespace), use
-  `FenceBoundaryPlugin` instead.
+`ArtifactHost` issues owned requests and validates completions; it does not run
+an executor. Hosts may schedule requests on threads, tasks, workers, or
+processes. They must propagate cancellation and submit completion through the
+same request generation.
 
-Minimal example:
+Registering a host-language processor after nodes already exist scans the
+current typed tree. Registration snapshots descriptor/configuration identity,
+so later mutable getters cannot change the artifact slot or break disposal.
 
-```rust
-use mdstream::{
-    BoundaryUpdate, ContainerBoundaryPlugin, FenceBoundaryPlugin, FnBoundaryPlugin, MdStream,
-    Options, TagBoundaryPlugin,
-};
+## Safety and Limits
 
-// A tiny custom container:
-// - starts at a line that is exactly "@@@"
-// - ends at the next line that is exactly "@@@"
-let plugin = FnBoundaryPlugin::new(
-    |line| line.trim() == "@@@",
-    |line| {
-        if line.trim() == "@@@" {
-            BoundaryUpdate::Close
-        } else {
-            BoundaryUpdate::Continue
-        }
-    },
-);
+The host bounds processor input bytes, slots, in-flight work, pending change
+bytes, retained artifacts, and retained artifact bytes. Processor-specific
+limits may reject source/model complexity before expensive work. These limits
+are accounting controls, not a sandbox. Merman constructs SVG before mdstream
+can apply its retained-artifact cap, so adversarial diagrams require external
+process isolation.
 
-let mut s = MdStream::builder(Options::default())
-    .boundary_plugin(FenceBoundaryPlugin::triple_colon())
-    .boundary_plugin(TagBoundaryPlugin::thinking())
-    .boundary_plugin(ContainerBoundaryPlugin::default())
-    .boundary_plugin(plugin)
-    .build();
+The default Rust, WASM, npm, Dart, and Flutter packages do not depend on
+Merman. Applications opt into `mdstream-merman` on its separate Rust 1.95 lane.
+
+## Merman Processor Recipe
+
+[`render_golden`](../mdstream-merman/examples/render_golden.rs) replays the
+packaged Golden AI Stream through `StreamEngine` and `TransitionReducer`, then
+selects the typed stable Mermaid code node and issues an `ArtifactHost` request.
+It does not construct protocol nodes or changes by hand. Run its executable
+contract with:
+
+```console
+cargo +1.95.0 run --manifest-path mdstream-merman/Cargo.toml \
+  --example render_golden -- --assert
 ```
 
-### 2) PendingTransformer
+The recipe reports the full processor request identity, artifact protocol, and
+media type. The canonical snapshot is checked before and after rendering to
+prove that the SVG remains derived host state. Request generations let the host
+reject late A-to-B-to-A completions even when the first and final semantic
+inputs are equal. Same-floor recovery retains eligible keyed work; reset and
+advanced replacement clear it.
 
-Purpose: transform the pending block into a safer `display` string for downstream parsers/renderers.
+## SVG Trust Boundary
 
-Examples:
+Merman returns an opaque `image/svg+xml` artifact. mdstream does not sanitize,
+execute, mount, or inspect that markup. A web host must pass the bytes through a
+named `sanitizeSvgArtifact` boundary that rejects active content and unwanted
+external references, or render them in a separately isolated document/process.
+An embedded host owns the equivalent allowlist and resource-loading policy.
+Direct insertion into an unrestricted HTML sink is not an adoption pattern.
 
-- remend-like termination for incomplete Markdown
-- custom placeholder replacement
+`sanitizeSvgArtifact` is a name for required application policy, not an API or
+implementation exported by mdstream. The Golden recipe stops at that boundary
+and never emits the SVG bytes to a display sink.
 
-Guidelines:
-
-- operate on a tail window to keep cost bounded
-- never change committed blocks
-
-Status: implemented (MVP-level).
-
-`mdstream` provides:
-
-- `PendingTransformer` trait
-- `MdStreamBuilder::pending_transformer(...)` for setup-time registration
-- `MdStream::push_pending_transformer(...)` and `MdStream::with_pending_transformer(...)`
-- Built-in transformers for Streamdown-compatible behavior:
-  - `IncompleteLinkPlaceholderTransformer`
-  - `IncompleteImageDropTransformer`
-
-Lifecycle:
-
-- registration appends the transformer to the internal pending transformer chain
-- transformers run in registration order after the built-in terminator has produced the current display string
-- pending code fences use a built-in close-fence fast path and currently skip custom transformers
-- returning `Some(String)` replaces the display passed to later transformers
-- returning `None` leaves display unchanged
-- `reset` is called when `MdStream::reset()` clears stream state
-
-Minimal example:
-
-```rust
-use mdstream::{FnPendingTransformer, MdStream, Options};
-
-// Append a marker so downstream parsers never see an empty string.
-let mut s = MdStream::builder(Options::default())
-    .pending_transformer(FnPendingTransformer(|input| {
-        if input.display.is_empty() { Some("<empty>".to_string()) } else { None }
-    }))
-    .build();
-```
-
-The older `push_*` and `with_*` methods remain useful when a stream needs dynamic registration, but
-the builder is the preferred setup-time path for new code.
-
-### 3) BlockAnalyzer
-
-Purpose: extract metadata from blocks without changing text.
-
-Examples:
-
-- code fence info string extraction (`mermaid`, `json`, `python`, etc.)
-- heuristics for “this block is likely incomplete”
-
-Status: implemented (MVP-level).
-
-`mdstream` provides:
-
-- `BlockAnalyzer` trait
-- `AnalyzedStream<A>` wrapper to run an analyzer on each `append()`/`finalize()`
-- `CodeFenceAnalyzer` built-in analyzer that classifies code fences (e.g. `mermaid`, `json`)
-- `MathAnalyzer` built-in analyzer that reports whether a `$$` math block is balanced
-- `BlockHintAnalyzer` built-in analyzer that provides a small `likely_incomplete` hint for pending blocks
-- `TaggedBlockAnalyzer` built-in analyzer for custom tag blocks (e.g. `<thinking>...</thinking>`)
-
-Minimal example:
-
-```rust
-use mdstream::{AnalyzedStream, CodeFenceAnalyzer, Options};
-
-let mut s = AnalyzedStream::new(Options::default(), CodeFenceAnalyzer::default());
-let u = s.append("```mermaid\ngraph TD;\nA-->B;\n");
-assert!(u.pending_meta.is_some());
-```
-
-## Mermaid and Code Blocks
-
-`mdstream` does not render Mermaid, but it should support it by:
-
-- ensuring code fences are never split while unclosed (pending until closed)
-- exposing the fence info string so UIs can dispatch to Mermaid renderers
-- providing lightweight helpers:
-  - `Block::code_fence_header()`
-  - `Block::code_fence_language()`
-
-## Philosophy
-
-Extensions should not compromise the primary invariants:
-
-- immutable committed blocks
-- bounded per-chunk cost
-- render-agnostic output
+Source, model, label, edge, output, and retention limits make resource use
+accountable, but they do not preempt synchronous parser/layout/render work or
+bound allocator peaks. Cancellation is cooperative. Hosts accepting untrusted
+diagram or custom processor input must own a timeout plus worker/process
+isolation; an in-process byte limit is not a compute sandbox.

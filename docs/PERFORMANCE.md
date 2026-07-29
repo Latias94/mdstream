@@ -1,55 +1,74 @@
-# Performance
+# Performance and Resource Contracts
 
-`mdstream` is designed for streaming Markdown UIs where each incoming chunk should update only the new text and the current pending block.
+mdstream treats deterministic work and memory accounting as correctness
+constraints. Criterion benchmarks are trend evidence; they do not replace
+operation counters and hard limits.
 
-The benchmark suite exists to catch accidental regressions in the hot paths that matter for LLM-style streams:
+## Streaming Work
 
-- many small blocks
-- large tables
-- large code fences
-- whole-buffer, line, character, and pseudo-random chunking
-- owned updates through `append`
-- borrowed updates through `append_ref`
+Accepted source is emitted as suffix deltas. Normal append does not serialize a
+full pending snapshot. Compiler metrics separate framing, Markdown projection,
+reconciliation, semantic correction, and structural work. Reducer metrics
+separate operation visits, source growth, staging, and replay.
 
-## Running Benchmarks
+Source and projection cursors may diverge when completing a typed frontier
+would require unbounded reparse. Geometric checkpoints and structural
+boundaries keep eventual compilation bounded. Finalization requires complete
+projection coverage. See [ADR 0002](ADR_0002_PROJECTION_FRONTIER.md).
 
-Run the core benchmark target with:
+## Hard Limits
 
-```bash
-cargo bench -p mdstream --bench streaming
+Typed errors enforce limits for document/pending bytes, nodes, operations,
+definition edges, encoded commands/changes/views, processor input, in-flight
+jobs, pending artifact changes, and retained artifacts. Admission is
+transactional: a rejected operation preserves the last replayable coordinate
+and document.
+
+Canonical input transport is lossless. Tokio may block or coalesce continuous
+changes but cannot use a drop-new content policy.
+
+## Transition Capture
+
+Host transition facts are opt-in. With capture disabled, reducers do not stage,
+allocate, or encode transition records. With capture enabled, work is
+proportional to the facts produced by the current reducer operation; facts are
+not retained as a replay log and are not synthesized by diffing canonical
+snapshots.
+
+Advanced recovery emits one constant-shape `full_replace` fact and advances the
+continuity generation. Same-floor recovery emits no fact and does not advance
+continuity. Hosts that retain transition batches must bound their own queues and
+release facts after scheduling presentation work.
+
+Encoded transition facts share the reducer update envelope limit. Configure
+`wire.max_reducer_update_bytes` for the largest accepted atomic operation and
+reject oversized updates transactionally; do not add a second transition-only
+budget that could make one logical update partially observable.
+
+## Frozen Evidence
+
+`conformance/budgets/streaming.json` records deterministic calibration and
+minimal transport measurements. `bindings/budgets.json` records absolute WASM,
+npm, Dart, Flutter native-library, and per-platform package ceilings plus
+advisory regression bands. Absolute ceilings always win over a relative
+baseline.
+
+The checked package policy forbids Merman, React, Streamdown, and Incremark from
+default artifact dependency graphs. Optional Merman size and render cost are
+measured on its standalone Rust 1.95 lane.
+
+## Reproducing Checks
+
+```sh
+scripts/calibrate-budgets.sh --check
+python3 scripts/verify-budgets.py --contracts
+python3 scripts/verify-budgets.py --negative-merman
+pnpm artifacts:check
+python3 bindings/flutter/tool/package_smoke.py --skip-native-build --skip-runtime
+cargo check -p mdstream --benches --all-features
 ```
 
-For a quick compile-only check, use:
-
-```bash
-cargo check -p mdstream --benches
-```
-
-Criterion reports throughput and statistical summaries under `target/criterion/`.
-Treat those numbers as machine-local baselines unless a future CI job records stable historical data on dedicated hardware.
-
-For a short smoke run while editing benchmark code:
-
-```bash
-cargo bench -p mdstream --bench streaming -- --sample-size 10 --warm-up-time 0.1 --measurement-time 0.1
-```
-
-## Interpreting Results
-
-The benchmarks compare public API paths rather than private modules.
-That keeps the results aligned with user-visible behavior and lets internal modules keep changing.
-
-Use the scenarios this way:
-
-- `append_owned` shows the cost for users who need owned `Update` values.
-- `append_borrowed` shows the intended hot path for UI threads that own `MdStream`.
-- `large_code_fence_*` catches pending-display cache regressions.
-- `large_table_*` catches expensive table and line-scanning changes.
-- `*_chars` and `*_random_chunks` catch chunk-boundary overhead.
-
-The normal CI gate should compile the benchmark target, but it should not fail pull requests on Criterion timing variance from shared GitHub runners.
-Use full benchmark runs locally before and after performance-sensitive refactors.
-
-`mdstream` keeps its core MSRV at Rust 1.85, so benchmark dependencies must also respect that floor.
-If a future Criterion release raises its MSRV above the core crate floor, keep the benchmark dev
-dependency pinned until the project intentionally raises `mdstream`'s MSRV.
+For performance investigations, compare deterministic counters first, retained
+and transactional memory second, and wall-clock benchmarks last. A faster
+result that violates replay, source preservation, or a hard ceiling is not an
+optimization.

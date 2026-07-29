@@ -1,98 +1,65 @@
 #![allow(dead_code)]
 
-use mdstream::{BlockKind, MdStream, Options, Update};
+use mdstream::StreamEngine;
+use mdstream_conformance::{ChunkSchedule, NormalizedSnapshot};
+use mdstream_protocol::{ApplyOutcome, Reducer, TransitionReducer};
 
-pub fn collect_final_blocks(
-    chunks: impl IntoIterator<Item = String>,
-    opts: Options,
-) -> Vec<(BlockKind, String)> {
-    let s = MdStream::new(opts);
-    collect_final_blocks_with_stream(chunks, s)
-}
-
-pub fn collect_final_raw(chunks: impl IntoIterator<Item = String>, opts: Options) -> Vec<String> {
-    collect_final_blocks(chunks, opts)
-        .into_iter()
-        .map(|(_, raw)| raw)
-        .collect()
-}
-
-pub fn collect_final_blocks_with_stream(
-    chunks: impl IntoIterator<Item = String>,
-    mut s: MdStream,
-) -> Vec<(BlockKind, String)> {
-    let mut out = Vec::new();
-
+pub fn replay(chunks: impl IntoIterator<Item = String>) -> NormalizedSnapshot {
+    let mut engine = StreamEngine::new();
+    let mut reducer = Reducer::new();
+    let mut transition_reducer = TransitionReducer::new();
     for chunk in chunks {
-        let u = s.append(&chunk);
-        apply_update(&mut out, u);
+        apply(
+            &mut reducer,
+            &mut transition_reducer,
+            engine.append(&chunk).unwrap(),
+        );
     }
-    let u = s.finalize();
-    apply_update(&mut out, u);
-    out
+    apply(
+        &mut reducer,
+        &mut transition_reducer,
+        engine.finish().unwrap(),
+    );
+    let snapshot = reducer.document().unwrap().snapshot();
+    assert_eq!(
+        Some(snapshot.clone()),
+        transition_reducer
+            .document()
+            .map(|document| document.snapshot())
+    );
+    NormalizedSnapshot::from(snapshot)
 }
 
-pub fn collect_final_blocks_borrowed(
-    chunks: impl IntoIterator<Item = String>,
-    opts: Options,
-) -> Vec<(BlockKind, String)> {
-    let mut s = MdStream::new(opts);
-    let mut out = Vec::new();
-
-    for chunk in chunks {
-        let u = s.append_ref(&chunk).to_owned();
-        apply_update(&mut out, u);
+fn apply(
+    reducer: &mut Reducer,
+    transition_reducer: &mut TransitionReducer,
+    output: mdstream::EngineOutput,
+) {
+    for change in output.into_changes() {
+        let outcome = reducer.apply(change.clone()).unwrap();
+        assert!(matches!(
+            outcome,
+            ApplyOutcome::Applied { .. } | ApplyOutcome::Recovered { .. }
+        ));
+        let observed = transition_reducer.apply(change).unwrap();
+        assert_eq!(observed.outcome, outcome);
+        assert!(
+            observed.facts.is_some(),
+            "every state-changing engine change must emit transition facts"
+        );
     }
-    let u = s.finalize_ref().to_owned();
-    apply_update(&mut out, u);
-    out
-}
-
-fn apply_update(out: &mut Vec<(BlockKind, String)>, update: Update) {
-    if update.reset {
-        out.clear();
-    }
-    out.extend(update.committed.into_iter().map(|b| (b.kind, b.raw)));
-}
-
-pub fn collect_final_raw_with_stream(
-    chunks: impl IntoIterator<Item = String>,
-    s: MdStream,
-) -> Vec<String> {
-    collect_final_blocks_with_stream(chunks, s)
-        .into_iter()
-        .map(|(_, raw)| raw)
-        .collect()
 }
 
 pub fn chunk_whole(text: &str) -> Vec<String> {
-    vec![text.to_string()]
+    schedule_chunks(text, &ChunkSchedule::Whole)
 }
 
 pub fn chunk_lines(text: &str) -> Vec<String> {
-    text.split_inclusive('\n').map(|s| s.to_string()).collect()
+    schedule_chunks(text, &ChunkSchedule::Lines)
 }
 
 pub fn chunk_chars(text: &str) -> Vec<String> {
-    text.chars().map(|c| c.to_string()).collect()
-}
-
-fn fnv1a64(s: &str) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for &b in s.as_bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
-}
-
-fn xorshift64(state: &mut u64) -> u64 {
-    let mut x = *state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *state = x;
-    x
+    schedule_chunks(text, &ChunkSchedule::Characters)
 }
 
 pub fn chunk_pseudo_random(
@@ -101,19 +68,22 @@ pub fn chunk_pseudo_random(
     trial: u64,
     max_bytes: usize,
 ) -> Vec<String> {
-    assert!(max_bytes > 0);
-    let mut state = fnv1a64(seed_label) ^ (trial.wrapping_mul(0x9e3779b97f4a7c15));
+    schedule_chunks(
+        text,
+        &ChunkSchedule::Seeded {
+            label: seed_label.to_string(),
+            seed: 0,
+            trial,
+            max_bytes,
+        },
+    )
+}
 
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    while start < text.len() {
-        let want = (xorshift64(&mut state) as usize % max_bytes) + 1;
-        let mut end = (start + want).min(text.len());
-        while end < text.len() && !text.is_char_boundary(end) {
-            end += 1;
-        }
-        out.push(text[start..end].to_string());
-        start = end;
-    }
-    out
+fn schedule_chunks(text: &str, schedule: &ChunkSchedule) -> Vec<String> {
+    schedule
+        .slices(text)
+        .expect("test chunk schedules are valid")
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }

@@ -1,0 +1,24 @@
+[package]
+name = "mdstream-bindings-core"
+version = "0.4.0"
+description = "Safe shared binding facade for mdstream transports."
+edition = "2024"
+rust-version = "1.85"
+authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Latias94/mdstream"
+homepage = "https://github.com/Latias94/mdstream"
+
+[dependencies]
+mdstream = { path = "../mdstream", version = "0.4.0" }
+mdstream-processors = { path = "../mdstream-processors", version = "0.4.0" }
+mdstream-protocol = { path = "../mdstream-protocol", version = "0.4.0" }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.140", features = ["raw_value"] }
+
+[dev-dependencies]
+mdstream-conformance = { path = "../mdstream-conformance" }
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+
+[package.metadata.docs.rs]
+all-features = true

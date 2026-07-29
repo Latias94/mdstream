@@ -1,0 +1,108 @@
+{
+  "schema": "mdstream.binding-content-ir-fixture/1",
+  "semantic_text": [
+    {
+      "kind": "source"
+    },
+    { "kind": "normalized", "value": "normalized text" }
+  ],
+  "code_block_syntax": [
+    { "kind": "indented" },
+    { "kind": "fenced", "marker": "backtick", "length": 3 },
+    { "kind": "fenced", "marker": "tilde", "length": 4 }
+  ],
+  "link_styles": [
+    "inline",
+    "reference",
+    "reference_unknown",
+    "collapsed",
+    "collapsed_unknown",
+    "shortcut",
+    "shortcut_unknown",
+    "autolink",
+    "email"
+  ],
+  "block_quote_kinds": [
+    "plain",
+    "note",
+    "tip",
+    "important",
+    "warning",
+    "caution"
+  ],
+  "table_alignments": ["none", "left", "center", "right"],
+  "content_kinds": [
+    { "kind": "paragraph" },
+    { "kind": "heading", "level": 2 },
+    { "kind": "text", "text": { "kind": "source" } },
+    { "kind": "emphasis" },
+    { "kind": "strong" },
+    { "kind": "strikethrough" },
+    {
+      "kind": "link",
+      "target": { "id": "9", "version": "sha256:resource" },
+      "reference_label": null,
+      "style": "inline"
+    },
+    {
+      "kind": "image",
+      "target": null,
+      "reference_label": "image-ref",
+      "style": "reference",
+      "alt": { "kind": "normalized", "value": "Image alt" }
+    },
+    {
+      "kind": "inline_code",
+      "text": { "kind": "normalized", "value": "let value = 1;" }
+    },
+    {
+      "kind": "code_block",
+      "syntax": { "kind": "fenced", "marker": "backtick", "length": 3 },
+      "info": "rust",
+      "text": { "kind": "source" }
+    },
+    { "kind": "list", "ordered": true, "start": 1, "tight": false },
+    { "kind": "list_item", "checked": true },
+    { "kind": "block_quote", "style": "note" },
+    { "kind": "thematic_break" },
+    { "kind": "table", "alignments": ["none", "left", "center", "right"] },
+    { "kind": "table_head" },
+    { "kind": "table_body" },
+    { "kind": "table_row" },
+    { "kind": "table_cell", "column": 0 },
+    { "kind": "html", "block": true, "text": { "kind": "normalized", "value": "<x>" } },
+    { "kind": "math", "display": true, "text": { "kind": "source" } },
+    {
+      "kind": "footnote_definition",
+      "label": "note",
+      "target": { "id": "10", "version": "sha256:footnote" }
+    },
+    { "kind": "footnote_reference", "label": "note", "target": null },
+    {
+      "kind": "citation_definition",
+      "key": "rust",
+      "target": { "id": "11", "version": "sha256:citation" }
+    },
+    { "kind": "citation_reference", "key": "rust", "target": null },
+    { "kind": "soft_break" },
+    { "kind": "hard_break" },
+    {
+      "kind": "custom",
+      "namespace": "app.panel/1",
+      "name": "panel",
+      "opaque": true,
+      "attributes": { "role": "note", "tone": "quiet" }
+    }
+  ],
+  "semantic_resource_kinds": [
+    { "kind": "link", "destination": "https://example.com", "title": null },
+    { "kind": "footnote", "label": "note" },
+    {
+      "kind": "citation",
+      "protocol": "mdstream.citation/1",
+      "key": "rust",
+      "destination": "https://rust-lang.org",
+      "title": "Rust"
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "schema": "mdstream.budgets/1",
+  "kind": "binding_artifact_ceilings",
+  "policy": {
+    "ceiling_basis": "absolute_bytes",
+    "relative_limits_are_advisory": true,
+    "default_artifacts_allow_merman": false,
+    "forbidden_default_dependencies": [
+      "merman",
+      "react",
+      "streamdown",
+      "incremark"
+    ]
+  },
+  "artifacts": [
+    {
+      "artifact": "wasm_raw",
+      "owner": "U14",
+      "ceiling_bytes": 1572864,
+      "regression_percent": 15,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 1151778,
+        "artifact_sha256": "6937a9f38c12eb23d2d6313b00d1f720a3f1b5c6377c6dc5ca8ef70a2a278e86",
+        "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
+      }
+    },
+    {
+      "artifact": "wasm_stripped",
+      "owner": "U14",
+      "ceiling_bytes": 1310720,
+      "regression_percent": 15,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 1151418,
+        "artifact_sha256": "c8fa0a8b50d2ddf743f0c6c3399825a2ddac0b2622c72c5472aa52fac5c87d9d",
+        "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
+      }
+    },
+    {
+      "artifact": "wasm_gzip",
+      "owner": "U14",
+      "ceiling_bytes": 460800,
+      "regression_percent": 15,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 432038,
+        "artifact_sha256": "4f91eb4dfe403dfc6c23f559549f54b138cc25539a10af96d630060f2855c60f",
+        "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
+      }
+    },
+    {
+      "artifact": "wasm_brotli",
+      "owner": "U14",
+      "ceiling_bytes": 409600,
+      "regression_percent": 15,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 335257,
+        "artifact_sha256": "6dc91bd6429791f839b2c9ab3f51a7e4e81f0a42f2135ec0b6f73ca8752f3e24",
+        "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
+      }
+    },
+    {
+      "artifact": "npm_packed",
+      "owner": "U14",
+      "ceiling_bytes": 665600,
+      "regression_percent": 20,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 477596,
+        "artifact_sha256": "a22f771127bbe850a2ebf60b9d3b699d9070a0f1a1ac085cc1d384619fc5ea9e",
+        "command": "npx --yes -p node@24 -p pnpm@11.9.0 pnpm artifacts:check"
+      }
+    },
+    {
+      "artifact": "dart_packed",
+      "owner": "U16",
+      "ceiling_bytes": 163840,
+      "regression_percent": 20,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 52067,
+        "artifact_sha256": "62edce351be84fbdd9f77e71018c0d1933328588d466488fcfc02167510a81bf",
+        "command": "cd bindings/dart && dart pub publish --to-archive=../../target/dart-package/mdstream-0.4.0.tar.gz"
+      }
+    },
+    {
+      "artifact": "flutter_native_library",
+      "owner": "U17",
+      "ceiling_bytes": 6291456,
+      "regression_percent": 20,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 3119208,
+        "artifact_sha256": "eafaed33c5e237b0de5210141ab940268c0fd778ef4582a70cc484e25051438c",
+        "command": "python3 bindings/flutter/tool/build_native.py android"
+      }
+    },
+    {
+      "artifact": "platform_package_increment",
+      "owner": "U17",
+      "ceiling_bytes": 8388608,
+      "regression_percent": 20,
+      "status": "measured",
+      "measurement": {
+        "measured_bytes": 7745399,
+        "artifact_sha256": "a5f3ee1ae98e28bbb34a1405f4a93e3b5be49afd0b8eeb5cbf878be467648365",
+        "command": "python3 bindings/flutter/tool/package_smoke.py --release --skip-native-build --skip-runtime"
+      }
+    }
+  ]
+}

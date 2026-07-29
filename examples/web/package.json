@@ -1,0 +1,22 @@
+{
+  "name": "@mdstream/example-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@mdstream/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "typescript": "5.9.3",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  }
+}

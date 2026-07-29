@@ -1,40 +1,20 @@
 use tokio::sync::mpsc;
+use tokio::time::Instant;
+
+use crate::CoalesceStats;
+use crate::coalesce::{PendingChunks, PendingInput, ScannedChunk, scan_newline};
+use crate::stats::CoalesceWork;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackpressurePolicy {
-    /// Await capacity. Never drops.
-    ///
-    /// Recommended when:
-    /// - you need reliable delivery (no content loss)
-    /// - your producer can tolerate waiting (e.g. network stream on a background task)
-    ///
-    /// Trade-off: the producer task may stall when the UI falls behind.
     Block,
-    /// Drop the new delta when the channel is full.
-    ///
-    /// Recommended when:
-    /// - deltas are replaceable / "best effort" (typing indicators, progress, ephemeral status)
-    /// - you prefer keeping the UI responsive over preserving every update
-    ///
-    /// Trade-off: content loss is expected when the UI is slow.
-    DropNew,
-    /// Buffer locally and try to flush opportunistically (keeps content, reduces producer stalls).
-    ///
-    /// This is useful when producers are very "bursty" and you prefer UI smoothness over strict
-    /// per-token delivery. It combines well with a receiver-side coalescer.
-    ///
-    /// Recommended when:
-    /// - deltas are very high-frequency (LLM token streams)
-    /// - you still want to preserve content, but avoid stalling producers on every small chunk
-    ///
-    /// Trade-off: memory is bounded by `local_max_bytes`; flushing becomes "chunky" under load.
     CoalesceLocal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SendOutcome {
     Sent,
-    Dropped,
+    /// Accepted into local pending state but not yet admitted to the channel.
     Buffered,
 }
 
@@ -43,92 +23,129 @@ pub enum SendError {
     Closed,
 }
 
-/// Producer-side helper for bounded channels.
-///
-/// In many streaming setups, the producer runs in an async task and the UI thread drains updates.
-/// This wrapper provides a few practical backpressure strategies without forcing users to build
-/// their own channel policies.
+/// Producer-side bounded-channel helper with explicit lossless pending state.
 pub struct DeltaSender {
-    pub(crate) tx: mpsc::Sender<String>,
+    tx: mpsc::Sender<String>,
     policy: BackpressurePolicy,
-    local_buf: String,
+    pending: PendingChunks,
+    work: CoalesceWork,
     local_max_bytes: usize,
+    local_max_chunks: usize,
 }
 
 impl DeltaSender {
-    pub fn new(tx: mpsc::Sender<String>, policy: BackpressurePolicy) -> Self {
+    pub fn new(
+        tx: mpsc::Sender<String>,
+        policy: BackpressurePolicy,
+        local_max_bytes: usize,
+        local_max_chunks: usize,
+    ) -> Self {
         Self {
             tx,
             policy,
-            local_buf: String::new(),
-            local_max_bytes: 16 * 1024,
+            pending: PendingChunks::default(),
+            work: CoalesceWork::default(),
+            local_max_bytes: local_max_bytes.max(1),
+            local_max_chunks: local_max_chunks.max(1),
         }
-    }
-
-    pub fn set_local_max_bytes(&mut self, max: usize) {
-        self.local_max_bytes = max.max(1);
     }
 
     pub fn policy(&self) -> BackpressurePolicy {
         self.policy
     }
 
-    pub fn set_policy(&mut self, policy: BackpressurePolicy) {
-        self.policy = policy;
+    pub fn stats(&self) -> CoalesceStats {
+        self.work.snapshot(
+            self.pending.bytes(),
+            self.pending.constituents(),
+            self.pending.boundary_metadata_bytes(),
+        )
     }
 
+    /// Transfers every accepted local constituent back to the caller.
+    pub fn take_pending(&mut self) -> PendingInput {
+        PendingInput::from_pending(std::mem::take(&mut self.pending))
+    }
+
+    pub async fn set_policy(&mut self, policy: BackpressurePolicy) -> Result<(), SendError> {
+        if self.policy == policy {
+            return Ok(());
+        }
+        self.flush().await?;
+        self.policy = policy;
+        Ok(())
+    }
+
+    /// Sends borrowed canonical input. Until this method returns `Buffered` or
+    /// `Sent`, cancellation leaves the new delta with the caller.
     pub async fn send(&mut self, delta: &str) -> Result<SendOutcome, SendError> {
         match self.policy {
             BackpressurePolicy::Block => self.send_block(delta).await,
-            BackpressurePolicy::DropNew => self.send_drop_new(delta),
-            BackpressurePolicy::CoalesceLocal => self.send_coalesce_local(delta).await,
+            BackpressurePolicy::CoalesceLocal => self.send_coalesced(delta).await,
         }
     }
 
     pub async fn flush(&mut self) -> Result<SendOutcome, SendError> {
-        if self.local_buf.is_empty() {
+        if self.pending.is_empty() {
+            self.pending.clear_empty_messages();
             return Ok(SendOutcome::Sent);
         }
-        let buf = std::mem::take(&mut self.local_buf);
-        self.tx.send(buf).await.map_err(|_| SendError::Closed)?;
+        let permit = self.tx.reserve().await.map_err(|_| SendError::Closed)?;
+        let (text, messages) = self.pending.take_text(&mut self.work);
+        self.work.record_output(text.len(), messages, None);
+        permit.send(text);
         Ok(SendOutcome::Sent)
     }
 
     async fn send_block(&mut self, delta: &str) -> Result<SendOutcome, SendError> {
-        self.tx
-            .send(delta.to_string())
-            .await
-            .map_err(|_| SendError::Closed)?;
-        Ok(SendOutcome::Sent)
+        self.work.record_input(0);
+        self.send_direct(delta).await
     }
 
-    fn send_drop_new(&mut self, delta: &str) -> Result<SendOutcome, SendError> {
-        match self.tx.try_send(delta.to_string()) {
-            Ok(()) => Ok(SendOutcome::Sent),
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Ok(SendOutcome::Dropped),
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(SendError::Closed),
+    async fn send_coalesced(&mut self, delta: &str) -> Result<SendOutcome, SendError> {
+        let (has_newline, scanned_bytes) = scan_newline(delta.as_bytes());
+        self.work.record_input(scanned_bytes);
+
+        let reaches_byte_limit = !self.pending.is_empty()
+            && self.pending.bytes().saturating_add(delta.len()) >= self.local_max_bytes;
+        let exceeds_chunk_limit = !delta.is_empty()
+            && !self.pending.is_empty()
+            && self.pending.constituents().saturating_add(1) > self.local_max_chunks;
+        if reaches_byte_limit || exceeds_chunk_limit {
+            self.flush().await?;
         }
-    }
 
-    async fn send_coalesce_local(&mut self, delta: &str) -> Result<SendOutcome, SendError> {
-        self.local_buf.push_str(delta);
+        if delta.len() >= self.local_max_bytes {
+            return self.send_direct(delta).await;
+        }
 
-        let should_try_flush =
-            self.local_buf.len() >= self.local_max_bytes || self.local_buf.contains('\n');
-
-        if should_try_flush {
-            match self.tx.try_send(std::mem::take(&mut self.local_buf)) {
-                Ok(()) => return Ok(SendOutcome::Sent),
-                Err(tokio::sync::mpsc::error::TrySendError::Full(s)) => {
-                    self.local_buf = s;
-                    return Ok(SendOutcome::Buffered);
+        if has_newline {
+            match self.tx.try_reserve() {
+                Ok(permit) => {
+                    let chunk = ScannedChunk::scan_without_recording(delta.to_string(), true);
+                    self.pending.accept(chunk, Instant::now());
+                    let (text, messages) = self.pending.take_text(&mut self.work);
+                    self.work.record_output(text.len(), messages, None);
+                    permit.send(text);
+                    return Ok(SendOutcome::Sent);
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    return Err(SendError::Closed);
-                }
+                Err(mpsc::error::TrySendError::Full(())) => {}
+                Err(mpsc::error::TrySendError::Closed(())) => return Err(SendError::Closed),
             }
+        } else if self.tx.is_closed() {
+            return Err(SendError::Closed);
         }
 
+        let chunk = ScannedChunk::scan_without_recording(delta.to_string(), has_newline);
+        self.pending.accept(chunk, Instant::now());
         Ok(SendOutcome::Buffered)
+    }
+
+    async fn send_direct(&mut self, delta: &str) -> Result<SendOutcome, SendError> {
+        let permit = self.tx.reserve().await.map_err(|_| SendError::Closed)?;
+        let text = delta.to_string();
+        self.work.record_output(text.len(), 1, None);
+        permit.send(text);
+        Ok(SendOutcome::Sent)
     }
 }

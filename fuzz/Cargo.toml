@@ -11,6 +11,9 @@ cargo-fuzz = true
 arbitrary = { version = "1.4.2", features = ["derive"] }
 libfuzzer-sys = "0.4.13"
 mdstream = { path = "../mdstream" }
+mdstream-conformance = { path = "../mdstream-conformance" }
+mdstream-protocol = { path = "../mdstream-protocol" }
+serde_json = "1.0.140"
 
 [[bin]]
 name = "stream_chunking"
@@ -20,8 +23,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "terminator"
-path = "fuzz_targets/terminator.rs"
+name = "structured_pending"
+path = "fuzz_targets/structured_pending.rs"
 test = false
 doc = false
 bench = false

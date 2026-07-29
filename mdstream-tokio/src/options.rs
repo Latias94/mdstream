@@ -1,66 +1,66 @@
 use std::time::Duration;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoalesceOptions {
-    /// Flush once a newline is observed in the buffered text.
-    pub flush_on_newline: bool,
-    /// Flush if no flush happened for this duration (progress guarantee).
-    pub max_delay: Duration,
-    /// Flush when buffered bytes reach this limit.
-    pub max_bytes: usize,
+    flush_on_newline: bool,
+    max_delay: Duration,
+    max_bytes: usize,
+    max_pending_chunks: usize,
+}
+
+impl CoalesceOptions {
+    /// Creates a bounded coalescing policy.
+    ///
+    /// Zero byte and constituent limits are normalized to one so every policy
+    /// can accept a standalone non-empty chunk before applying backpressure.
+    pub fn new(max_delay: Duration, max_bytes: usize, max_pending_chunks: usize) -> Self {
+        Self {
+            flush_on_newline: true,
+            max_delay,
+            max_bytes: max_bytes.max(1),
+            max_pending_chunks: max_pending_chunks.max(1),
+        }
+    }
+
+    pub const fn flush_on_newline(self) -> bool {
+        self.flush_on_newline
+    }
+
+    pub const fn max_delay(self) -> Duration {
+        self.max_delay
+    }
+
+    pub const fn max_bytes(self) -> usize {
+        self.max_bytes
+    }
+
+    pub const fn max_pending_chunks(self) -> usize {
+        self.max_pending_chunks
+    }
+
+    pub const fn with_newline_flush(mut self, enabled: bool) -> Self {
+        self.flush_on_newline = enabled;
+        self
+    }
+
+    pub fn with_max_delay(mut self, max_delay: Duration) -> Self {
+        self.max_delay = max_delay;
+        self
+    }
+
+    pub fn with_max_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_bytes = max_bytes.max(1);
+        self
+    }
+
+    pub fn with_max_pending_chunks(mut self, max_pending_chunks: usize) -> Self {
+        self.max_pending_chunks = max_pending_chunks.max(1);
+        self
+    }
 }
 
 impl Default for CoalesceOptions {
     fn default() -> Self {
-        Self {
-            flush_on_newline: true,
-            max_delay: Duration::from_millis(60),
-            max_bytes: 8 * 1024,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum CoalescePreset {
-    Balanced,
-    Fast,
-    TimeOnly,
-}
-
-impl CoalescePreset {
-    pub fn next(self) -> Self {
-        match self {
-            CoalescePreset::Balanced => CoalescePreset::Fast,
-            CoalescePreset::Fast => CoalescePreset::TimeOnly,
-            CoalescePreset::TimeOnly => CoalescePreset::Balanced,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            CoalescePreset::Balanced => "balanced",
-            CoalescePreset::Fast => "fast",
-            CoalescePreset::TimeOnly => "time-only",
-        }
-    }
-
-    pub fn options(self) -> CoalesceOptions {
-        match self {
-            CoalescePreset::Balanced => CoalesceOptions {
-                flush_on_newline: true,
-                max_delay: Duration::from_millis(80),
-                max_bytes: 16 * 1024,
-            },
-            CoalescePreset::Fast => CoalesceOptions {
-                flush_on_newline: true,
-                max_delay: Duration::from_millis(30),
-                max_bytes: 4 * 1024,
-            },
-            CoalescePreset::TimeOnly => CoalesceOptions {
-                flush_on_newline: false,
-                max_delay: Duration::from_millis(60),
-                max_bytes: 4 * 1024,
-            },
-        }
+        Self::new(Duration::from_millis(60), 8 * 1024, 1024)
     }
 }

@@ -1,0 +1,3 @@
+packages:
+  - bindings/typescript
+  - examples/web

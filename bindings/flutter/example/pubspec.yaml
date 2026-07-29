@@ -1,0 +1,24 @@
+name: mdstream_flutter_example
+description: Framework-owned Content IR host example for mdstream_flutter.
+publish_to: none
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  mdstream_flutter:
+    path: ..
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  lints: ^5.1.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/golden_ai_stream.json

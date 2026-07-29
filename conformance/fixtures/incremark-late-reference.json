@@ -1,0 +1,41 @@
+{
+  "schema": "mdstream.conformance/0.4",
+  "id": "incremark.late-reference",
+  "description": "Pinned Incremark final-AST characterization for a reference definition arriving after its use.",
+  "source": "使用[链接][id]。\n\n[id]: https://example.com",
+  "dialect": {
+    "id": "incremark.marked-default",
+    "extensions": ["gfm", "reference-definitions"]
+  },
+  "profile": {
+    "id": "incremark.final-ast/0.3.10+marked-default",
+    "claim_scope": ["final_ast_characterization"],
+    "pipeline": ["IncremarkParser", "marked-default-builder", "normalizeAst"]
+  },
+  "provenance": {
+    "kind": "upstream",
+    "repository_url": "https://github.com/kingshuaishuai/incremark",
+    "commit_sha": "0e20ef433307ee9f252aaff756ea6127c2a03eae",
+    "package": "@incremark/core",
+    "package_version": "0.3.10",
+    "license": "MIT",
+    "upstream_path": "packages/core/src/__tests__/incremental-consistency.test.ts",
+    "upstream_test_name": "定义在引用后",
+    "oracle_kind": "upstream_predicate",
+    "extraction": { "kind": "literal" }
+  },
+  "options": { "gfm": true },
+  "schedules": [
+    { "id": "whole", "schedule": { "kind": "whole" } },
+    { "id": "characters", "schedule": { "kind": "characters" } },
+    {
+      "id": "late-definition-cut",
+      "schedule": { "kind": "byte_cuts", "cuts": [23] }
+    }
+  ],
+  "expected": {
+    "upstream_predicates": [
+      "the normalized finalized AST from incremental appends equals the normalized one-pass AST"
+    ]
+  }
+}

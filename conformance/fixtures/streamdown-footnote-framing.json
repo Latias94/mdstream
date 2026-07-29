@@ -1,0 +1,48 @@
+{
+  "schema": "mdstream.conformance/0.4",
+  "id": "streamdown.footnote-framing",
+  "description": "Pinned Streamdown characterization: a real numeric footnote keeps the document in one framing block.",
+  "source": "Here is a footnote[^1].\n\n[^1]: This is the footnote content.\n",
+  "dialect": {
+    "id": "streamdown.marked",
+    "extensions": ["gfm", "footnotes"]
+  },
+  "profile": {
+    "id": "streamdown.block-framing/2.5.0",
+    "claim_scope": ["legacy_block_framing"],
+    "pipeline": ["parseMarkdownIntoBlocks"]
+  },
+  "provenance": {
+    "kind": "upstream",
+    "repository_url": "https://github.com/vercel/streamdown",
+    "commit_sha": "e5deed330aa4231751a106445d93d62e4716a22f",
+    "package": "streamdown",
+    "package_version": "2.5.0",
+    "license": "Apache-2.0",
+    "upstream_path": "packages/streamdown/__tests__/footnotes.test.tsx",
+    "upstream_test_name": "should still detect real footnotes with numeric identifiers",
+    "oracle_kind": "upstream_predicate",
+    "extraction": { "kind": "literal" }
+  },
+  "options": {},
+  "schedules": [
+    { "id": "whole", "schedule": { "kind": "whole" } },
+    { "id": "lines", "schedule": { "kind": "lines" } },
+    { "id": "characters", "schedule": { "kind": "characters" } },
+    {
+      "id": "seeded-0",
+      "schedule": {
+        "kind": "seeded",
+        "label": "streamdown.footnote-framing",
+        "seed": 0,
+        "trial": 0,
+        "max_bytes": 11
+      }
+    }
+  ],
+  "expected": {
+    "upstream_predicates": [
+      "parseMarkdownIntoBlocks returns exactly one block equal to the complete source"
+    ]
+  }
+}

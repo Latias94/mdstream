@@ -1,0 +1,130 @@
+{
+  "schema": "mdstream.conformance/0.4",
+  "id": "protocol.epoch-reset",
+  "description": "A predecessor-linked epoch reset replaces source and rejects delayed old changes.",
+  "source": "new",
+  "dialect": {
+    "id": "mdstream.canonical/0.4",
+    "extensions": []
+  },
+  "profile": {
+    "id": "mdstream.protocol/0.4",
+    "claim_scope": ["protocol_replay"],
+    "pipeline": []
+  },
+  "provenance": {
+    "kind": "synthetic",
+    "generator": "mdstream-conformance protocol fixture generator",
+    "oracle_kind": "canonical_protocol"
+  },
+  "options": {},
+  "schedules": [
+    {
+      "id": "whole",
+      "schedule": { "kind": "whole" }
+    }
+  ],
+  "traces": [
+    {
+      "id": "reset",
+      "schedule": "whole",
+      "setup_changes": 2,
+      "input_events": [
+        { "kind": "reset", "change_end": 3 },
+        { "kind": "append", "chunk": "new", "change_end": 4 },
+        { "kind": "finish", "change_end": 5 }
+      ],
+      "changes": [
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "0",
+          "change_id": "reset:old:start",
+          "epoch_start": { "predecessor": null },
+          "source": { "expected_cursor": "0", "suffix": "old" },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "1",
+          "sequence": "1",
+          "change_id": "reset:old:1",
+          "epoch_start": null,
+          "source": { "expected_cursor": "3", "suffix": "!" },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "2",
+          "sequence": "0",
+          "change_id": "reset:new:start",
+          "epoch_start": {
+            "predecessor": {
+              "epoch": "1",
+              "sequence": "1",
+              "change_id": "reset:old:1",
+              "source_cursor": "4"
+            }
+          },
+          "source": { "expected_cursor": "0", "suffix": "" },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "2",
+          "sequence": "1",
+          "change_id": "reset:new:1",
+          "epoch_start": null,
+          "source": { "expected_cursor": "0", "suffix": "new" },
+          "operations": []
+        },
+        {
+          "schema": "mdstream.content/0.4",
+          "maturity": "final",
+          "epoch": "2",
+          "sequence": "2",
+          "change_id": "reset:new:finish",
+          "epoch_start": null,
+          "source": { "expected_cursor": "3", "suffix": "" },
+          "operations": [
+            {
+              "kind": "advance_projection",
+              "expected_cursor": "0",
+              "new_cursor": "3"
+            },
+            { "kind": "finish_document" }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "normalized_snapshot": {
+      "schema": "mdstream.content/0.4",
+      "maturity": "final",
+      "epoch": "2",
+      "lifecycle": "finalized",
+      "source": "new",
+      "projection_cursor": "3",
+      "roots": {
+        "version": "sha256:28797a48cde535a2aceb0cb2bebb4fb03762280fb1bad24e858c1253c9879fb5",
+        "children": []
+      },
+      "nodes": [],
+      "resources": []
+    }
+  },
+  "required_checkpoints": [
+    {
+      "id": "reset.finalized",
+      "trace": "reset",
+      "after_change": 4,
+      "lifecycle": "finalized",
+      "source": "new"
+    }
+  ]
+}

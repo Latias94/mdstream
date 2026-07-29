@@ -1,0 +1,17 @@
+.dart_tool/
+build/
+tool/
+test/
+integration_test/
+.gitignore
+analysis_options.yaml
+**/*.iml
+**/.gradle/
+**/build/
+example/.dart_tool/
+example/.flutter-plugins-dependencies
+example/pubspec.lock
+example/pubspec_overrides.yaml
+
+# Native artifacts are intentionally not ignored here. Release assembly stages
+# them before `dart pub publish --to-archive`.

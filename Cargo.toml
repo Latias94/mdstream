@@ -1,4 +1,20 @@
 [workspace]
-members = ["mdstream", "mdstream-tokio"]
-exclude = ["fuzz"]
+members = [
+    "mdstream",
+    "mdstream-bindings-core",
+    "mdstream-conformance",
+    "mdstream-ffi",
+    "mdstream-processors",
+    "mdstream-protocol",
+    "mdstream-tokio",
+    "mdstream-wasm",
+]
+exclude = ["fuzz", "mdstream-merman"]
 resolver = "2"
+
+[profile.wasm-size]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

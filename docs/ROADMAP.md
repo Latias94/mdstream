@@ -1,37 +1,44 @@
 # Roadmap
 
-This roadmap is intentionally practical: it prioritizes streaming stability and compatibility with Streamdown + Incremark behaviors.
+## 0.4 Foundation
 
-## v0.1 (MVP)
+The 0.4 line establishes the durable product boundary:
 
-- Block stream model: `committed + pending`
-- Stable boundary detection (core block-level constructs)
-- Pending termination (remend-like)
-- Minimal configuration options
-- MVP extension points:
-  - `BoundaryPlugin` (custom containers/directives)
-  - `PendingTransformer`
-  - `BlockAnalyzer`
-- Unit tests covering streaming edge cases
-- Regression tests ported from Streamdown benchmarks (incrementally)
-- Reference-style link definitions invalidation (opt-in mode)
-- Optional `pulldown-cmark` adapter (feature-gated)
+- final versioned Content IR and JSON wire protocol;
+- chunk-invariant identity and deterministic node versions;
+- explicit finish, reset, correction, replay, and snapshot recovery;
+- bounded processor/artifact lifecycle with citation and optional Merman paths;
+- optional atomic host transition facts with continuity-qualified identity;
+- Rust, Tokio, WASM/TypeScript, C FFI, Dart, and Flutter integrations;
+- cross-runtime conformance, deterministic work gates, and package budgets.
 
-## Completed in current 0.2 development
+## Candidate Follow-Ups
 
-- `snapshot_blocks()` convenience API
-- Improved HTML block handling and table/list heuristics
-- Expanded remend parity tests and Streamdown/Incremark-inspired regression suites
-- Tokio glue crate for coalescing deltas, sender backpressure policies, and actor helpers
-- Optional `sync` feature for `Send + Sync` extension points
-- Criterion benchmarks, performance guide, fuzz target compilation checks, and stronger CI/release gates
+Future work should deepen the headless engine rather than add presentation
+policy. Candidates include:
 
-## Next: Cross-block semantics and 1.0 API shaping
+- more versioned semantic resources and processor protocols;
+- binary transport only when JSON measurements show a concrete need;
+- additional native/mobile architectures backed by build-and-load CI;
+- persisted replay logs implemented above the canonical reducer;
+- better bounded writers or external isolation for expensive processors;
+- a public parser-engine abstraction only after a second real implementation
+  proves the interface.
 
-- Broader public 1.0 API review across exported symbols
-- More adapter-facing semantics around document-scoped constructs
-- Scheduled fuzz campaigns and quantitative performance thresholds
+## Explicit Non-Goals
 
-## Later
+mdstream does not plan to own themes, widgets, syntax highlighting, math
+layout, browser layout, networking, persistence, CRDT/OT editing, or arbitrary
+historical source mutation.
 
-- Additional renderer-specific adapters beyond the existing optional pulldown adapter
+Presentation effects remain an explicit non-goal. Hosts may use transition facts
+for reveal, correction, layout, or accessibility policy, but mdstream will not
+own timing, easing, color, geometry, scrolling, or reduced-motion decisions.
+
+A first-party React package or Markdown renderer is not on the roadmap.
+Streamdown, Incremark, and framework-native renderers remain valid consumer
+choices. Third parties may publish adapters over `@mdstream/core` without
+becoming protocol authorities.
+
+LALRPOP is not planned for the Markdown path. It may be considered for a future
+independent, closed DSL where an LR grammar is the actual missing capability.

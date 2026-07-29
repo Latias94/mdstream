@@ -1,0 +1,43 @@
+group = "io.mdstream.flutter"
+version = "0.4.0"
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.7.3")
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: "com.android.library"
+
+android {
+    namespace = "io.mdstream.flutter"
+    compileSdk = 35
+    // This plugin bundles prebuilt libraries; pin Flutter 3.32's metadata NDK
+    // so consumer builds do not inherit AGP 8.7's newer default requirement.
+    ndkVersion = "26.3.11579264"
+
+    defaultConfig {
+        minSdk = 21
+    }
+
+    sourceSets {
+        main.jniLibs.srcDirs = ["src/main/jniLibs"]
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+}

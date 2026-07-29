@@ -1,0 +1,36 @@
+{
+  "schema": "mdstream.conformance/0.4",
+  "id": "legacy.crlf-frontier",
+  "description": "Temporary 0.3 golden for CRLF split across chunk boundaries and normalized source output.",
+  "source": "A\r\n\r\nB\r\n",
+  "dialect": {
+    "id": "mdstream.legacy-0.3",
+    "extensions": []
+  },
+  "profile": {
+    "id": "mdstream.legacy-framing/0.3",
+    "claim_scope": ["legacy_block_framing"],
+    "pipeline": ["MdStream", "finalize"]
+  },
+  "provenance": {
+    "kind": "synthetic",
+    "generator": "checked-in observation of mdstream 0.3 before engine replacement",
+    "oracle_kind": "exact_block_sequence"
+  },
+  "options": {},
+  "schedules": [
+    { "id": "whole", "schedule": { "kind": "whole" } },
+    { "id": "lines", "schedule": { "kind": "lines" } },
+    { "id": "characters", "schedule": { "kind": "characters" } },
+    {
+      "id": "split-crlf",
+      "schedule": { "kind": "byte_cuts", "cuts": [2, 4, 7] }
+    }
+  ],
+  "expected": {
+    "legacy_framing": [
+      { "kind": "paragraph", "raw": "A\n\n" },
+      { "kind": "paragraph", "raw": "B\n" }
+    ]
+  }
+}

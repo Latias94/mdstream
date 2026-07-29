@@ -1,3 +1,15 @@
-/target
+target/
 /repo-ref
-Cargo.lock
+/fuzz/Cargo.lock
+/mdstream-merman/Cargo.lock
+/node_modules
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.dart_tool
+**/coverage
+**/doc/api
+/bindings/.flutter-plugins-dependencies
+/bindings/typescript/dist
+/bindings/typescript/wasm
+*.tgz

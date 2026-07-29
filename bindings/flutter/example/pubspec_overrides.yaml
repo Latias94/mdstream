@@ -1,0 +1,4 @@
+# Repository-only resolution for the unpublished example workspace.
+dependency_overrides:
+  mdstream:
+    path: ../../dart
