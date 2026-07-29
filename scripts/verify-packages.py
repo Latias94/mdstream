@@ -625,19 +625,27 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
         ("release.yml", "publish-dart"): WorkflowJobContract(
             run_markers=(
                 "--extract-only",
+                '"$RUNNER_TEMP/dart-publish/dart"',
                 "dart pub publish --skip-validation --to-archive",
                 "--compare-only",
                 "check-registry-version.py\" pub.dev mdstream",
                 *REGISTRY_STATUS_GUARD_MARKERS,
-                "dart pub publish",
+                'dart pub publish --force --skip-validation '
+                '--directory="$RUNNER_TEMP/dart-publish/dart"',
                 "--compare-registry pub.dev",
             ),
             job_markers=(REGISTRY_CHECKER_ARTIFACT,),
+            forbidden_markers=("target/dart-publish",),
             step_marker_groups=(
+                (
+                    "--extract-only",
+                    '"$RUNNER_TEMP/dart-publish/dart"',
+                ),
                 (
                     "check-registry-version.py\" pub.dev mdstream",
                     *REGISTRY_STATUS_GUARD_MARKERS,
-                    "dart pub publish",
+                    'dart pub publish --force --skip-validation '
+                    '--directory="$RUNNER_TEMP/dart-publish/dart"',
                     "--compare-registry pub.dev",
                 ),
                 (
@@ -647,6 +655,7 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 ),
                 (
                     "dart pub publish --skip-validation --to-archive",
+                    '"$RUNNER_TEMP/dart-publish/dart"',
                     "--compare-only",
                 ),
             ),
@@ -655,7 +664,8 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 "dart pub publish --skip-validation --to-archive",
                 "--compare-only",
                 "check-registry-version.py\" pub.dev mdstream",
-                "dart pub publish --force",
+                'dart pub publish --force --skip-validation '
+                '--directory="$RUNNER_TEMP/dart-publish/dart"',
                 "--compare-registry pub.dev",
             ),
             required_needs=frozenset(
@@ -671,19 +681,27 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
         ("release.yml", "publish-flutter"): WorkflowJobContract(
             run_markers=(
                 "--extract-only",
+                '"$RUNNER_TEMP/flutter-publish/flutter"',
                 "dart pub publish --skip-validation --to-archive",
                 "--compare-only",
                 "check-registry-version.py\" pub.dev mdstream_flutter",
                 *REGISTRY_STATUS_GUARD_MARKERS,
-                "dart pub publish",
+                'dart pub publish --force --skip-validation '
+                '--directory="$RUNNER_TEMP/flutter-publish/flutter"',
                 "--compare-registry pub.dev",
             ),
             job_markers=(REGISTRY_CHECKER_ARTIFACT,),
+            forbidden_markers=("target/flutter-publish",),
             step_marker_groups=(
+                (
+                    "--extract-only",
+                    '"$RUNNER_TEMP/flutter-publish/flutter"',
+                ),
                 (
                     "check-registry-version.py\" pub.dev mdstream_flutter",
                     *REGISTRY_STATUS_GUARD_MARKERS,
-                    "dart pub publish",
+                    'dart pub publish --force --skip-validation '
+                    '--directory="$RUNNER_TEMP/flutter-publish/flutter"',
                     "--compare-registry pub.dev",
                 ),
                 (
@@ -693,6 +711,7 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 ),
                 (
                     "dart pub publish --skip-validation --to-archive",
+                    '"$RUNNER_TEMP/flutter-publish/flutter"',
                     "--compare-only",
                 ),
             ),
@@ -701,7 +720,8 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
                 "dart pub publish --skip-validation --to-archive",
                 "--compare-only",
                 "check-registry-version.py\" pub.dev mdstream_flutter",
-                "dart pub publish --force",
+                'dart pub publish --force --skip-validation '
+                '--directory="$RUNNER_TEMP/flutter-publish/flutter"',
                 "--compare-registry pub.dev",
             ),
             required_needs=frozenset(

@@ -359,11 +359,11 @@ jobs:
       - name: Extract package into a Pub workspace
         run: |
           set -euo pipefail
-          mkdir -p target/dart-publish
+          mkdir -p "$RUNNER_TEMP/dart-publish"
           python3 target/release-tools/scripts/verify-packages.py --extract-only \
             "target/dart-package/mdstream-${{ needs.validate.outputs.version }}.tar.gz" \
-            target/dart-publish/dart
-          printf 'name: mdstream_release_workspace\npublish_to: none\nenvironment:\n  sdk: ^3.8.0\nworkspace:\n  - dart\n' > target/dart-publish/pubspec.yaml
+            "$RUNNER_TEMP/dart-publish/dart"
+          printf 'name: mdstream_release_workspace\npublish_to: none\nenvironment:\n  sdk: ^3.8.0\nworkspace:\n  - dart\n' > "$RUNNER_TEMP/dart-publish/pubspec.yaml"
 
       - name: Prove Pub repack preserves verified Dart content
         env:
@@ -371,10 +371,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/dart-repacked
-          (
-            cd target/dart-publish/dart
-            dart pub publish --skip-validation --to-archive="$GITHUB_WORKSPACE/target/dart-repacked/mdstream-$VERSION.tar.gz"
-          )
+          dart pub publish --skip-validation --to-archive="$GITHUB_WORKSPACE/target/dart-repacked/mdstream-$VERSION.tar.gz" \
+            --directory="$RUNNER_TEMP/dart-publish/dart"
           python3 target/release-tools/scripts/verify-packages.py --compare-only \
             "target/dart-package/mdstream-$VERSION.tar.gz" \
             "target/dart-repacked/mdstream-$VERSION.tar.gz"
@@ -382,7 +380,6 @@ jobs:
       - name: Publish standalone Dart package when missing
         env:
           VERSION: ${{ needs.validate.outputs.version }}
-        working-directory: target/dart-publish/dart
         shell: bash
         run: |
           set -euo pipefail
@@ -394,7 +391,7 @@ jobs:
               echo "cannot determine whether mdstream $VERSION exists; refusing to publish" >&2
               exit "$registry_status"
             fi
-            dart pub publish --force --skip-validation
+            dart pub publish --force --skip-validation --directory="$RUNNER_TEMP/dart-publish/dart"
           fi
           for _ in $(seq 1 36); do
             if python3 "$GITHUB_WORKSPACE/target/release-tools/scripts/verify-packages.py" \
@@ -438,11 +435,11 @@ jobs:
       - name: Extract package into a Pub workspace
         run: |
           set -euo pipefail
-          mkdir -p target/flutter-publish
+          mkdir -p "$RUNNER_TEMP/flutter-publish"
           python3 target/release-tools/scripts/verify-packages.py --extract-only \
             "target/flutter-package/mdstream_flutter-${{ needs.validate.outputs.version }}.tar.gz" \
-            target/flutter-publish/flutter
-          printf 'name: mdstream_flutter_release_workspace\npublish_to: none\nenvironment:\n  sdk: ^3.8.0\nworkspace:\n  - flutter\n' > target/flutter-publish/pubspec.yaml
+            "$RUNNER_TEMP/flutter-publish/flutter"
+          printf 'name: mdstream_flutter_release_workspace\npublish_to: none\nenvironment:\n  sdk: ^3.8.0\nworkspace:\n  - flutter\n' > "$RUNNER_TEMP/flutter-publish/pubspec.yaml"
 
       - name: Prove Pub repack preserves verified Flutter content
         env:
@@ -450,10 +447,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/flutter-repacked
-          (
-            cd target/flutter-publish/flutter
-            dart pub publish --skip-validation --to-archive="$GITHUB_WORKSPACE/target/flutter-repacked/mdstream_flutter-$VERSION.tar.gz"
-          )
+          dart pub publish --skip-validation --to-archive="$GITHUB_WORKSPACE/target/flutter-repacked/mdstream_flutter-$VERSION.tar.gz" \
+            --directory="$RUNNER_TEMP/flutter-publish/flutter"
           python3 target/release-tools/scripts/verify-packages.py --compare-only \
             "target/flutter-package/mdstream_flutter-$VERSION.tar.gz" \
             "target/flutter-repacked/mdstream_flutter-$VERSION.tar.gz"
@@ -461,7 +456,6 @@ jobs:
       - name: Publish Flutter package when missing
         env:
           VERSION: ${{ needs.validate.outputs.version }}
-        working-directory: target/flutter-publish/flutter
         shell: bash
         run: |
           set -euo pipefail
@@ -473,7 +467,7 @@ jobs:
               echo "cannot determine whether mdstream_flutter $VERSION exists; refusing to publish" >&2
               exit "$registry_status"
             fi
-            dart pub publish --force --skip-validation
+            dart pub publish --force --skip-validation --directory="$RUNNER_TEMP/flutter-publish/flutter"
           fi
           for _ in $(seq 1 36); do
             if python3 "$GITHUB_WORKSPACE/target/release-tools/scripts/verify-packages.py" \

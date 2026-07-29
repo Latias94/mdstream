@@ -1680,6 +1680,115 @@ class PackageContractTests(unittest.TestCase):
                 self.assertIn("--extract-only", job)
                 self.assertNotRegex(job, r"\btar\s+-[A-Za-z]*x")
 
+    def test_pub_publish_workspaces_stay_outside_repository_ignore_rules(self) -> None:
+        release = (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8")
+        cases = {
+            "publish-dart:": (
+                "dart-publish/dart",
+                "- name: Prove Pub repack preserves verified Dart content",
+                "- name: Publish standalone Dart package when missing",
+            ),
+            "publish-flutter:": (
+                "flutter-publish/flutter",
+                "- name: Prove Pub repack preserves verified Flutter content",
+                "- name: Publish Flutter package when missing",
+            ),
+        }
+
+        for marker, (workspace, repack_marker, publish_marker) in cases.items():
+            with self.subTest(job=marker):
+                job = indented_block(release, marker)
+                extract = indented_block(
+                    job,
+                    "- name: Extract package into a Pub workspace",
+                )
+                self.assertIn("--extract-only", extract)
+                self.assertIn(f'"$RUNNER_TEMP/{workspace}"', extract)
+                repack = indented_block(job, repack_marker)
+                publish = indented_block(job, publish_marker)
+                self.assertIn(
+                    f'--directory="$RUNNER_TEMP/{workspace}"',
+                    repack,
+                )
+                self.assertIn(
+                    f'--directory="$RUNNER_TEMP/{workspace}"',
+                    publish,
+                )
+                self.assertNotIn("working-directory:", publish)
+                self.assertNotIn(f"target/{workspace}", job)
+
+    def test_workflow_contract_rejects_repository_local_pub_extraction(self) -> None:
+        release = (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8")
+        cases = {
+            "dart": (
+                '"$RUNNER_TEMP/dart-publish/dart"',
+                '"target/dart-publish/dart"',
+            ),
+            "flutter": (
+                '"$RUNNER_TEMP/flutter-publish/flutter"',
+                '"target/flutter-publish/flutter"',
+            ),
+        }
+
+        for package, (temporary, repository_local) in cases.items():
+            with self.subTest(package=package), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                workflows = root / ".github" / "workflows"
+                shutil.copytree(WORKFLOW_ROOT, workflows)
+                mutated = release.replace(temporary, repository_local, 1)
+                self.assertNotEqual(mutated, release)
+                (workflows / "release.yml").write_text(mutated, encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                    verify_packages.ValidationError,
+                    "gate|forbidden|step",
+                ):
+                    verify_packages.validate_workflow_contract(root)
+
+    def test_workflow_contract_rejects_pub_directory_decoys(self) -> None:
+        release = (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8")
+        cases = {
+            "dart repack": (
+                'mdstream-$VERSION.tar.gz" \\\n'
+                '            --directory="$RUNNER_TEMP/dart-publish/dart"',
+                'mdstream-$VERSION.tar.gz" \\\n'
+                '            --directory="$GITHUB_WORKSPACE/target/pub-stage/dart"',
+            ),
+            "dart publish": (
+                'dart pub publish --force --skip-validation '
+                '--directory="$RUNNER_TEMP/dart-publish/dart"',
+                'dart pub publish --force --skip-validation '
+                '--directory="$GITHUB_WORKSPACE/target/pub-stage/dart"',
+            ),
+            "flutter repack": (
+                'mdstream_flutter-$VERSION.tar.gz" \\\n'
+                '            --directory="$RUNNER_TEMP/flutter-publish/flutter"',
+                'mdstream_flutter-$VERSION.tar.gz" \\\n'
+                '            --directory="$GITHUB_WORKSPACE/target/pub-stage/flutter"',
+            ),
+            "flutter publish": (
+                'dart pub publish --force --skip-validation '
+                '--directory="$RUNNER_TEMP/flutter-publish/flutter"',
+                'dart pub publish --force --skip-validation '
+                '--directory="$GITHUB_WORKSPACE/target/pub-stage/flutter"',
+            ),
+        }
+
+        for phase, (temporary, repository_local) in cases.items():
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                workflows = root / ".github" / "workflows"
+                shutil.copytree(WORKFLOW_ROOT, workflows)
+                mutated = release.replace(temporary, repository_local, 1)
+                self.assertNotEqual(mutated, release)
+                (workflows / "release.yml").write_text(mutated, encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                    verify_packages.ValidationError,
+                    "gate|step",
+                ):
+                    verify_packages.validate_workflow_contract(root)
+
     def test_dart_ci_requires_native_for_the_complete_suite(self) -> None:
         workflow = (WORKFLOW_ROOT / "ci.yml").read_text(encoding="utf-8")
         job = indented_block(workflow, "dart:")
