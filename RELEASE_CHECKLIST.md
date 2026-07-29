@@ -18,8 +18,9 @@ tree.
   ```
 
 - [ ] Confirm the tag is exactly `vX.Y.Z` and matches the contract version.
-- [ ] Confirm protocol metadata and conformance fixtures still declare final
-  `mdstream.protocol/0.4` rather than draft or candidate status.
+- [ ] Confirm protocol metadata still declares final `mdstream.content/0.4`
+  and canonical conformance fixture IDs remain `mdstream.protocol/0.4`, rather
+  than draft or candidate status.
 
 ## Rust publish graph
 

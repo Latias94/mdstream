@@ -58,6 +58,7 @@ jobs:
           PY
           python3 scripts/release_notes.py \
             --version "$version" \
+            --repository "$GITHUB_REPOSITORY" \
             --changelog CHANGELOG.md \
             --output target/release-notes.md
           echo "version=$version" >> "$GITHUB_OUTPUT"

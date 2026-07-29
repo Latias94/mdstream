@@ -40,6 +40,7 @@ sys.modules[SPEC.name] = verify_packages
 SPEC.loader.exec_module(verify_packages)
 import archive_policy  # noqa: E402
 import package_smoke  # noqa: E402
+import release_notes  # noqa: E402
 from native_test_fixture import elf_image  # noqa: E402
 from native_artifact import is_native_like_artifact  # noqa: E402
 
@@ -93,6 +94,53 @@ class PackageContractTests(unittest.TestCase):
                             changelog,
                             "0.4.0",
                         )
+
+    def test_release_notes_bind_repository_links_to_the_release_tag(self) -> None:
+        changelog = """# Changelog
+
+## 0.4.0
+
+[Guide](docs/EXAMPLES.md#rust-minimal)
+![Diagram](docs/architecture.png)
+[Section](#added)
+[External](https://example.test/docs)
+[Email](mailto:maintainer@example.test)
+
+## 0.3.0
+
+- Old.
+"""
+
+        notes = release_notes.render_release_notes(
+            changelog,
+            "0.4.0",
+            "Latias94/mdstream",
+        )
+
+        self.assertIn(
+            "[Guide](https://github.com/Latias94/mdstream/blob/"
+            "v0.4.0/docs/EXAMPLES.md#rust-minimal)",
+            notes,
+        )
+        self.assertIn(
+            "![Diagram](https://raw.githubusercontent.com/Latias94/mdstream/"
+            "v0.4.0/docs/architecture.png)",
+            notes,
+        )
+        self.assertIn("[Section](#added)", notes)
+        self.assertIn("[External](https://example.test/docs)", notes)
+        self.assertIn("[Email](mailto:maintainer@example.test)", notes)
+        self.assertNotIn("## 0.3.0", notes)
+
+        with self.assertRaisesRegex(
+            release_notes.ReleaseNotesError,
+            "escapes the repository",
+        ):
+            release_notes.rewrite_repository_links(
+                "[Outside](../README.md)",
+                "0.4.0",
+                "Latias94/mdstream",
+            )
 
     def test_flutter_native_metadata_matches_future_release_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1015,6 +1063,32 @@ class PackageContractTests(unittest.TestCase):
             with self.assertRaisesRegex(verify_packages.ValidationError, "exactly one"):
                 verify_packages._single_archive(directory, "*.tgz", "npm pack")
 
+    def test_release_checklist_requires_protocol_contract_identifiers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            order = " -> ".join(
+                f"`{name}`" for name in verify_packages.RUST_PUBLISH_ORDER
+            )
+            markers = (
+                order,
+                "local prepublish",
+                "registry-dependent",
+                "mdstream_flutter",
+                "mdstream.content/0.4",
+                "mdstream.protocol/0.4",
+            )
+            for missing in ("mdstream.content/0.4", "mdstream.protocol/0.4"):
+                with self.subTest(missing=missing):
+                    (root / "RELEASE_CHECKLIST.md").write_text(
+                        "\n".join(marker for marker in markers if marker != missing),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        verify_packages.ValidationError,
+                        missing,
+                    ):
+                        verify_packages.validate_release_checklist(root)
+
     def test_documentation_contract_rejects_a_broken_local_link(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1815,6 +1889,7 @@ class PackageContractTests(unittest.TestCase):
 
         self.assertIn("scripts/release_notes.py", validate)
         self.assertIn("--output target/release-notes.md", validate)
+        self.assertIn('--repository "$GITHUB_REPOSITORY"', validate)
         self.assertIn("name: mdstream-release-notes", validate)
         self.assertIn("path: target/release-notes.md", validate)
         self.assertNotIn("actions/checkout", github_release)

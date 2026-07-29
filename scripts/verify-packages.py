@@ -717,6 +717,7 @@ WORKFLOW_JOB_CONTRACTS: Mapping[
         ("release.yml", "validate"): WorkflowJobContract(
             run_markers=(
                 "scripts/release_notes.py",
+                '--repository "$GITHUB_REPOSITORY"',
                 "--output target/release-notes.md",
                 "target/release-tools/scripts/verify-packages.py --help",
             ),
@@ -1509,7 +1510,13 @@ def validate_release_checklist(root: Path) -> None:
     order = " -> ".join(f"`{name}`" for name in RUST_PUBLISH_ORDER)
     if order not in checklist:
         raise ValidationError("RELEASE_CHECKLIST.md does not contain canonical Rust order")
-    for marker in ("local prepublish", "registry-dependent", "mdstream_flutter"):
+    for marker in (
+        "local prepublish",
+        "registry-dependent",
+        "mdstream_flutter",
+        "mdstream.content/0.4",
+        "mdstream.protocol/0.4",
+    ):
         if marker not in checklist:
             raise ValidationError(
                 f"RELEASE_CHECKLIST.md is missing release marker {marker!r}"
