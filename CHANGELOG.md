@@ -3,9 +3,9 @@
 This project follows a pragmatic changelog format during early development.
 Version numbers follow SemVer, but the public API is expected to change rapidly until `1.0`.
 
-## Unreleased
+## 0.4.0 - 2026-07-29
 
-Version 0.4 rebuilds mdstream as a headless, cross-framework streaming rich-content state engine so arbitrary AI token chunking converges to one recoverable Content IR across Rust, Web, and native UI hosts instead of making every renderer reparse or repair incomplete Markdown. It intentionally breaks the 0.3 block/update API.
+Version 0.4 rebuilds mdstream as a headless, cross-framework streaming rich-content state engine so arbitrary AI token chunking converges to one recoverable Content IR across Rust, Web, and native UI hosts instead of making every renderer reparse or repair incomplete Markdown. It intentionally breaks the 0.3 block/update API. See [PR #2](https://github.com/Latias94/mdstream/pull/2).
 
 ### Added
 
